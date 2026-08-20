@@ -119,6 +119,31 @@ test('knowledge and deadends stay candidate until verified', async () => {
   }
 });
 
+test('knowledge and deadend sources must exist', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await assert.rejects(() => learnKnowledge(root, 'invalid source', { sourceContextId: 'missing' }));
+    await assert.rejects(() => recordDeadend(root, 'invalid source', 'missing context', { sourceContextId: 'missing' }));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('doctor reports malformed context metadata', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await writeFile(path.join(root, '.context', 'index.json'), '{broken', 'utf8');
+    const result = await doctor(root);
+    assert.equal(result.healthy, false);
+    assert.ok(result.checks.some((check) => check.startsWith('index:')));
+    assert.ok(result.checks.some((check) => check.startsWith('index rebuild:')) || result.checks.some((check) => check.startsWith('contexts:')));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('checkpoint preserves structured paths without reading ignored files', async () => {
   const root = await project();
   try {

@@ -105,6 +105,20 @@ export interface Knowledge {
   updatedAt: string;
 }
 
+export interface KnowledgeInput {
+  scope?: string;
+  sourceContextId?: string;
+  sourceSnapshotId?: string;
+  evidence?: string[];
+}
+
+export interface DeadendInput {
+  scope?: string;
+  sourceContextId?: string;
+  sourceSnapshotId?: string;
+  evidence?: string[];
+}
+
 export interface Deadend {
   deadendId: string;
   attempt: string;

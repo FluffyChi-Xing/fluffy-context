@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { readGitState } from '../git/git-adapter.js';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { atomicWriteJson } from '../storage/atomic-write.js';
-import { readJson } from '../storage/json-store.js';
+import { isRecord, readJson } from '../storage/json-store.js';
 import { withLock } from '../storage/lock.js';
 import {
   contextDirectory,
@@ -106,13 +106,57 @@ async function contextFromInput(projectRoot: string, input: CheckpointInput, pre
   };
 }
 
+function isStructuredContext(value: unknown): value is StructuredContext {
+  return isRecord(value)
+    && typeof value.progressSummary === 'string'
+    && (typeof value.lastError === 'string' || value.lastError === null)
+    && ['completed', 'pendingTasks', 'decisions', 'risks', 'relatedFiles'].every((key) => isStringArray(value[key]));
+}
+
+function isSnapshot(value: unknown): value is Snapshot {
+  return isRecord(value)
+    && value.schemaVersion === 1
+    && typeof value.snapshotId === 'string'
+    && typeof value.contextId === 'string'
+    && (typeof value.parentSnapshotId === 'string' || value.parentSnapshotId === null)
+    && typeof value.baseSnapshotId === 'string'
+    && (value.mode === 'baseline' || value.mode === 'patch')
+    && typeof value.createdAt === 'string'
+    && (typeof value.branch === 'string' || value.branch === null)
+    && (typeof value.commit === 'string' || value.commit === null)
+    && typeof value.contentHash === 'string'
+    && typeof value.rebuildHash === 'string';
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isContextMetadata(value: unknown, contextId: string): value is ContextMetadata {
+  return isRecord(value)
+    && value.schemaVersion === 1
+    && value.id === contextId
+    && typeof value.title === 'string'
+    && typeof value.projectRoot === 'string'
+    && (typeof value.branch === 'string' || value.branch === null)
+    && (typeof value.commit === 'string' || value.commit === null)
+    && typeof value.createdAt === 'string'
+    && typeof value.updatedAt === 'string'
+    && (typeof value.lastUsedAt === 'string' || value.lastUsedAt === null)
+    && typeof value.usageCount === 'number'
+    && ['draft', 'active', 'stable', 'archived', 'deleted'].includes(value.status as string)
+    && (typeof value.currentSnapshotId === 'string' || value.currentSnapshotId === null)
+    && isStringArray(value.tags)
+    && isStringArray(value.dependencies);
+}
+
 async function loadContext(projectRoot: string, contextId: string): Promise<ContextMetadata> {
-  return readJson<ContextMetadata>(contextMetadataPath(projectRoot, contextId));
+  return readJson<ContextMetadata>(contextMetadataPath(projectRoot, contextId), (value): value is ContextMetadata => isContextMetadata(value, contextId));
 }
 
 async function loadSnapshot(projectRoot: string, contextId: string, snapshotId: string): Promise<Snapshot> {
-  const snapshot = await readJson<Snapshot>(snapshotPath(projectRoot, contextId, snapshotId));
-  if (snapshot.contextId !== contextId || snapshot.schemaVersion !== 1) {
+  const snapshot = await readJson<Snapshot>(snapshotPath(projectRoot, contextId, snapshotId), isSnapshot);
+  if (snapshot.contextId !== contextId || snapshot.snapshotId !== snapshotId) {
     throw new Error(`invalid snapshot ${snapshotId}`);
   }
   return snapshot;
@@ -124,12 +168,12 @@ async function rebuildSnapshot(projectRoot: string, contextId: string, snapshotI
   const snapshot = await loadSnapshot(projectRoot, contextId, snapshotId);
   let content: StructuredContext;
   if (snapshot.mode === 'baseline') {
-    if (!snapshot.content || snapshot.parentSnapshotId !== null || snapshot.baseSnapshotId !== snapshot.snapshotId) {
+    if (!snapshot.content || !isStructuredContext(snapshot.content) || snapshot.parentSnapshotId !== null || snapshot.baseSnapshotId !== snapshot.snapshotId) {
       throw new Error(`invalid baseline snapshot ${snapshotId}`);
     }
     content = snapshot.content;
   } else {
-    if (!snapshot.parentSnapshotId || !snapshot.patch) throw new Error(`incomplete patch snapshot ${snapshotId}`);
+    if (!snapshot.parentSnapshotId || !snapshot.patch || !isRecord(snapshot.patch)) throw new Error(`incomplete patch snapshot ${snapshotId}`);
     const parentSnapshot = await loadSnapshot(projectRoot, contextId, snapshot.parentSnapshotId);
     if (parentSnapshot.baseSnapshotId !== snapshot.baseSnapshotId) throw new Error(`base_snapshot_mismatch for ${snapshotId}`);
     content = applyPatch(await rebuildSnapshot(projectRoot, contextId, snapshot.parentSnapshotId, seen), snapshot.patch);
