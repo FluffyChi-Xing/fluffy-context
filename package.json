@@ -1,11 +1,13 @@
 {
   "name": "context-runtime",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "bin": {
     "ctx": "dist/src/cli/main.js"
   },
+  "files": [
+    "dist/src"
+  ],
   "engines": {
     "node": ">=20.19.0"
   },
