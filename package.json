@@ -1,7 +1,20 @@
 {
-  "name": "context-runtime",
+  "name": "fluffy-context",
   "version": "0.1.0",
+  "description": "面向 AI 编程会话的本地上下文运行时 CLI",
   "type": "module",
+  "keywords": [
+    "context-runtime",
+    "ai-agent",
+    "coding-agent",
+    "developer-tools",
+    "cli",
+    "context-management",
+    "session-resume",
+    "knowledge-base",
+    "deadend-tracking",
+    "snapshot"
+  ],
   "bin": {
     "ctx": "dist/src/cli/main.js"
   },
