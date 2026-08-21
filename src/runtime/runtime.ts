@@ -35,6 +35,7 @@ export type CheckpointResult =
   | { status: 'rate_limited'; context: ContextMetadata; snapshot: Snapshot; retryAt: string };
 import { loadManifest } from './init.js';
 import { filterPaths } from '../capture/context-filter.js';
+import { absorbNotes } from './notes.js';
 
 const emptyContext = (): StructuredContext => ({
   progressSummary: '',
@@ -81,6 +82,27 @@ function applyPatch(base: StructuredContext, patch: ContextPatch): StructuredCon
   return { ...base, ...patch };
 }
 
+function isContextPatch(value: unknown): value is ContextPatch {
+  if (!isRecord(value)) return false;
+  const fields: (keyof StructuredContext)[] = ['progressSummary', 'lastError', 'completed', 'pendingTasks', 'decisions', 'risks', 'relatedFiles'];
+  if (Object.keys(value).some((key) => !fields.includes(key as keyof StructuredContext))) return false;
+  return fields.every((field) => {
+    if (!(field in value)) return true;
+    const fieldValue = value[field];
+    if (field === 'lastError') return typeof fieldValue === 'string' || fieldValue === null;
+    if (field === 'progressSummary') return typeof fieldValue === 'string';
+    return isStringArray(fieldValue);
+  });
+}
+
+function normalizeText(value: string): string {
+  return value.trim();
+}
+
+function normalizeList(values: string[]): string[] {
+  return values.map(normalizeText).filter(Boolean);
+}
+
 function diffContext(previous: StructuredContext, current: StructuredContext): ContextPatch {
   const patch: ContextPatch = {};
   if (previous.progressSummary !== current.progressSummary) patch.progressSummary = current.progressSummary;
@@ -94,16 +116,17 @@ function diffContext(previous: StructuredContext, current: StructuredContext): C
 }
 
 async function contextFromInput(projectRoot: string, input: CheckpointInput, previous?: StructuredContext): Promise<StructuredContext> {
-  const relatedFiles = await filterPaths(projectRoot, input.relatedFiles ?? previous?.relatedFiles ?? []);
-  return {
-    progressSummary: input.progressSummary ?? previous?.progressSummary ?? '',
-    lastError: input.lastError === undefined ? previous?.lastError ?? null : input.lastError,
-    completed: input.completed ?? previous?.completed ?? [],
-    pendingTasks: input.pendingTasks ?? previous?.pendingTasks ?? [],
-    decisions: input.decisions ?? previous?.decisions ?? [],
-    risks: input.risks ?? previous?.risks ?? [],
-    relatedFiles,
-  };
+  const progressSummary = input.progressSummary === undefined ? previous?.progressSummary ?? '' : normalizeText(input.progressSummary);
+  const lastError = input.lastError === undefined
+    ? previous?.lastError ?? null
+    : normalizeText(input.lastError ?? '') || null;
+  const completed = input.completed === undefined ? previous?.completed ?? [] : normalizeList(input.completed);
+  const pendingTasks = input.pendingTasks === undefined ? previous?.pendingTasks ?? [] : normalizeList(input.pendingTasks);
+  const decisions = input.decisions === undefined ? previous?.decisions ?? [] : normalizeList(input.decisions);
+  const risks = input.risks === undefined ? previous?.risks ?? [] : normalizeList(input.risks);
+  const relatedFilesInput = input.relatedFiles === undefined ? previous?.relatedFiles ?? [] : normalizeList(input.relatedFiles);
+  const relatedFiles = await filterPaths(projectRoot, relatedFilesInput);
+  return { progressSummary, lastError, completed, pendingTasks, decisions, risks, relatedFiles };
 }
 
 function isStructuredContext(value: unknown): value is StructuredContext {
@@ -162,7 +185,7 @@ async function loadSnapshot(projectRoot: string, contextId: string, snapshotId: 
   return snapshot;
 }
 
-async function rebuildSnapshot(projectRoot: string, contextId: string, snapshotId: string, seen = new Set<string>()): Promise<StructuredContext> {
+export async function rebuildSnapshot(projectRoot: string, contextId: string, snapshotId: string, seen = new Set<string>()): Promise<StructuredContext> {
   if (seen.has(snapshotId)) throw new Error(`snapshot cycle detected at ${snapshotId}`);
   seen.add(snapshotId);
   const snapshot = await loadSnapshot(projectRoot, contextId, snapshotId);
@@ -173,7 +196,7 @@ async function rebuildSnapshot(projectRoot: string, contextId: string, snapshotI
     }
     content = snapshot.content;
   } else {
-    if (!snapshot.parentSnapshotId || !snapshot.patch || !isRecord(snapshot.patch)) throw new Error(`incomplete patch snapshot ${snapshotId}`);
+    if (!snapshot.parentSnapshotId || !snapshot.patch || !isContextPatch(snapshot.patch)) throw new Error(`incomplete patch snapshot ${snapshotId}`);
     const parentSnapshot = await loadSnapshot(projectRoot, contextId, snapshot.parentSnapshotId);
     if (parentSnapshot.baseSnapshotId !== snapshot.baseSnapshotId) throw new Error(`base_snapshot_mismatch for ${snapshotId}`);
     content = applyPatch(await rebuildSnapshot(projectRoot, contextId, snapshot.parentSnapshotId, seen), snapshot.patch);
@@ -184,7 +207,7 @@ async function rebuildSnapshot(projectRoot: string, contextId: string, snapshotI
   return content;
 }
 
-export async function rebuildIndex(projectRoot: string): Promise<IndexFile> {
+export async function rebuildIndex(projectRoot: string, persist = true): Promise<IndexFile> {
   const contexts: IndexFile['contexts'] = [];
   let entries: string[] = [];
   try {
@@ -209,7 +232,7 @@ export async function rebuildIndex(projectRoot: string): Promise<IndexFile> {
     }
   }
   const index = { schemaVersion: 1 as const, rebuiltAt: new Date().toISOString(), contexts };
-  await atomicWriteJson(indexPath(projectRoot), index);
+  if (persist) await atomicWriteJson(indexPath(projectRoot), index);
   return index;
 }
 
@@ -314,6 +337,7 @@ export async function checkpoint(startPath: string | undefined, input: Checkpoin
       currentSnapshotId: snapshotId,
       updatedAt: now,
     });
+    if (input.absorbNotes) await absorbNotes(projectRoot, contextId, snapshotId);
     return { status: 'saved', context: updatedContext, snapshot };
   });
 }

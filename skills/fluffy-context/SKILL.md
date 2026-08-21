@@ -13,6 +13,8 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 先确认当前工作目录是否是目标项目；不确定时显式传入 `--path <project-path>`。
 - 开始使用前运行 `ctx init`，不要手工创建 `.context` 文件。
 - 下班交接或完成一个阶段时运行 `ctx checkpoint`，不要为了每条消息频繁保存。
+- 开发过程中遇到问题、找到解决措施、做出临时决策或发现重要观察时，Agent 应优先使用低成本的 `ctx note add`，不要为了单条记录创建 Snapshot。
+- 人类需要了解 Agent 发生了什么时使用 `ctx activity`；它是只读时间线，不要求人类参与 Agent 的高频记录操作。
 - 新会话优先运行 `ctx resume --max-chars <预算>`，先看摘要，再按需读取 `details`。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。
@@ -85,6 +87,38 @@ ctx resume --path path/to/project --max-chars 2000
 - 可以保存：`status: "saved"`。
 
 遇到 `rate_limited` 时不要循环重试；完成更多阶段性工作后，在 `retryAt` 之后再保存。
+
+## Agent 短期记录与 Human 可观测性
+
+`checkpoint` 适合阶段性总结；Agent 在任务进行中遇到突发问题、排查出解决措施、做出决策或发现重要事实时，应使用 `ctx note add` 快速追加记录：
+
+```bash
+ctx note add "第三方人脸识别测试凭据缺失" \
+  --kind problem \
+  --context <context-id>
+ctx note add "保留原始请求体后验签恢复" \
+  --kind decision \
+  --status resolved \
+  --context <context-id>
+ctx note list --context <context-id> --open
+```
+
+Note 不会创建 Snapshot，原始记录会保留。阶段性总结时可以显式吸收当前 Context 的 Note：
+
+```bash
+ctx checkpoint --context <context-id> --progress "完成阶段排查" --absorb-notes
+```
+
+只有真正保存了新 Snapshot 时 Note 才会被标记为已吸收；`no_change` 和 `rate_limited` 不会改变 Note。
+
+人类查看 Agent 开发过程中发生了什么时使用只读 Activity 时间线：
+
+```bash
+ctx activity --context <context-id> --open --limit 20
+ctx activity --since 2026-08-21T00:00:00.000Z
+```
+
+`ctx activity` 返回 Note 和已保存 Snapshot 的有限时间线，不会把完整日志或所有历史内容注入上下文。
 
 ## Knowledge 与 Deadend
 

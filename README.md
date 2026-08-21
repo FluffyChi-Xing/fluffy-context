@@ -48,7 +48,8 @@ ctx init
 ├── contexts/
 ├── locks/
 ├── knowledge.json    # 首次使用 learn 后创建
-└── deadends.json     # 首次使用 deadend 后创建
+├── deadends.json     # 首次使用 deadend 后创建
+└── notes.json        # 首次使用 note add 后创建
 .contextignored
 ```
 
@@ -79,6 +80,18 @@ ctx resume --max-chars 2000
 
 ## 常用命令
 
+所有一级命令都支持独立帮助，帮助输出为面向终端和 Agent 的纯文本，不会读取或修改项目状态：
+
+```bash
+ctx init --help
+ctx checkpoint --help
+ctx resume --help
+ctx knowledge verify --help
+ctx deadend verify --help
+```
+
+业务命令仍然默认输出 JSON；未知选项、缺少选项值和无效位置参数会以非零退出码报告。
+
 ### `ctx init`
 
 初始化项目的 Context Runtime 存储布局。重复执行是幂等的，不会覆盖已有 Context 或项目忽略规则。
@@ -106,7 +119,9 @@ ctx checkpoint \
   --files "src/payment/webhook.ts"
 ```
 
-列表参数使用逗号分隔。`--context` 省略时会创建新的 Context。默认情况下，实际保存之间至少间隔 10 秒；短时间内有变化的保存会返回 `rate_limited`，没有变化则返回 `no_change`。
+列表参数使用逗号分隔。`--context` 省略时会创建新的 Context。默认情况下，实际保存之间至少间隔 10 秒；短时间内有变化的保存会返回 `rate_limited`，没有变化则返回 `no_change`。使用 `--absorb-notes` 时，只有真正保存了新 Snapshot 才会将当前 Context 下尚未吸收的 Note 标记为已吸收；`no_change` 和 `rate_limited` 不会改变 Note。
+
+Checkpoint 会在写入前规范化新值：文本首尾空白会被移除，空白 `lastError` 会变成 `null`，列表中的空项会被移除。未提供字段会沿用已有值；显式传入空字符串或空列表会清除对应值。历史 Snapshot 不会被自动改写；`ctx doctor` 只负责报告历史数据损坏。
 
 ### `ctx resume`
 
@@ -155,6 +170,30 @@ ctx knowledge verify <knowledge-id>
 ```
 
 不提供 `--context` 时，知识仍可以记录为项目级候选知识；如果提供来源，则对应 Context 和 Snapshot 必须存在。
+
+### `ctx note`
+
+`ctx note` 是 Agent 在开发过程中记录短期问题、观察、行动和决策的低成本入口。它不会创建 Context Snapshot，记录会以追加方式保留，后续可由 checkpoint 显式吸收。
+
+```bash
+ctx note add "第三方人脸识别测试凭据缺失" \
+  --kind problem \
+  --context <context-id>
+ctx note add "保留原始请求体后验签恢复" \
+  --kind decision \
+  --status resolved \
+  --context <context-id>
+ctx note list --context <context-id> --open
+```
+
+### `ctx activity`
+
+`ctx activity` 面向人类查看 Agent 的开发活动，返回 Note 和已保存 Snapshot 的时间线。它是只读查询，不会创建额外事件日志。
+
+```bash
+ctx activity --context <context-id> --since 2026-08-21T00:00:00.000Z
+ctx activity --open --limit 20
+```
 
 ### `ctx deadend`
 

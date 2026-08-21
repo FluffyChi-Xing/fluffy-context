@@ -1,9 +1,11 @@
 import { access, readdir } from 'node:fs/promises';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { readJson } from '../storage/json-store.js';
-import { contextRoot, contextMetadataPath, contextsRoot, indexPath, manifestPath, snapshotPath } from '../storage/layout.js';
-import { rebuildIndex } from './runtime.js';
-import type { ContextMetadata, IndexFile, Manifest } from './types.js';
+import { contextRoot, contextMetadataPath, contextsRoot, indexPath, manifestPath, notesPath, snapshotPath } from '../storage/layout.js';
+import { rebuildIndex, rebuildSnapshot } from './runtime.js';
+import { isValidNote } from './notes.js';
+import { filterPaths } from '../capture/context-filter.js';
+import type { ContextMetadata, IndexFile, Manifest, NoteFile } from './types.js';
 
 export async function status(startPath?: string): Promise<Record<string, unknown>> {
   const projectRoot = await resolveProjectRoot(startPath);
@@ -51,13 +53,35 @@ export async function doctor(startPath?: string): Promise<{ healthy: boolean; pr
     const entries = await readdir(contextsRoot(projectRoot));
     for (const contextId of entries) {
       const context = await readJson<ContextMetadata>(contextMetadataPath(projectRoot, contextId));
-      if (context.id !== contextId || context.schemaVersion !== 1) throw new Error(`invalid context ${contextId}`);
-      if (context.currentSnapshotId) await access(snapshotPath(projectRoot, contextId, context.currentSnapshotId));
+      if (context.id !== contextId || context.schemaVersion !== 1 || typeof context.title !== 'string' || typeof context.projectRoot !== 'string' || typeof context.updatedAt !== 'string') {
+        throw new Error(`invalid context ${contextId}`);
+      }
+      if (context.currentSnapshotId) {
+        await access(snapshotPath(projectRoot, contextId, context.currentSnapshotId));
+        await rebuildSnapshot(projectRoot, contextId, context.currentSnapshotId);
+      }
+    }
+  });
+  await check('notes', async () => {
+    try {
+      const notes = await readJson<NoteFile>(notesPath(projectRoot));
+      if (notes.schemaVersion !== 1 || !Array.isArray(notes.items) || notes.items.some((note) => !isValidNote(note))) throw new Error('invalid notes');
+      const ids = new Set(notes.items.map((note) => note.noteId));
+      if (ids.size !== notes.items.length) throw new Error('duplicate note id');
+      const contextIds = new Set((await readdir(contextsRoot(projectRoot))).filter((entry) => entry.startsWith('ctx-')));
+      for (const note of notes.items) {
+        if (note.contextId && !contextIds.has(note.contextId)) throw new Error(`note ${note.noteId} references missing context`);
+        if (note.relatedFiles.length !== (await filterPaths(projectRoot, note.relatedFiles)).length) throw new Error(`note ${note.noteId} contains filtered paths`);
+        if (note.snapshotId && note.contextId) await access(snapshotPath(projectRoot, note.contextId, note.snapshotId));
+      }
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
+      throw error;
     }
   });
   await check('index rebuild', async () => {
     const stored = await readJson<IndexFile>(indexPath(projectRoot));
-    const rebuilt = await rebuildIndex(projectRoot);
+    const rebuilt = await rebuildIndex(projectRoot, false);
     const rebuiltIds = new Set(rebuilt.contexts.map((entry) => entry.contextId));
     const storedIds = new Set(stored.contexts.map((entry) => entry.contextId));
     if (rebuiltIds.size !== rebuilt.contexts.length || storedIds.size !== stored.contexts.length) throw new Error('duplicate index context id');

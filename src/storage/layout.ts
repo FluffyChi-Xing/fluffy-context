@@ -47,3 +47,7 @@ export function knowledgePath(projectRoot: string): string {
 export function deadendsPath(projectRoot: string): string {
   return path.join(contextRoot(projectRoot), 'deadends.json');
 }
+
+export function notesPath(projectRoot: string): string {
+  return path.join(contextRoot(projectRoot), 'notes.json');
+}

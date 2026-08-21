@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { checkpoint, resume } from '../src/runtime/runtime.js';
+import { addNote, listActivity, listNotes } from '../src/runtime/notes.js';
 import { doctor, status } from '../src/runtime/diagnostics.js';
 import { learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../src/runtime/knowledge.js';
 
@@ -139,6 +140,112 @@ test('doctor reports malformed context metadata', async () => {
     assert.equal(result.healthy, false);
     assert.ok(result.checks.some((check) => check.startsWith('index:')));
     assert.ok(result.checks.some((check) => check.startsWith('index rebuild:')) || result.checks.some((check) => check.startsWith('contexts:')));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('checkpoint normalizes blank values and explicit empty lists', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const baseline = await checkpoint(root, {
+      title: '  Example  ',
+      progressSummary: '  Started  ',
+      lastError: '  failure  ',
+      completed: [' done ', ' ', 'next'],
+      pendingTasks: [' pending '],
+    });
+    assert.equal(baseline.snapshot.content?.progressSummary, 'Started');
+    assert.equal(baseline.snapshot.content?.lastError, 'failure');
+    assert.deepEqual(baseline.snapshot.content?.completed, ['done', 'next']);
+
+    const cleared = await checkpoint(root, {
+      contextId: baseline.context.id,
+      progressSummary: '   ',
+      lastError: '   ',
+      completed: [],
+      pendingTasks: [],
+    }, { minSaveIntervalMs: 0 });
+    assert.equal(cleared.status, 'saved');
+    const resumed = await resume(root, baseline.context.id);
+    assert.equal(resumed.details.progressSummary, '');
+    assert.equal(resumed.details.lastError, null);
+    assert.deepEqual(resumed.details.completed, []);
+    assert.deepEqual(resumed.details.pendingTasks, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('formatting-only checkpoint is a no-op', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const baseline = await checkpoint(root, { progressSummary: 'Started', completed: ['done'] });
+    const result = await checkpoint(root, { contextId: baseline.context.id, progressSummary: '  Started  ', completed: [' done '] }, { minSaveIntervalMs: 0 });
+    assert.equal(result.status, 'no_change');
+    assert.equal((await readdir(path.join(root, '.context', 'contexts', baseline.context.id, 'snaps'))).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('doctor validates snapshot chain without rewriting files', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { progressSummary: 'Valid' });
+    const snapshotPath = path.join(root, '.context', 'contexts', saved.context.id, 'snaps', `${saved.snapshot.snapshotId}.json`);
+    const before = await readFile(snapshotPath, 'utf8');
+    const snapshot = JSON.parse(before) as { contentHash: string };
+    snapshot.contentHash = 'corrupt';
+    await writeFile(snapshotPath, JSON.stringify(snapshot), 'utf8');
+    const result = await doctor(root);
+    assert.equal(result.healthy, false);
+    assert.ok(result.checks.some((check) => check.startsWith('contexts:')));
+    assert.equal(await readFile(snapshotPath, 'utf8'), JSON.stringify(snapshot));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('notes support low-friction recording, filtering and checkpoint absorption', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { title: 'Note flow' });
+    const first = await addNote(root, '  Third-party credential is missing  ', { contextId: saved.context.id, kind: 'problem' });
+    await addNote(root, 'Keep the raw request body for signature validation', { contextId: saved.context.id, kind: 'decision', status: 'resolved' });
+    assert.equal((await listNotes(root, { contextId: saved.context.id })).length, 2);
+    assert.equal((await listNotes(root, { contextId: saved.context.id, openOnly: true })).length, 1);
+    assert.equal((await listNotes(root, { contextId: saved.context.id, maxChars: 8 }))[0].message, 'Keep th…');
+
+    const beforeAbsorb = await listActivity(root, { contextId: saved.context.id });
+    assert.ok(beforeAbsorb.items.some((item) => item.type === 'note' && item.noteId === first.noteId));
+    const checkpointed = await checkpoint(root, { contextId: saved.context.id, progressSummary: 'Absorb notes', absorbNotes: true }, { minSaveIntervalMs: 0 });
+    assert.equal(checkpointed.status, 'saved');
+    const notes = await listNotes(root, { contextId: saved.context.id });
+    assert.ok(notes.every((note) => note.absorbedBySnapshotId === checkpointed.snapshot.snapshotId));
+    assert.equal((await listNotes(root, { contextId: saved.context.id, openOnly: true })).length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('no-change and rate-limited checkpoints do not absorb notes', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { progressSummary: 'same' });
+    const note = await addNote(root, 'Do not absorb yet', { contextId: saved.context.id });
+    const noChange = await checkpoint(root, { contextId: saved.context.id, progressSummary: 'same', absorbNotes: true });
+    assert.equal(noChange.status, 'no_change');
+    assert.equal((await listNotes(root, { contextId: saved.context.id }))[0].noteId, note.noteId);
+    const rateLimitedNote = await addNote(root, 'Still waiting', { contextId: saved.context.id });
+    const rateLimited = await checkpoint(root, { contextId: saved.context.id, progressSummary: 'changed', absorbNotes: true });
+    assert.equal(rateLimited.status, 'rate_limited');
+    assert.equal((await listNotes(root, { contextId: saved.context.id }))[0].noteId, rateLimitedNote.noteId);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

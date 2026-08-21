@@ -78,6 +78,7 @@ export interface IndexFile {
 
 export interface CheckpointInput {
   contextId?: string;
+  absorbNotes?: boolean;
   title?: string;
   progressSummary?: string;
   lastError?: string | null;
@@ -86,6 +87,69 @@ export interface CheckpointInput {
   decisions?: string[];
   risks?: string[];
   relatedFiles?: string[];
+}
+
+export type NoteKind = 'problem' | 'action' | 'observation' | 'decision';
+export type NoteStatus = 'open' | 'resolved';
+export type NoteActor = 'agent' | 'human';
+
+export interface Note {
+  noteId: string;
+  schemaVersion: 1;
+  kind: NoteKind;
+  message: string;
+  actor: NoteActor;
+  contextId: string | null;
+  snapshotId: string | null;
+  relatedFiles: string[];
+  status: NoteStatus;
+  absorbedBySnapshotId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NoteInput {
+  kind?: NoteKind;
+  actor?: NoteActor;
+  contextId?: string;
+  snapshotId?: string;
+  relatedFiles?: string[];
+  status?: NoteStatus;
+}
+
+export interface NoteFile {
+  schemaVersion: 1;
+  items: Note[];
+}
+
+export interface NoteQuery {
+  contextId?: string;
+  openOnly?: boolean;
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface ActivityItem {
+  type: 'note' | 'checkpoint';
+  occurredAt: string;
+  contextId: string;
+  snapshotId?: string;
+  noteId?: string;
+  kind?: NoteKind;
+  message?: string;
+  actor?: NoteActor;
+  status?: NoteStatus;
+  absorbedBySnapshotId?: string | null;
+  title?: string;
+}
+
+export interface ActivityQuery extends NoteQuery {
+  since?: string;
+}
+
+export interface ActivityResult {
+  projectRoot: string;
+  items: ActivityItem[];
 }
 
 export type KnowledgeStatus = 'candidate' | 'verified' | 'deprecated' | 'rejected';
