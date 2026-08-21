@@ -170,10 +170,41 @@ export interface Knowledge {
 }
 
 export interface KnowledgeInput {
+  kind?: string;
   scope?: string;
   sourceContextId?: string;
   sourceSnapshotId?: string;
   evidence?: string[];
+}
+
+export interface KnowledgeDiscoverOptions {
+  scope?: string;
+  statuses?: KnowledgeStatus[];
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface KnowledgeDiscoveryHit {
+  knowledge: Knowledge;
+  score: number;
+  matchedTerms: string[];
+  matchedFields: string[];
+  why: string[];
+}
+
+export interface KnowledgeConflictGroup {
+  scope: string;
+  knowledgeIds: string[];
+  statements: string[];
+}
+
+export interface KnowledgeDiscoveryResult {
+  query: string;
+  total: number;
+  truncated: boolean;
+  hits: KnowledgeDiscoveryHit[];
+  duplicateIds: string[][];
+  possibleConflicts: KnowledgeConflictGroup[];
 }
 
 export interface DeadendInput {

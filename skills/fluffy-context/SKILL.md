@@ -134,13 +134,17 @@ ctx learn "订单取消后不能再次进入支付中状态" \
   --evidence "src/order/state-machine.ts,接口约束"
 ```
 
-查询和确认：
+查询、发现和确认：
 
 ```bash
 ctx knowledge
 ctx knowledge --all
+ctx knowledge discover "投保人认证"
+ctx knowledge discover "identity verification" --scope project --limit 10 --max-chars 4000
 ctx knowledge verify <knowledge-id>
 ```
+
+`discover` 默认只匹配已验证 Knowledge，并返回命中的字段、规则原因、来源 Context/Snapshot 和 supporting evidence。候选项不会参与普通发现；审查候选或其它状态时使用 `--all` 或显式 `--status candidate,verified`。匹配采用确定性的规范化文本和少量业务别名规则，不依赖模型或向量数据库。
 
 ### 记录已验证死路
 

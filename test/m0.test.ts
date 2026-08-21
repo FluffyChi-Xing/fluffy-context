@@ -7,7 +7,7 @@ import { initProject } from '../src/runtime/init.js';
 import { checkpoint, resume } from '../src/runtime/runtime.js';
 import { addNote, listActivity, listNotes } from '../src/runtime/notes.js';
 import { doctor, status } from '../src/runtime/diagnostics.js';
-import { learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../src/runtime/knowledge.js';
+import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../src/runtime/knowledge.js';
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-runtime-'));
@@ -115,6 +115,78 @@ test('knowledge and deadends stay candidate until verified', async () => {
     assert.deepEqual(await listDeadends(root), []);
     await verifyDeadend(root, deadend.deadendId);
     assert.equal((await listDeadends(root)).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('knowledge input is normalized and discovery defaults to verified items', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const candidate = await learnKnowledge(root, '  Applicant authentication uses SMS verification  ', {
+      kind: '  workflow  ',
+      scope: '  project  ',
+      evidence: [' src/auth.ts ', 'src/auth.ts', ' '],
+    });
+    assert.equal(candidate.kind, 'workflow');
+    assert.equal(candidate.scope, 'project');
+    assert.deepEqual(candidate.supportingEvidence, ['src/auth.ts']);
+    assert.deepEqual((await discoverKnowledge(root, 'applicant authentication')).hits, []);
+
+    const verified = await learnKnowledge(root, 'Identity verification uses SMS verification and document OCR', {
+      kind: 'workflow',
+      scope: 'project',
+      evidence: ['src/identity.ts'],
+    });
+    await verifyKnowledge(root, verified.knowledgeId);
+    const result = await discoverKnowledge(root, '投保人认证', { maxChars: 20 });
+    assert.equal(result.total, 1);
+    assert.equal(result.hits[0].knowledge.knowledgeId, verified.knowledgeId);
+    assert.ok(result.hits[0].matchedTerms.includes('identity verification'));
+    assert.ok(result.hits[0].matchedFields.includes('statement'));
+    assert.equal(result.hits[0].knowledge.statement, 'Identity verificati…');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('knowledge discovery filters, orders and diagnoses duplicates and conflicts without writing', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const first = await learnKnowledge(root, 'Use the existing applicant authentication flow', { scope: 'web', kind: 'workflow' });
+    const duplicate = await learnKnowledge(root, '  Use the existing applicant authentication flow  ', { scope: ' web ', kind: ' WORKFLOW ' });
+    const conflict = await learnKnowledge(root, 'Build a new applicant authentication flow', { scope: 'web', kind: 'workflow' });
+    await verifyKnowledge(root, first.knowledgeId);
+    await verifyKnowledge(root, duplicate.knowledgeId);
+    await verifyKnowledge(root, conflict.knowledgeId);
+    const before = await readFile(path.join(root, '.context', 'knowledge.json'), 'utf8');
+    const result = await discoverKnowledge(root, 'applicant authentication', { scope: 'web', limit: 2, maxChars: 10 });
+    assert.equal(result.total, 3);
+    assert.equal(result.truncated, true);
+    assert.equal(result.hits.length, 2);
+    assert.deepEqual(result.duplicateIds, [[first.knowledgeId, duplicate.knowledgeId]]);
+    assert.ok(result.possibleConflicts.some((group) => group.knowledgeIds.includes(conflict.knowledgeId)));
+    assert.ok(result.hits.every((hit) => hit.knowledge.statement.length <= 10));
+    assert.equal(await readFile(path.join(root, '.context', 'knowledge.json'), 'utf8'), before);
+    assert.deepEqual((await discoverKnowledge(root, 'applicant authentication', { statuses: ['candidate'] })).hits.map((hit) => hit.knowledge.knowledgeId), []);
+    assert.equal((await discoverKnowledge(root, 'applicant authentication', { statuses: ['candidate', 'verified'] })).total, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('malformed knowledge files are rejected without repair', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const knowledgePath = path.join(root, '.context', 'knowledge.json');
+    await writeFile(knowledgePath, JSON.stringify({ schemaVersion: 1, items: [{ knowledgeId: 'duplicate', kind: 'fact', statement: 'valid', scope: 'project', confidence: 0.5, status: 'candidate', sourceContextIds: [], sourceSnapshotIds: [], supportingEvidence: [], createdAt: 'now', updatedAt: 'now' }, { knowledgeId: 'duplicate', kind: 'fact', statement: 'valid', scope: 'project', confidence: 0.5, status: 'candidate', sourceContextIds: [], sourceSnapshotIds: [], supportingEvidence: [], createdAt: 'now', updatedAt: 'now' }] }), 'utf8');
+    const before = await readFile(knowledgePath, 'utf8');
+    await assert.rejects(() => listKnowledge(root, true));
+    await assert.rejects(() => discoverKnowledge(root, 'valid'));
+    assert.equal(await readFile(knowledgePath, 'utf8'), before);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

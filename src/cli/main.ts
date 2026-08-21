@@ -2,7 +2,7 @@
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { doctor, status } from '../runtime/diagnostics.js';
 import { initProject } from '../runtime/init.js';
-import { learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../runtime/knowledge.js';
+import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../runtime/knowledge.js';
 import { addNote, listActivity, listNotes } from '../runtime/notes.js';
 import type { ActivityQuery, CheckpointInput, DeadendInput, KnowledgeInput, NoteInput, NoteKind, NoteStatus, NoteActor } from '../runtime/types.js';
 
@@ -102,14 +102,16 @@ Record a candidate project knowledge item.
 
 Options:
   --path <path>          Project path
+  --kind <kind>          Knowledge kind
   --scope <scope>        Knowledge scope
   --context <id>         Source context ID
   --snapshot <id>        Source snapshot ID
   --evidence <items>     Comma-separated evidence references`,
   knowledge: `usage: ctx knowledge [--all] [--path <path>]
        ctx knowledge verify <knowledge-id> [--path <path>]
+       ctx knowledge discover <query> [options]
 
-List candidate/verified knowledge or verify one item.
+List candidate/verified knowledge, verify one item, or discover matching knowledge.
 
 Options:
   --all                  Include unverified items
@@ -117,6 +119,17 @@ Options:
   'knowledge verify': `usage: ctx knowledge verify <knowledge-id> [--path <path>]
 
 Mark a knowledge item as verified.`,
+  'knowledge discover': `usage: ctx knowledge discover <query> [options]
+
+Find matching project knowledge using deterministic lexical and alias rules.
+
+Options:
+  --path <path>          Project path
+  --scope <scope>        Exact knowledge scope
+  --status <statuses>    Comma-separated candidate/verified/deprecated/rejected
+  --all                  Include all knowledge statuses
+  --limit <number>       Maximum matches (default: 10)
+  --max-chars <number>   Maximum text characters per match`,
   deadend: `usage: ctx deadend [attempt] [options]
        ctx deadend verify <deadend-id> [--path <path>]
 
@@ -194,7 +207,7 @@ function printHelp(args: string[]): boolean {
     process.stdout.write(`${usage()}\n`);
     return true;
   }
-  const key = args[1] === 'verify' || args[1] === 'add' || args[1] === 'list' ? `${command} ${args[1]}` : command;
+  const key = args[1] === 'verify' || args[1] === 'add' || args[1] === 'list' || args[1] === 'discover' ? `${command} ${args[1]}` : command;
   const help = HELP[key];
   if (!help) return false;
   if (args.includes('--help')) {
@@ -263,11 +276,12 @@ async function run(args: string[]): Promise<void> {
       print(await doctor(target));
       return;
     case 'learn': {
-      const valueOptions = ['--path', '--scope', '--context', '--snapshot', '--evidence'];
+      const valueOptions = ['--path', '--kind', '--scope', '--context', '--snapshot', '--evidence'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const statement = positionals(args.slice(1), valueOptions);
       if (statement.length === 0) throw new Error(HELP.learn);
       const input: KnowledgeInput = {
+        kind: option(args, '--kind'),
         scope: option(args, '--scope'),
         sourceContextId: option(args, '--context'),
         sourceSnapshotId: option(args, '--snapshot'),
@@ -316,7 +330,20 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'knowledge': {
-      if (args[1] === 'verify') {
+      if (args[1] === 'discover') {
+        const valueOptions = ['--path', '--scope', '--status', '--limit', '--max-chars'];
+        validateOptions(args.slice(2), [...valueOptions, '--all'], valueOptions);
+        const query = positionals(args.slice(2), valueOptions);
+        if (query.length === 0) throw new Error(HELP['knowledge discover']);
+        const statuses = args.includes('--all') ? ['candidate', 'verified', 'deprecated', 'rejected'] : (listOption(args, '--status') ?? ['verified']);
+        if (statuses.some((status) => !['candidate', 'verified', 'deprecated', 'rejected'].includes(status))) throw new Error('--status contains an invalid knowledge status');
+        print(await discoverKnowledge(target, query.join(' '), {
+          scope: option(args, '--scope'),
+          statuses: statuses as import('../runtime/types.js').KnowledgeStatus[],
+          limit: numericOption(args, '--limit', 10),
+          maxChars: numericOption(args, '--max-chars', 4000),
+        }));
+      } else if (args[1] === 'verify') {
         validateOptions(args.slice(2), ['--path'], ['--path']);
         const values = positionals(args.slice(2), ['--path']);
         if (values.length !== 1) throw new Error(HELP['knowledge verify']);

@@ -45,7 +45,47 @@ test('each command has focused help without creating runtime files', async () =>
     const deadendVerify = await runCli(['deadend', 'verify', '--help'], root);
     assert.equal(deadendVerify.code, 0);
     assert.match(deadendVerify.stdout, /deadend verify/);
+    const discover = await runCli(['knowledge', 'discover', '--help'], root);
+    assert.equal(discover.code, 0);
+    assert.match(discover.stdout, /knowledge discover/);
     assert.deepEqual(await readdir(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('knowledge discover CLI returns deterministic JSON and validates filters', async () => {
+  const root = await project();
+  try {
+    const init = await runCli(['init', '--path', root], root);
+    assert.equal(init.code, 0);
+    const candidate = await runCli(['learn', 'Applicant authentication uses SMS verification', '--kind', 'workflow', '--scope', 'project', '--path', root], root);
+    assert.equal(candidate.code, 0);
+    const candidateId = JSON.parse(candidate.stdout).knowledgeId as string;
+    const verify = await runCli(['knowledge', 'verify', candidateId, '--path', root], root);
+    assert.equal(verify.code, 0);
+    const discovered = await runCli(['knowledge', 'discover', '投保人认证', '--path', root, '--scope', 'project', '--limit', '1', '--max-chars', '12'], root);
+    assert.equal(discovered.code, 0);
+    const output = JSON.parse(discovered.stdout);
+    assert.equal(output.total, 1);
+    assert.equal(output.hits[0].knowledge.knowledgeId, candidateId);
+    assert.equal(output.hits[0].knowledge.statement, 'Applicant a…');
+
+    const candidateTwo = await runCli(['learn', 'Applicant authentication remains a candidate', '--path', root], root);
+    assert.equal(candidateTwo.code, 0);
+    const all = await runCli(['knowledge', 'discover', 'applicant authentication', '--all', '--path', root], root);
+    assert.equal(all.code, 0);
+    assert.equal(JSON.parse(all.stdout).total, 2);
+
+    const empty = await runCli(['knowledge', 'discover', '--path', root], root);
+    assert.notEqual(empty.code, 0);
+    assert.match(empty.stderr, /knowledge discover/);
+    const invalidStatus = await runCli(['knowledge', 'discover', 'auth', '--status', 'unknown', '--path', root], root);
+    assert.notEqual(invalidStatus.code, 0);
+    assert.match(invalidStatus.stderr, /invalid knowledge status/);
+    const unknown = await runCli(['knowledge', 'discover', 'auth', '--unknown', '--path', root], root);
+    assert.notEqual(unknown.code, 0);
+    assert.match(unknown.stderr, /unknown option/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

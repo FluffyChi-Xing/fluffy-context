@@ -5,7 +5,7 @@ import { atomicWriteJson } from '../storage/atomic-write.js';
 import { isRecord, readJson } from '../storage/json-store.js';
 import { withLock } from '../storage/lock.js';
 import { contextMetadataPath, deadendsPath, knowledgePath, locksDirectory, snapshotPath } from '../storage/layout.js';
-import type { Deadend, DeadendFile, DeadendInput, Knowledge, KnowledgeFile, KnowledgeInput } from './types.js';
+import type { Deadend, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus } from './types.js';
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -15,8 +15,33 @@ function isNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
+function isKnowledge(value: unknown): value is Knowledge {
+  return isRecord(value)
+    && typeof value.knowledgeId === 'string'
+    && typeof value.kind === 'string' && value.kind.trim().length > 0
+    && typeof value.statement === 'string' && value.statement.trim().length > 0
+    && typeof value.scope === 'string' && value.scope.trim().length > 0
+    && typeof value.confidence === 'number' && value.confidence >= 0 && value.confidence <= 1
+    && ['candidate', 'verified', 'deprecated', 'rejected'].includes(value.status as string)
+    && Array.isArray(value.sourceContextIds) && value.sourceContextIds.every((item) => typeof item === 'string')
+    && Array.isArray(value.sourceSnapshotIds) && value.sourceSnapshotIds.every((item) => typeof item === 'string')
+    && Array.isArray(value.supportingEvidence) && value.supportingEvidence.every((item) => typeof item === 'string')
+    && typeof value.createdAt === 'string'
+    && typeof value.updatedAt === 'string';
+}
+
 function isKnowledgeFile(value: unknown): value is KnowledgeFile {
-  return isRecord(value) && value.schemaVersion === 1 && Array.isArray(value.items);
+  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.items) || !value.items.every(isKnowledge)) return false;
+  const ids = value.items.map((item) => item.knowledgeId);
+  return new Set(ids).size === ids.length;
+}
+
+function cleanList(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function normalized(value: string): string {
+  return value.trim().toLocaleLowerCase();
 }
 
 function isDeadendFile(value: unknown): value is DeadendFile {
@@ -43,20 +68,26 @@ async function loadDeadends(projectRoot: string): Promise<DeadendFile> {
 export async function learnKnowledge(startPath: string | undefined, statement: string, scopeOrInput: string | KnowledgeInput = 'project'): Promise<Knowledge> {
   const projectRoot = await resolveProjectRoot(startPath);
   const input: KnowledgeInput = typeof scopeOrInput === 'string' ? { scope: scopeOrInput } : scopeOrInput;
+  const cleanStatement = statement.trim();
+  const cleanScope = (input.scope ?? 'project').trim();
+  const cleanKind = (input.kind ?? 'fact').trim();
+  if (!cleanStatement) throw new Error('knowledge statement must not be empty');
+  if (!cleanScope) throw new Error('knowledge scope must not be empty');
+  if (!cleanKind) throw new Error('knowledge kind must not be empty');
   await validateSource(projectRoot, input.sourceContextId, input.sourceSnapshotId);
   return withLock(`${locksDirectory(projectRoot)}/knowledge.lock`, async () => {
     const file = await loadKnowledge(projectRoot);
     const now = new Date().toISOString();
     const item: Knowledge = {
       knowledgeId: id('know'),
-      kind: 'fact',
-      statement,
-      scope: input.scope ?? 'project',
+      kind: cleanKind,
+      statement: cleanStatement,
+      scope: cleanScope,
       confidence: 0.5,
       status: 'candidate',
-      sourceContextIds: input.sourceContextId ? [input.sourceContextId] : [],
-      sourceSnapshotIds: input.sourceSnapshotId ? [input.sourceSnapshotId] : [],
-      supportingEvidence: input.evidence ?? [],
+      sourceContextIds: cleanList(input.sourceContextId ? [input.sourceContextId] : []),
+      sourceSnapshotIds: cleanList(input.sourceSnapshotId ? [input.sourceSnapshotId] : []),
+      supportingEvidence: cleanList(input.evidence),
       createdAt: now,
       updatedAt: now,
     };
@@ -69,6 +100,78 @@ export async function listKnowledge(startPath?: string, includeUnverified = fals
   const projectRoot = await resolveProjectRoot(startPath);
   const file = await loadKnowledge(projectRoot);
   return includeUnverified ? file.items : file.items.filter((item) => item.status === 'verified');
+}
+
+const aliasGroups = [
+  ['投保人认证', '投保人身份认证', '身份核验', '实名认证', 'applicant authentication', 'identity verification'],
+  ['短信验证码', '验证码', 'sms verification', 'otp'],
+  ['证件ocr', '证件识别', 'identity ocr', 'document ocr'],
+  ['人脸识别', '人脸认证', 'face recognition', 'facial verification'],
+];
+
+function queryTerms(query: string): string[] {
+  const normalizedQuery = normalized(query);
+  const terms = new Set(normalizedQuery.split(/\s+/).filter(Boolean));
+  for (const group of aliasGroups) {
+    if (group.some((alias) => normalizedQuery.includes(normalized(alias)))) {
+      for (const alias of group) terms.add(normalized(alias));
+    }
+  }
+  return [...terms];
+}
+
+function matchedFields(knowledge: Knowledge, terms: string[]): { fields: string[]; matchedTerms: string[]; score: number } {
+  const values = { statement: normalized(knowledge.statement), kind: normalized(knowledge.kind), scope: normalized(knowledge.scope) };
+  const fields = new Set<string>();
+  const matched = new Set<string>();
+  let score = 0;
+  const normalizedQuery = terms.join(' ');
+  if (values.statement.includes(normalizedQuery)) score += 20;
+  for (const term of terms) {
+    let matchedTerm = false;
+    for (const [field, value] of Object.entries(values)) {
+      if (value.includes(term)) {
+        fields.add(field);
+        matchedTerm = true;
+        score += field === 'statement' ? 5 : field === 'scope' ? 4 : 3;
+      }
+    }
+    if (matchedTerm) matched.add(term);
+  }
+  if (values.scope === normalizedQuery) score += 10;
+  return { fields: [...fields], matchedTerms: [...matched], score };
+}
+
+function limitedKnowledge(knowledge: Knowledge, maxChars: number): Knowledge {
+  const statement = knowledge.statement.length <= maxChars ? knowledge.statement : `${knowledge.statement.slice(0, Math.max(0, maxChars - 1))}…`;
+  return { ...knowledge, statement, supportingEvidence: knowledge.supportingEvidence.map((item) => item.length <= maxChars ? item : `${item.slice(0, Math.max(0, maxChars - 1))}…`) };
+}
+
+export async function discoverKnowledge(startPath: string | undefined, query: string, options: KnowledgeDiscoverOptions = {}): Promise<KnowledgeDiscoveryResult> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  const cleanQuery = query.trim();
+  if (!cleanQuery) throw new Error('knowledge discovery query must not be empty');
+  const file = await loadKnowledge(projectRoot);
+  const statuses = options.statuses ?? ['verified'];
+  const terms = queryTerms(cleanQuery);
+  const matches = file.items
+    .filter((item) => statuses.includes(item.status))
+    .filter((item) => !options.scope || normalized(item.scope) === normalized(options.scope))
+    .map((knowledge) => ({ knowledge, ...matchedFields(knowledge, terms) }))
+    .filter((item) => item.matchedTerms.length > 0)
+    .sort((left, right) => right.score - left.score || Number(right.knowledge.status === 'verified') - Number(left.knowledge.status === 'verified') || right.knowledge.confidence - left.knowledge.confidence || right.knowledge.updatedAt.localeCompare(left.knowledge.updatedAt) || left.knowledge.knowledgeId.localeCompare(right.knowledge.knowledgeId));
+  const duplicateMap = new Map<string, string[]>();
+  for (const item of file.items) {
+    const key = `${normalized(item.kind)}|${normalized(item.scope)}|${normalized(item.statement)}`;
+    duplicateMap.set(key, [...(duplicateMap.get(key) ?? []), item.knowledgeId]);
+  }
+  const duplicateIds = [...duplicateMap.values()].filter((ids) => ids.length > 1);
+  const possibleConflicts = file.items.flatMap((left, index) => file.items.slice(index + 1).filter((right) => normalized(left.scope) === normalized(right.scope) && normalized(left.statement) !== normalized(right.statement) && queryTerms(left.statement).some((term) => normalized(right.statement).includes(term))).map((right) => ({ scope: left.scope, knowledgeIds: [left.knowledgeId, right.knowledgeId], statements: [left.statement, right.statement] })));
+  const limit = options.limit ?? 10;
+  const selected = matches.slice(0, limit);
+  const maxChars = options.maxChars ?? 4000;
+  const hits = selected.map((item) => ({ knowledge: limitedKnowledge(item.knowledge, maxChars), score: item.score, matchedTerms: item.matchedTerms, matchedFields: item.fields, why: item.fields.map((field) => `matched ${field}`) }));
+  return { query: cleanQuery, total: matches.length, truncated: matches.length > selected.length, hits, duplicateIds, possibleConflicts };
 }
 
 export async function verifyKnowledge(startPath: string | undefined, knowledgeId: string): Promise<Knowledge> {
