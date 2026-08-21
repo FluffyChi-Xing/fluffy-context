@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
-import { access } from 'node:fs/promises';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { atomicWriteJson } from '../storage/atomic-write.js';
 import { isRecord, readJson } from '../storage/json-store.js';
 import { withLock } from '../storage/lock.js';
 import { contextMetadataPath, deadendsPath, knowledgePath, locksDirectory, snapshotPath } from '../storage/layout.js';
-import type { Deadend, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus } from './types.js';
+import { rebuildSnapshot } from './runtime.js';
+import type { Deadend, DeadendDiscoverOptions, DeadendDiscoveryResult, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus } from './types.js';
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -44,15 +44,35 @@ function normalized(value: string): string {
   return value.trim().toLocaleLowerCase();
 }
 
+function isDeadend(value: unknown): value is Deadend {
+  return isRecord(value)
+    && typeof value.deadendId === 'string'
+    && typeof value.attempt === 'string'
+    && typeof value.reason === 'string'
+    && Array.isArray(value.observedEvidence) && value.observedEvidence.every((item) => typeof item === 'string')
+    && typeof value.scope === 'string'
+    && ['candidate', 'verified', 'obsolete', 'rejected'].includes(value.status as string)
+    && (typeof value.sourceContextId === 'string' || value.sourceContextId === null)
+    && (typeof value.sourceSnapshotId === 'string' || value.sourceSnapshotId === null)
+    && typeof value.createdAt === 'string'
+    && typeof value.updatedAt === 'string';
+}
+
 function isDeadendFile(value: unknown): value is DeadendFile {
-  return isRecord(value) && value.schemaVersion === 1 && Array.isArray(value.items);
+  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.items) || !value.items.every(isDeadend)) return false;
+  const ids = value.items.map((item) => item.deadendId);
+  return new Set(ids).size === ids.length;
 }
 
 async function validateSource(projectRoot: string, contextId?: string, snapshotId?: string): Promise<void> {
   if (!contextId && snapshotId) throw new Error('source snapshot requires source context');
   if (!contextId) return;
-  await access(contextMetadataPath(projectRoot, contextId));
-  if (snapshotId) await access(snapshotPath(projectRoot, contextId, snapshotId));
+  const context = await readJson<Record<string, unknown>>(contextMetadataPath(projectRoot, contextId), (value): value is Record<string, unknown> => isRecord(value) && value.id === contextId && value.schemaVersion === 1);
+  if (snapshotId) {
+    const snapshot = await readJson<Record<string, unknown>>(snapshotPath(projectRoot, contextId, snapshotId), (value): value is Record<string, unknown> => isRecord(value) && value.snapshotId === snapshotId && value.contextId === contextId && value.schemaVersion === 1);
+    await rebuildSnapshot(projectRoot, contextId, snapshot.snapshotId as string);
+  }
+  if (context.projectRoot !== projectRoot) throw new Error(`source context belongs to another project: ${contextId}`);
 }
 
 async function loadKnowledge(projectRoot: string): Promise<KnowledgeFile> {
@@ -216,6 +236,50 @@ export async function listDeadends(startPath?: string, includeUnverified = false
   const projectRoot = await resolveProjectRoot(startPath);
   const file = await loadDeadends(projectRoot);
   return includeUnverified ? file.items : file.items.filter((item) => item.status === 'verified');
+}
+
+function limitedDeadend(deadend: Deadend, maxChars: number): Deadend {
+  const limit = (value: string): string => value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 1))}…`;
+  return { ...deadend, attempt: limit(deadend.attempt), reason: limit(deadend.reason), observedEvidence: deadend.observedEvidence.map(limit) };
+}
+
+export async function discoverDeadends(startPath: string | undefined, query: string, options: DeadendDiscoverOptions = {}): Promise<DeadendDiscoveryResult> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  const cleanQuery = query.trim();
+  if (!cleanQuery) throw new Error('deadend discovery query must not be empty');
+  const terms = normalized(cleanQuery).split(/\s+/).filter(Boolean);
+  const statuses = options.statuses ?? ['verified'];
+  const file = await loadDeadends(projectRoot);
+  const matches = file.items
+    .filter((item) => statuses.includes(item.status))
+    .filter((item) => !options.scope || normalized(item.scope) === normalized(options.scope))
+    .map((deadend) => {
+      const values = { attempt: normalized(deadend.attempt), reason: normalized(deadend.reason), scope: normalized(deadend.scope) };
+      const fields = new Set<string>();
+      const matchedTerms = new Set<string>();
+      let score = 0;
+      for (const term of terms) {
+        for (const [field, value] of Object.entries(values)) {
+          if (value.includes(term)) {
+            fields.add(field);
+            matchedTerms.add(term);
+            score += field === 'attempt' ? 5 : field === 'reason' ? 4 : 3;
+          }
+        }
+      }
+      return { deadend, score, matchedTerms: [...matchedTerms], matchedFields: [...fields] };
+    })
+    .filter((item) => item.matchedTerms.length > 0)
+    .sort((left, right) => right.score - left.score || right.deadend.updatedAt.localeCompare(left.deadend.updatedAt) || left.deadend.deadendId.localeCompare(right.deadend.deadendId));
+  const limit = options.limit ?? 10;
+  const selected = matches.slice(0, limit);
+  const maxChars = options.maxChars ?? 4000;
+  return {
+    query: cleanQuery,
+    total: matches.length,
+    truncated: matches.length > selected.length,
+    hits: selected.map((item) => ({ ...item, deadend: limitedDeadend(item.deadend, maxChars) })),
+  };
 }
 
 export async function verifyDeadend(startPath: string | undefined, deadendId: string): Promise<Deadend> {

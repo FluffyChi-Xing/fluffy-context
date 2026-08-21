@@ -1,6 +1,6 @@
 # Context Runtime
 
-Context Runtime 是一个面向 AI 编程会话的本地上下文运行时 CLI。它把一次任务的进度、决策、待办、风险、知识和已验证死路保存为可恢复的结构化状态，帮助 Agent 在新会话中快速完成交接，而不是重新阅读大量项目内容。
+Context Runtime 是一个面向 AI 编程会话的本地上下文运行时 CLI。0.2.0 在可靠 Context 闭环之上增加了无模型、确定性的 Agent API 和 Knowledge Discovery，让 Agent 可以先发现已验证的项目共识，再保存和恢复工作状态，而不是每次重新阅读大量项目内容。
 
 它更接近“Context 的 Git”，而不是代码备份工具：Git 仍然负责代码和真实文件变更，Context Runtime 负责 AI 工作状态的版本化保存与恢复。
 
@@ -76,6 +76,14 @@ ctx resume
 
 ```bash
 ctx resume --max-chars 2000
+```
+
+Agent 集成可以直接调用 `dist/src/agent/api.js` 中的 `saveContext`、`loadContext` 和 `searchContext`，不需要读取 `.context` 文件。推荐工作流是：先 `loadContext` 或 `ctx resume`，再用 `ctx knowledge discover` 或 `searchContext` 查找已验证共识，开发过程中记录 Note，阶段完成后 checkpoint，最后用 `learn` 和 `verify` 沉淀经过确认的知识。`loadContext` 默认不返回完整 details；候选 Knowledge、未验证 Deadend、模型推理、向量检索和远端服务不属于 0.2.0 默认能力。
+
+查看版本：
+
+```bash
+ctx --version
 ```
 
 ## 常用命令

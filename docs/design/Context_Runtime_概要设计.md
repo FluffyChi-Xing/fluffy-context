@@ -62,7 +62,7 @@ Git 保存代码和真实变更，IDE 保存工作区，但它们不能表达 AI
 | 阶段 | 核心交付 | 明确不做 |
 | --- | --- | --- |
 | M0：可靠上下文闭环 | 本地初始化、结构化 checkpoint/resume、baseline/patch、Git 锚定、摘要预算、安全过滤和诊断。 | 自动总结、意图识别、复杂知识检索、远端服务。 |
-| MVP：可治理知识闭环 | Knowledge/Deadend 生命周期、来源和证据、作用域匹配、确定性搜索、输入规范化、冲突诊断和复用记录。 | 多人权限、向量检索、自动 Context merge。 |
+| 0.2.0 Consensus MVP：可调用共识闭环 | Knowledge/Deadend 生命周期、来源和证据、作用域匹配、确定性搜索、输入规范化、冲突诊断，以及 Agent 的 save/load/search API。 | Capability/Workflow 图谱、record-use、多人权限、向量检索、自动 Context merge、远端服务。 |
 | Consensus Runtime：共识服务 | Capability/Workflow 等可复用资产、Intent Resolver、发现结果、复用计划、使用反馈和知识演化。 | 核心协议绑定单一模型或单一云平台。 |
 | 后续服务化 | stdio/HTTP/MCP 适配、团队共享、远端同步、组织级治理和可选语义检索。 | 将在线服务作为本地 CLI 的运行前置条件。 |
 
@@ -663,7 +663,7 @@ ctx init → ctx checkpoint → ctx resume
                     └→ ctx deadend → ctx deadend verify
 ```
 
-后续 Consensus Runtime 将在不破坏上述指令的前提下增加需求发现和共识服务指令，例如 `ctx consensus discover`、`ctx consensus search`、`ctx consensus propose` 和 `ctx consensus record-use`。这些指令属于后续能力，不应在当前版本中伪装成已经实现的功能。
+0.2.0 提供确定性的 Agent API（`saveContext`、`loadContext`、`searchContext`）和 `ctx knowledge discover`，让 Agent 可以在开发前查找已验证共识。Capability/Workflow 独立资产、`ctx consensus discover`、`ctx consensus propose`、`ctx consensus record-use`、语义检索和服务化属于后续版本，不应在当前版本中伪装成已经实现的功能。
 
 ### 11.2 Agent API 与管理能力
 
@@ -773,9 +773,22 @@ M0 不包含：
 - 完整 `archive`、`restore`、`gc`、`pin`、`history` 管理。
 - 高级 Token 预算、Patch 压缩、跨 Context 依赖和 IDE 自动触发。
 
-### 14.2 完整 MVP：可用且可治理的第一版
+### 14.2 0.2.0 Consensus MVP：可调用且可治理的第一版
 
-在 M0 之上，完整 MVP 纳入：
+在 M0 之上，0.2.0 纳入：
+
+- `src/agent` 中稳定的 `saveContext`、`loadContext`、`searchContext` API。
+- 默认只加载限长 resume summary；显式 `includeDetails` 才返回完整结构化详情。
+- 已验证 Knowledge 的确定性发现、作用域过滤、来源和证据保留。
+- 已验证 Deadend 的默认隔离和查询句柄。
+- Agent 调用不直接依赖 `.context` 文件布局，写入继续使用原子写入、锁、规范化和 Snapshot 校验。
+- 本地、无模型、无向量数据库、无远端服务的发布包和 CLI 版本契约。
+
+Capability/Workflow 图谱、`record-use`、自动抽取、远端同步和语义检索不属于 0.2.0。
+
+### 14.4 后续完整 MVP：更强治理与规模能力
+
+在 0.2.0 之上，后续完整 MVP 纳入：
 
 - `checkpoint --quick` 与完整自动总结、Handoff Summary。
 - Knowledge/Deadend 独立 Schema、来源、Scope、证据和 Candidate/Verified 治理。
@@ -788,7 +801,7 @@ M0 不包含：
 
 完整 MVP 仍不包含远端同步、多人权限、向量检索、自动 Context merge 和完整聊天记录保存。
 
-### 14.3 交付判定原则
+### 14.5 交付判定原则
 
 - 没有它就无法完成“保存—关闭—重新打开—恢复”的能力，属于 M0。
 - 主要提升治理、质量、成本或规模，而不影响最小闭环成立的能力，属于完整 MVP 或后续增强。
@@ -796,9 +809,9 @@ M0 不包含：
 
 ------------------------------------------------------------------------
 
-## 15. MVP 范围与待决事项
+## 15. 后续 MVP 范围与待决事项
 
-### 15.1 MVP 包含
+### 15.1 后续 MVP 包含
 
 - 单项目、本地 `.context/` 初始化和 Manifest。
 - 项目根目录 `.contextignored` 及内置安全排除规则。
@@ -813,7 +826,7 @@ M0 不包含：
 - 下班自动总结、Handoff Summary、`checkpoint --quick` 和失败回滚边界。
 - `init`、`checkpoint`、`resume`、`list`、`status`、`explain`、`archive`、`restore`、`doctor`、`gc`、`history`、`pin` 的 Runtime 契约。
 
-### 15.2 MVP 不包含
+### 15.2 后续 MVP 不包含
 
 - 跨设备同步、远端存储与团队共享。
 - 多用户访问控制、加密密钥托管与审计服务。
@@ -821,7 +834,7 @@ M0 不包含：
 - 向量检索、自动冲突合并与完整聊天记录保存。
 - 用户关闭内置安全保护的能力。
 
-### 15.3 待决事项
+### 15.3 后续待决事项
 
 - `.context/` 是否默认纳入 Git，以及团队共享 Context 的协作模型。
 - 非 Git 项目的 Project Root 解析与 Resume 策略。

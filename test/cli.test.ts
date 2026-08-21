@@ -23,6 +23,18 @@ function runCli(args: string[], cwd: string): Promise<{ code: number; stdout: st
   });
 }
 
+test('cli reports the package release version', async () => {
+  const root = await project();
+  try {
+    const result = await runCli(['--version'], root);
+    assert.equal(result.code, 0);
+    assert.equal(JSON.parse(result.stdout), '0.2.0');
+    assert.equal(result.stderr, '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {

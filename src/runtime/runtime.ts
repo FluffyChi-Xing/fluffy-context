@@ -16,6 +16,7 @@ import {
 } from '../storage/layout.js';
 import type {
   CheckpointInput,
+  CheckpointResult,
   ContextMetadata,
   ContextPatch,
   GitState,
@@ -29,10 +30,6 @@ export interface CheckpointOptions {
   minSaveIntervalMs?: number;
 }
 
-export type CheckpointResult =
-  | { status: 'saved'; context: ContextMetadata; snapshot: Snapshot }
-  | { status: 'no_change'; context: ContextMetadata; snapshot: Snapshot }
-  | { status: 'rate_limited'; context: ContextMetadata; snapshot: Snapshot; retryAt: string };
 import { loadManifest } from './init.js';
 import { filterPaths } from '../capture/context-filter.js';
 import { absorbNotes } from './notes.js';

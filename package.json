@@ -1,6 +1,6 @@
 {
   "name": "fluffy-context",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "面向 AI 编程会话的本地上下文运行时 CLI",
   "type": "module",
   "keywords": [
@@ -17,6 +17,11 @@
   ],
   "bin": {
     "ctx": "dist/src/cli/main.js"
+  },
+  "exports": {
+    ".": "./dist/src/agent/index.js",
+    "./agent": "./dist/src/agent/index.js",
+    "./version": "./dist/src/version.js"
   },
   "files": [
     "dist/src"

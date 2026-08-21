@@ -16,6 +16,8 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 开发过程中遇到问题、找到解决措施、做出临时决策或发现重要观察时，Agent 应优先使用低成本的 `ctx note add`，不要为了单条记录创建 Snapshot。
 - 人类需要了解 Agent 发生了什么时使用 `ctx activity`；它是只读时间线，不要求人类参与 Agent 的高频记录操作。
 - 新会话优先运行 `ctx resume --max-chars <预算>`，先看摘要，再按需读取 `details`。
+- Agent 集成可从 `dist/src/agent/index.js` 调用 `saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context`。
+- 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。
 
@@ -24,9 +26,13 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 ```text
 ctx init
   ↓
-ctx checkpoint --title ... --progress ...
+ctx resume --max-chars 4000 / loadContext(...)
   ↓
-ctx resume --max-chars 4000
+ctx knowledge discover "需求" / searchContext(...)
+  ↓
+ctx note add "观察或问题"
+  ↓
+ctx checkpoint --title ... --progress ...
   ↓
 ctx learn ... / ctx deadend ...
   ↓

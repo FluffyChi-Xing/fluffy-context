@@ -5,6 +5,7 @@ import { initProject } from '../runtime/init.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../runtime/knowledge.js';
 import { addNote, listActivity, listNotes } from '../runtime/notes.js';
 import type { ActivityQuery, CheckpointInput, DeadendInput, KnowledgeInput, NoteInput, NoteKind, NoteStatus, NoteActor } from '../runtime/types.js';
+import { VERSION } from '../version.js';
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -223,7 +224,7 @@ function validatePositionals(values: string[], max: number, usageText: string): 
 
 async function run(args: string[]): Promise<void> {
   if (args.includes('--version')) {
-    print('0.1.0');
+    print(VERSION);
     return;
   }
   if (args.length === 0 || args[0] === '--help') {

@@ -207,6 +207,27 @@ export interface KnowledgeDiscoveryResult {
   possibleConflicts: KnowledgeConflictGroup[];
 }
 
+export interface DeadendDiscoverOptions {
+  scope?: string;
+  statuses?: DeadendStatus[];
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface DeadendDiscoveryHit {
+  deadend: Deadend;
+  score: number;
+  matchedTerms: string[];
+  matchedFields: string[];
+}
+
+export interface DeadendDiscoveryResult {
+  query: string;
+  total: number;
+  truncated: boolean;
+  hits: DeadendDiscoveryHit[];
+}
+
 export interface DeadendInput {
   scope?: string;
   sourceContextId?: string;
@@ -247,3 +268,57 @@ export interface ResumeResult {
   resumeSummary: ResumeSummary;
   details: StructuredContext;
 }
+
+export interface AgentLoadOptions {
+  contextId?: string;
+  maxChars?: number;
+  includeDetails?: boolean;
+  query?: string;
+  scope?: string;
+}
+
+export interface AgentLoadResult {
+  projectRoot: string;
+  context: ContextMetadata;
+  snapshot: Snapshot;
+  resumeSummary: ResumeSummary;
+  details?: StructuredContext;
+  knowledge: KnowledgeDiscoveryResult | null;
+  verifiedDeadendIds: string[];
+}
+
+export interface AgentSaveResult {
+  projectRoot: string;
+  result: CheckpointResult;
+}
+
+export interface ContextSearchOptions {
+  contextId?: string;
+  scope?: string;
+  limit?: number;
+  maxChars?: number;
+}
+
+export interface ContextSearchHit {
+  context: ContextMetadata;
+  snapshotId: string;
+  score: number;
+  matchedTerms: string[];
+  matchedFields: string[];
+  summary: ResumeSummary;
+}
+
+export interface ContextSearchResult {
+  projectRoot: string;
+  query: string;
+  total: number;
+  truncated: boolean;
+  hits: ContextSearchHit[];
+  knowledge: KnowledgeDiscoveryResult;
+  verifiedDeadendIds: string[];
+}
+
+export type CheckpointResult =
+  | { status: 'saved'; context: ContextMetadata; snapshot: Snapshot }
+  | { status: 'no_change'; context: ContextMetadata; snapshot: Snapshot }
+  | { status: 'rate_limited'; context: ContextMetadata; snapshot: Snapshot; retryAt: string };
