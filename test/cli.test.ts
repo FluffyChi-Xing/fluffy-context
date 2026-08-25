@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.3.1');
+    assert.equal(JSON.parse(result.stdout), '0.4.0');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -75,9 +75,11 @@ test('each command has focused help without creating runtime files', async () =>
     const migrateVerify = await runCli(['migrate', 'verify', '--help'], root);
     assert.equal(migrateVerify.code, 0);
     assert.match(migrateVerify.stdout, /migrate verify/);
-    const runtime = await runCli(['runtime', 'status', '--help'], root);
-    assert.equal(runtime.code, 0);
-    assert.match(runtime.stdout, /runtime status/);
+    for (const action of ['enable', 'disable', 'start', 'stop', 'status']) {
+      const runtime = await runCli(['runtime', action, '--help'], root);
+      assert.equal(runtime.code, 0, action);
+      assert.match(runtime.stdout, new RegExp(`runtime ${action}`), action);
+    }
     assert.deepEqual(await readdir(root), []);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -102,6 +104,36 @@ test('v1 migration CLI applies only on explicit confirmation and verifies the im
     assert.notEqual(invalid.code, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runtime lifecycle CLI starts and stops its loopback service', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
+    const enabled = await runCli(['runtime', 'enable', '--path', root], root);
+    assert.equal(enabled.code, 0, enabled.stderr);
+    assert.equal(JSON.parse(enabled.stdout).enabled, true);
+    const started = await runCli(['runtime', 'start', '--path', root], root);
+    assert.equal(started.code, 0, started.stderr);
+    assert.equal(JSON.parse(started.stdout).running, true);
+    const status = await runCli(['runtime', 'status', '--path', root], root);
+    assert.equal(status.code, 0, status.stderr);
+    assert.equal(JSON.parse(status.stdout).running, true);
+    const stopped = await runCli(['runtime', 'stop', '--path', root], root);
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.equal(JSON.parse(stopped.stdout).running, false);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        await access(path.join(root, '.context', 'v2', 'runtime', 'lease.json'));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } catch {
+        break;
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

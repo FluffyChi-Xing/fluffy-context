@@ -127,3 +127,24 @@ export interface CognitionProjection {
   deadends: Record<string, unknown>;
   workspaces: Record<string, BranchWorkspace>;
 }
+
+export interface RuntimeLease {
+  schemaVersion: 2;
+  protocolVersion: 1;
+  projectId: string;
+  instanceId: string;
+  pid: number;
+  host: '127.0.0.1';
+  port: number;
+  startedAt: string;
+  heartbeatAt: string;
+}
+
+export interface RuntimeStatus {
+  projectRoot: string;
+  v2Present: boolean;
+  enabled: boolean;
+  migrated: boolean;
+  running: boolean;
+  lease: Omit<RuntimeLease, 'projectId'> | null;
+}

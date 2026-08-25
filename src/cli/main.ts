@@ -2,6 +2,7 @@
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { contextOrient } from '../agent/api.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
+import { disableRuntime, enableRuntime, runtimeStatus, serveRuntime, startRuntime, stopRuntime } from '../cognition/runtime.js';
 import { migrationReadiness } from '../cognition/readiness.js';
 import { runClaudeCodeHook } from '../hooks/claude-code.js';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../integrations/claude-code.js';
@@ -253,15 +254,30 @@ Rebuild v2 projections and verify imported v1 parity.
 
 Options:
   --path <path>          Project path`,
-  runtime: `usage: ctx runtime status [--path <path>]
+  runtime: `usage: ctx runtime enable|disable|start|stop|status [--path <path>]
 
-Inspect whether the future event-driven Knowledge Runtime can be enabled.`,
+Control the local event-driven Knowledge Runtime after v1 migration verification.`,
   'runtime status': `usage: ctx runtime status [--path <path>]
 
-Show read-only v2 migration readiness. Runtime start and enablement are not available yet.
+Show the read-only runtime policy, migration and authenticated lease status.
 
 Options:
   --path <path>          Project path`,
+  'runtime enable': `usage: ctx runtime enable [--path <path>]
+
+Explicitly enable the migrated local Knowledge Runtime.`,
+  'runtime disable': `usage: ctx runtime disable [--path <path>]
+
+Stop the local runtime and disable future startup without deleting v2 history.`,
+  'runtime start': `usage: ctx runtime start [--path <path>]
+
+Start the enabled runtime as a loopback-only background process.`,
+  'runtime stop': `usage: ctx runtime stop [--path <path>]
+
+Stop the local runtime through authenticated loopback IPC.`,
+  'runtime serve': `usage: ctx runtime serve [--path <path>]
+
+Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
@@ -293,7 +309,7 @@ function printHelp(args: string[]): boolean {
     || (command === 'deadend' && args[1] === 'verify')
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
-    || (command === 'runtime' && args[1] === 'status');
+    || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]));
   const key = nested ? `${command} ${args[1]}` : command;
   const nestedKey = key === 'integrate claude' && (args[2] === 'inspect' || args[2] === 'install') ? `${key} ${args[2]}` : key;
   const help = HELP[nestedKey];
@@ -458,10 +474,20 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'runtime': {
-      if (args[1] !== 'status') throw new Error(HELP.runtime);
+      if (!['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1])) throw new Error(HELP.runtime);
       validateOptions(args.slice(2), ['--path'], ['--path']);
-      validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['runtime status']);
-      print(await migrationReadiness(target));
+      validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP[`runtime ${args[1]}`]);
+      if (args[1] === 'enable') print(await enableRuntime(target));
+      else if (args[1] === 'disable') print(await disableRuntime(target));
+      else if (args[1] === 'start') print(await startRuntime(target));
+      else if (args[1] === 'stop') print(await stopRuntime(target));
+      else if (args[1] === 'status') print(await runtimeStatus(target));
+      else {
+        const runtime = await serveRuntime(target);
+        process.once('SIGINT', () => { void runtime.close('signal'); });
+        process.once('SIGTERM', () => { void runtime.close('signal'); });
+        await new Promise<void>(() => undefined);
+      }
       return;
     }
     case 'activity': {

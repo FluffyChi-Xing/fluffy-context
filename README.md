@@ -4,7 +4,7 @@
 
 Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，项目文档仍然负责设计；`fluffy-context` 补齐的是持续演进的项目认知层。最终架构是 `project → knowledge runtime → LLM`：CLI、MCP、Claude Hook 和未来 IDE/Agent 集成只是事件入口与信息注入适配器，而不是认知本体。
 
-0.3.1 仍提供可靠、可重复调用的 Context、Knowledge、Deadend 与 Note 存储，以及 MCP 和 Claude Code 的阶段性引导。v2 将在显式启用后以事件日志、分支 workspace 和按需 Runtime 守护进程消除 Agent 必须主动记得调用 `ctx` 的前提；自动产物默认仅进入 Candidate，Verified Knowledge 仍需治理确认。
+0.4.0 保留可靠、可重复调用的 Context、Knowledge、Deadend 与 Note 存储，并新增 v2 的显式迁移、可验证事件日志、确定性投影和按项目运行时基础。迁移后的 Runtime 通过仅限本机 loopback 的受令牌保护 IPC 观察 Git 分支与 HEAD 变化，将分支 workspace 投影为可恢复状态；自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。
 
 ## 适用场景
 
@@ -94,9 +94,38 @@ ctx activity --context <context-id> --open
 ctx knowledge discover "支付回调"
 ctx knowledge verify <knowledge-id>
 ctx deadend verify <deadend-id>
+ctx migrate v1 --dry-run
+ctx migrate v1 --apply
+ctx migrate verify
+ctx runtime enable
+ctx runtime start
+ctx runtime status
+ctx runtime stop
 ctx status
 ctx doctor
 ```
+
+### v2 迁移与本地 Runtime
+
+v2 与既有 `.context/` 数据并存，迁移绝不会重写或修复 v1 文件。先执行只读检查，再显式导入并验证投影一致性：
+
+```bash
+ctx migrate v1 --dry-run
+ctx migrate v1 --apply
+ctx migrate verify
+```
+
+只有完成迁移后才可启用 Runtime：
+
+```bash
+ctx runtime enable
+ctx runtime start
+ctx runtime status
+ctx runtime stop
+ctx runtime disable
+```
+
+Runtime 是单项目、按需启动的本地守护进程。它只绑定 `127.0.0.1` 的动态端口，并要求存储在项目本地 `.context/v2/runtime/secret` 中的能力令牌；令牌不会显示在 CLI 状态输出或写入事件日志。启动后，Runtime 持续观察当前 worktree 的 Git 状态：初始状态会记录 `git.state.observed`，分支/ref 切换记录 `git.branch.changed`，HEAD 更新记录 `git.head.changed`。这些事件会重建 branch workspace 投影，但不会自动创建 checkpoint 或将候选信息提升为已验证共识。
 
 ### `ctx checkpoint` 和 `ctx resume`
 
@@ -189,6 +218,6 @@ npm pack --dry-run --json
 
 ## 当前范围
 
-0.3.1 聚焦单项目、本地优先的可靠闭环和 Agent 采用路径：有界 Orient、显式 checkpoint、确定性 Knowledge/Deadend discovery、MCP `context_orient` 与可选的 Claude Code Hook 集成。
+0.4.0 聚焦单项目、本地优先的认知基础：有界 Orient、显式 checkpoint、确定性 Knowledge/Deadend discovery、MCP `context_orient`、可选 Claude Code Hook，以及 v1 到 v2 的显式事件日志迁移和 Git-aware 本地 Runtime。当前 Runtime 负责可靠捕获生命周期与 Git 元数据、维持可重建的 branch workspace 投影；它尚未改变默认的 v1 Orient/MCP 注入路径。
 
-远程同步、多人协作、复杂语义检索、自动模型总结、自动 checkpoint、Context merge，以及更多状态变更型 MCP 工具不属于当前版本范围。
+远程同步、多人协作、复杂语义检索、自动模型总结、自动 checkpoint、Context merge、自动验证候选共识，以及更多状态变更型 MCP 工具不属于当前版本范围。
