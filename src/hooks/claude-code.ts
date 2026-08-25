@@ -1,9 +1,21 @@
 import { contextOrient } from '../agent/api.js';
 import type { ContextOrientReadyResult } from '../agent/types.js';
+import { appendEvent } from '../cognition/journal.js';
+import { v2Enabled } from '../cognition/orient.js';
+import { startRuntime } from '../cognition/runtime.js';
+import type { CognitionRuntimePolicy } from '../cognition/types.js';
+import { readGitWorktreeState } from '../git/git-adapter.js';
+import { resolveProjectRoot } from '../project/project-resolver.js';
+import { cognitionPolicyPath } from '../storage/layout.js';
+import { readJson } from '../storage/json-store.js';
 
 interface ClaudeCodeHookInput {
   cwd?: unknown;
   prompt?: unknown;
+  session_id?: unknown;
+  sessionId?: unknown;
+  event_id?: unknown;
+  eventId?: unknown;
 }
 
 const HOOK_RESPONSE = '{}\n';
@@ -62,6 +74,50 @@ function promptContext(result: Awaited<ReturnType<typeof contextOrient>>): strin
   return phases.join('\n');
 }
 
+function stableId(input: ClaudeCodeHookInput, name: 'session' | 'event'): string | undefined {
+  return name === 'session' ? text(input.session_id) ?? text(input.sessionId) : text(input.event_id) ?? text(input.eventId);
+}
+
+function redactIntent(value: string): { intent: string; redactionCount: number } {
+  let redactionCount = 0;
+  const intent = value
+    .replace(/(?:api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi, () => { redactionCount += 1; return '[REDACTED]'; })
+    .replace(/\b(?:sk|ghp|gho|github_pat)_[A-Za-z0-9_-]+\b/g, () => { redactionCount += 1; return '[REDACTED]'; });
+  return { intent, redactionCount };
+}
+
+async function within<T>(task: Promise<T>, milliseconds: number): Promise<T> {
+  return Promise.race([task, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('hook deadline exceeded')), milliseconds))]);
+}
+
+async function capture(event: 'session-start' | 'user-prompt', input: ClaudeCodeHookInput): Promise<void> {
+  const cwd = text(input.cwd);
+  const projectRoot = await resolveProjectRoot(cwd);
+  if (!await v2Enabled(projectRoot)) return;
+  const policy = await readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot));
+  const sessionId = stableId(input, 'session');
+  const eventId = stableId(input, 'event');
+  if (!sessionId || !eventId) return;
+  const state = await readGitWorktreeState(projectRoot);
+  const captured = event === 'user-prompt' ? redactIntent(compact(text(input.prompt) ?? '', policy.promptIntentMaxChars)) : { intent: '', redactionCount: 0 };
+  await appendEvent(projectRoot, {
+    type: event === 'session-start' ? 'host.session.started' : 'host.prompt.submitted',
+    source: { kind: 'claude-hook', instanceId: sessionId },
+    correlationId: sessionId,
+    idempotencyKey: `claude-hook:${event}:${sessionId}:${eventId}`,
+    git: { worktreeId: state.worktreeId, branch: state.branch, ref: state.ref, head: state.commit },
+    privacy: { classification: captured.redactionCount > 0 || event === 'user-prompt' ? 'redacted-text' : 'metadata', redactionCount: captured.redactionCount },
+    payload: event === 'user-prompt' ? { eventId, intent: captured.intent } : { eventId },
+  });
+}
+
+async function maybeStartRuntime(input: ClaudeCodeHookInput): Promise<void> {
+  const projectRoot = await resolveProjectRoot(text(input.cwd));
+  if (!await v2Enabled(projectRoot)) return;
+  const policy = await readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot));
+  if (policy.allowHookStartup) await within(startRuntime(projectRoot), 1_000);
+}
+
 async function parseInput(raw: string): Promise<ClaudeCodeHookInput | null> {
   try {
     const value: unknown = JSON.parse(raw);
@@ -75,6 +131,8 @@ export async function runClaudeCodeHook(event: 'session-start' | 'user-prompt', 
   const input = await parseInput(raw);
   if (!input) return HOOK_RESPONSE;
   try {
+    if (event === 'session-start') await maybeStartRuntime(input).catch(() => undefined);
+    await capture(event, input).catch(() => undefined);
     const cwd = text(input.cwd);
     const result = event === 'session-start'
       ? await contextOrient(cwd, { maxChars: 1200, noteLimit: 8 })

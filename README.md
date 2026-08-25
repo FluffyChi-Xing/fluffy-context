@@ -4,7 +4,7 @@
 
 Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，项目文档仍然负责设计；`fluffy-context` 补齐的是持续演进的项目认知层。最终架构是 `project → knowledge runtime → LLM`：CLI、MCP、Claude Hook 和未来 IDE/Agent 集成只是事件入口与信息注入适配器，而不是认知本体。
 
-0.4.0 保留可靠、可重复调用的 Context、Knowledge、Deadend 与 Note 存储，并新增 v2 的显式迁移、可验证事件日志、确定性投影和按项目运行时基础。迁移后的 Runtime 通过仅限本机 loopback 的受令牌保护 IPC 观察 Git 分支与 HEAD 变化，将分支 workspace 投影为可恢复状态；自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。
+0.5.0 在 v2 迁移、可验证事件日志、确定性投影和按项目 Runtime 基础上，完成首个 branch-aware 注入闭环：迁移并启用 Runtime 后，Orient、MCP 与 Claude Hook 会按当前 worktree/ref 选择 Context，避免跨分支任务状态泄漏。v1 的 checkpoint、Note、Knowledge 与 Deadend 写入会最佳努力镜像为 v2 事件；Runtime 也会协调检测到的外部 v1 变更。自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。
 
 ## 适用场景
 
@@ -127,6 +127,10 @@ ctx runtime disable
 
 Runtime 是单项目、按需启动的本地守护进程。它只绑定 `127.0.0.1` 的动态端口，并要求存储在项目本地 `.context/v2/runtime/secret` 中的能力令牌；令牌不会显示在 CLI 状态输出或写入事件日志。启动后，Runtime 持续观察当前 worktree 的 Git 状态：初始状态会记录 `git.state.observed`，分支/ref 切换记录 `git.branch.changed`，HEAD 更新记录 `git.head.changed`。这些事件会重建 branch workspace 投影，但不会自动创建 checkpoint 或将候选信息提升为已验证共识。
 
+完成迁移并显式 `ctx runtime enable` 后，`ctx orient`、MCP `context_orient` 与 Claude Hook 会优先选择当前 worktree/ref 的 v2 workspace；它不会借用其他分支的 Context。没有匹配 workspace、v2 状态不可用或 Runtime 已禁用时，接口会安全回退到既有 v1 选择逻辑。Runtime 停止时仍可读取已验证的 v2 状态，但运行中的 Runtime 负责持续 Git 观察和 v1 写入镜像。
+
+Claude Hook 仅在宿主提供稳定的 session 与 event 标识时记录 `host.session.started` 或 `host.prompt.submitted`。提示只保存按 `promptIntentMaxChars` 截断并经过敏感值脱敏后的 intent，绝不保存原始提示；缺少稳定标识时不写入事件。默认 Hook 不启动守护进程；将 v2 policy 的 `allowHookStartup` 设为 `true` 后，SessionStart 才会在严格超时内尽力启动 Runtime，失败仍会 fail open。UserPromptSubmit 不会启动 Runtime。
+
 ### `ctx checkpoint` 和 `ctx resume`
 
 第一次 checkpoint 创建 baseline，后续变化创建 patch。相同内容返回 `no_change`；短时间内的变化可能返回 `rate_limited`，应在完成更多阶段工作后再保存。`ctx resume` 返回轻量摘要和按需使用的完整 details，并会保留其既有的 `lastUsedAt` 更新语义。
@@ -218,6 +222,6 @@ npm pack --dry-run --json
 
 ## 当前范围
 
-0.4.0 聚焦单项目、本地优先的认知基础：有界 Orient、显式 checkpoint、确定性 Knowledge/Deadend discovery、MCP `context_orient`、可选 Claude Code Hook，以及 v1 到 v2 的显式事件日志迁移和 Git-aware 本地 Runtime。当前 Runtime 负责可靠捕获生命周期与 Git 元数据、维持可重建的 branch workspace 投影；它尚未改变默认的 v1 Orient/MCP 注入路径。
+0.5.0 聚焦单项目、本地优先的 branch-aware Knowledge Runtime MVP：有界 Orient、显式 checkpoint、确定性 Knowledge/Deadend discovery、MCP `context_orient`、可选 Claude Code Hook，以及 v1 到 v2 的显式事件日志迁移和 Git-aware 本地 Runtime。完成迁移并启用 Runtime 后，Orient、MCP 与 Hook 使用当前 worktree/ref 的 workspace 选择分支正确的 Context，并在 v2 不可用时保持 v1 回退；Runtime 负责可靠捕获生命周期、Git 元数据与后续 v1 写入镜像。带稳定宿主标识的 Hook 事件仅以脱敏、限长 intent 进入 journal。
 
 远程同步、多人协作、复杂语义检索、自动模型总结、自动 checkpoint、Context merge、自动验证候选共识，以及更多状态变更型 MCP 工具不属于当前版本范围。

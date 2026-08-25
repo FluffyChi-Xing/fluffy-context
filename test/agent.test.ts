@@ -1,12 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { discoverKnowledge, recordDeadend, verifyDeadend, verifyKnowledge, learnKnowledge } from '../src/runtime/knowledge.js';
 import { addNote } from '../src/runtime/notes.js';
 import { contextOrient, saveContext, loadContext, searchContext } from '../src/agent/api.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
+import { enableRuntime } from '../src/cognition/runtime.js';
+
+const execFileAsync = promisify(execFile);
+
+async function git(root: string, args: string[]): Promise<void> {
+  await execFileAsync('git', args, { cwd: root, windowsHide: true });
+}
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-agent-'));
@@ -111,6 +121,60 @@ test('contextOrient composes bounded verified consensus without writing runtime 
     assert.equal(noQuery.query, null);
     assert.equal(noQuery.knowledge.total, 0);
     assert.equal(noQuery.deadends.total, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('v2 orientation mirrors live checkpoint state after migration', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const initial = await saveContext(root, { title: 'Initial context', progressSummary: 'Initial state' });
+    assert.equal(initial.result.status, 'saved');
+    if (initial.result.status !== 'saved') return;
+    await importV1(root);
+    await enableRuntime(root);
+    const updated = await saveContext(root, { contextId: initial.result.context.id, progressSummary: 'Live mirrored state' }, { minSaveIntervalMs: 0 });
+    assert.equal(updated.result.status, 'saved');
+    const result = await contextOrient(root);
+    assert.equal(result.status, 'ready');
+    if (result.status !== 'ready') return;
+    assert.equal(result.resumeSummary.progressSummary, 'Live mirrored state');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('v2 orientation selects only the current branch workspace', async () => {
+  const root = await project();
+  try {
+    await git(root, ['init']);
+    await git(root, ['config', 'user.email', 'test@example.com']);
+    await git(root, ['config', 'user.name', 'Test']);
+    await initProject(root);
+    const main = await saveContext(root, { title: 'Main context', progressSummary: 'Main branch work' });
+    assert.equal(main.result.status, 'saved');
+    if (main.result.status !== 'saved') return;
+    await git(root, ['add', '.context']);
+    await git(root, ['commit', '-m', 'main context']);
+    await git(root, ['switch', '-c', 'feature/orient']);
+    const feature = await saveContext(root, { title: 'Feature context', progressSummary: 'Feature branch work' });
+    assert.equal(feature.result.status, 'saved');
+    if (feature.result.status !== 'saved') return;
+    await importV1(root);
+    await enableRuntime(root);
+
+    const onFeature = await contextOrient(root);
+    assert.equal(onFeature.status, 'ready');
+    if (onFeature.status !== 'ready') return;
+    assert.equal(onFeature.context.id, feature.result.context.id);
+
+    await git(root, ['switch', 'master']);
+    const onMain = await contextOrient(root);
+    assert.equal(onMain.status, 'ready');
+    if (onMain.status !== 'ready') return;
+    assert.equal(onMain.context.id, main.result.context.id);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

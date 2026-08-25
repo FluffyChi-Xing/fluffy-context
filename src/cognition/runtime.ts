@@ -12,6 +12,8 @@ import { withLock } from '../storage/lock.js';
 import { cognitionManifestPath, cognitionPolicyPath, cognitionRuntimeLeasePath, cognitionRuntimeSecretPath, locksDirectory } from '../storage/layout.js';
 import { appendEvent } from './journal.js';
 import { GitObserver } from './git-observer.js';
+import { reconcileV1State } from './migration-v1.js';
+import { v1Synced } from './v1-bridge.js';
 import type { CognitionRuntimePolicy, RuntimeLease, RuntimeStatus } from './types.js';
 
 const host = '127.0.0.1' as const;
@@ -201,7 +203,10 @@ export async function serveRuntime(startPath?: string): Promise<RuntimeServer> {
     lease.heartbeatAt = new Date().toISOString();
     void writeLease(projectRoot, lease);
   }, 5_000);
-  poller = setInterval(() => { void observer.observeNow(); }, pollIntervalMs);
+  poller = setInterval(() => {
+    void observer.observeNow();
+    void v1Synced(projectRoot).then((synced) => { if (!synced) return reconcileV1State(projectRoot); });
+  }, pollIntervalMs);
   touch();
   await appendEvent(projectRoot, { type: 'runtime.started', source: { kind: 'cli', instanceId: lease.instanceId }, idempotencyKey: `runtime:started:${lease.instanceId}`, payload: {} });
   await observer.observeNow();

@@ -2,7 +2,8 @@ import { readdir } from 'node:fs/promises';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { contextsRoot, contextMetadataPath } from '../storage/layout.js';
 import { isRecord, readJson } from '../storage/json-store.js';
-import { checkpoint, rebuildSnapshot, resume } from '../runtime/runtime.js';
+import { checkpoint, rebuildSnapshot, resume, resumeSnapshot } from '../runtime/runtime.js';
+import { selectV2Orientation } from '../cognition/orient.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import type {
@@ -181,7 +182,10 @@ export async function contextOrient(startPath: string | undefined, options: Cont
 
   let loaded;
   try {
-    loaded = await resume(projectRoot, options.contextId, options.maxChars ?? 4000, { touchLastUsedAt: false });
+    const v2 = await selectV2Orientation(projectRoot, options.contextId);
+    loaded = v2
+      ? await resumeSnapshot(projectRoot, v2.contextId, v2.snapshotId, options.maxChars ?? 4000)
+      : await resume(projectRoot, options.contextId, options.maxChars ?? 4000, { touchLastUsedAt: false });
   } catch (error) {
     if (error instanceof Error && error.message === 'no active context found') {
       return {
@@ -200,26 +204,33 @@ export async function contextOrient(startPath: string | undefined, options: Cont
     throw error;
   }
 
-  const notes = await listNotes(projectRoot, {
+  const v2 = await selectV2Orientation(projectRoot, options.contextId);
+  const notes = (await listNotes(projectRoot, {
     contextId: loaded.context.id,
     openOnly: true,
-    limit: options.noteLimit ?? 20,
+    limit: v2 ? Number.MAX_SAFE_INTEGER : options.noteLimit ?? 20,
     maxChars: options.maxChars ?? 4000,
-  });
+  })).filter((note) => !v2 || v2.noteIds.has(note.noteId)).slice(0, options.noteLimit ?? 20);
   const knowledge = query === null
     ? emptyKnowledge('')
     : await discoverKnowledge(projectRoot, query, {
       scope: options.scope,
-      limit: options.knowledgeLimit ?? 10,
+      limit: v2 ? Number.MAX_SAFE_INTEGER : options.knowledgeLimit ?? 10,
       maxChars: options.maxChars ?? 4000,
     });
   const deadends = query === null
     ? emptyDeadends('')
     : await discoverDeadends(projectRoot, query, {
       scope: options.scope,
-      limit: options.deadendLimit ?? 10,
+      limit: v2 ? Number.MAX_SAFE_INTEGER : options.deadendLimit ?? 10,
       maxChars: options.maxChars ?? 4000,
     });
+  const applicableKnowledge = v2
+    ? { ...knowledge, total: knowledge.hits.filter((hit) => v2.knowledgeIds.has(hit.knowledge.knowledgeId)).length, hits: knowledge.hits.filter((hit) => v2.knowledgeIds.has(hit.knowledge.knowledgeId)).slice(0, options.knowledgeLimit ?? 10) }
+    : knowledge;
+  const applicableDeadends = v2
+    ? { ...deadends, total: deadends.hits.filter((hit) => v2.deadendIds.has(hit.deadend.deadendId)).length, hits: deadends.hits.filter((hit) => v2.deadendIds.has(hit.deadend.deadendId)).slice(0, options.deadendLimit ?? 10) }
+    : deadends;
 
   const budget = { remaining: Math.max(0, options.maxChars ?? 4000) };
   const resumeSummary: ResumeSummary = {
@@ -239,8 +250,8 @@ export async function contextOrient(startPath: string | undefined, options: Cont
     || textLength(resumeSummary.decisions) < textLength(loaded.resumeSummary.decisions)
     || textLength(resumeSummary.risks) < textLength(loaded.resumeSummary.risks)
     || textLength(resumeSummary.relatedFiles) < textLength(loaded.resumeSummary.relatedFiles);
-  const limitedKnowledgeResult = limitKnowledge(knowledge, budget);
-  const limitedDeadendResult = limitDeadends(deadends, budget);
+  const limitedKnowledgeResult = limitKnowledge(applicableKnowledge, budget);
+  const limitedDeadendResult = limitDeadends(applicableDeadends, budget);
   const limitedNotesResult = limitNotes(notes, budget);
 
   return {

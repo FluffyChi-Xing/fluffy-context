@@ -62,7 +62,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     const cli = path.join(packageRoot, 'dist', 'src', 'cli', 'main.js');
     const version = await run(process.execPath, [cli, '--version'], consumer);
     assert.equal(version.code, 0, version.stderr);
-    assert.equal(JSON.parse(version.stdout), '0.4.0');
+    assert.equal(JSON.parse(version.stdout), '0.5.0');
 
     for (const args of [
       [cli, 'orient', '--help'],
@@ -82,7 +82,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     assert.equal(imports.code, 0, imports.stderr);
 
     const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    assert.equal(manifest.version, '0.4.0');
+    assert.equal(manifest.version, '0.5.0');
     assert.equal(await readdir(path.join(packageRoot, 'skills', 'fluffy-context')).then((files) => files.includes('SKILL.md')), true);
   } finally {
     await rm(consumer, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

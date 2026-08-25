@@ -116,6 +116,10 @@ export function cognitionRuntimeSecretPath(projectRoot: string): string {
   return path.join(cognitionRuntimeDirectory(projectRoot), 'secret');
 }
 
+export function cognitionV1SyncPath(projectRoot: string): string {
+  return path.join(cognitionRuntimeDirectory(projectRoot), 'v1-sync.json');
+}
+
 export function cognitionQuarantineDirectory(projectRoot: string): string {
   return path.join(cognitionRoot(projectRoot), 'quarantine');
 }

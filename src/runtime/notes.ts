@@ -7,6 +7,7 @@ import { isRecord, readJson } from '../storage/json-store.js';
 import { contextMetadataPath, contextsRoot, locksDirectory, notesPath, snapshotPath, snapshotsDirectory } from '../storage/layout.js';
 import { withLock } from '../storage/lock.js';
 import type { ActivityItem, ActivityQuery, ActivityResult, Note, NoteFile, NoteInput, NoteQuery, Snapshot } from './types.js';
+import { mirrorNote } from '../cognition/v1-bridge.js';
 
 function id(): string {
   return `note-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -81,6 +82,7 @@ export async function addNote(startPath: string | undefined, message: string, in
       updatedAt: now,
     };
     await atomicWriteJson(notesPath(projectRoot), { schemaVersion: 1, items: [...file.items, note] });
+    await mirrorNote(projectRoot, note);
     return note;
   });
 }
@@ -161,7 +163,12 @@ export async function absorbNotes(startPath: string | undefined, contextId: stri
       absorbed += 1;
       return { ...note, absorbedBySnapshotId: snapshotId, updatedAt: new Date().toISOString() };
     });
-    if (absorbed > 0) await atomicWriteJson(notesPath(projectRoot), { schemaVersion: 1, items });
+    if (absorbed > 0) {
+      await atomicWriteJson(notesPath(projectRoot), { schemaVersion: 1, items });
+      for (const note of items) {
+        if (note.contextId === contextId && note.absorbedBySnapshotId === snapshotId) await mirrorNote(projectRoot, note, true);
+      }
+    }
     return absorbed;
   });
 }

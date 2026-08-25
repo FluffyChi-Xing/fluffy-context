@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { resolveProjectRoot } from '../project/project-resolver.js';
-import { readGitWorktreeState } from '../git/git-adapter.js';
 import { loadManifest } from '../runtime/init.js';
 import { listDeadends, listKnowledge } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
@@ -14,6 +13,7 @@ import {
   cognitionPolicyPath,
   cognitionQuarantineDirectory,
   cognitionV1ImportPath,
+  cognitionV1SyncPath,
   contextMetadataPath,
   contextsRoot,
   locksDirectory,
@@ -25,6 +25,7 @@ import { readJson } from '../storage/json-store.js';
 import type { ContextMetadata, Snapshot } from '../runtime/types.js';
 import { appendEvent } from './journal.js';
 import { rebuildProjections } from './projections.js';
+import { v1Fingerprint } from './v1-bridge.js';
 import { migrationReadiness } from './readiness.js';
 import { COGNITION_LAYOUT_VERSION, type CognitionManifest, type CognitionRuntimePolicy, type MigrationReport, type V1ImportReceipt } from './types.js';
 
@@ -53,6 +54,7 @@ async function readOptional(filePath: string): Promise<string | null> {
 async function sourceRecords(projectRoot: string): Promise<{ records: V1Record[]; sourceHash: string }> {
   const sources: Array<{ filePath: string; content: string }> = [];
   const records: V1Record[] = [];
+  const snapshotAnchors = new Map<string, V1Record['git']>();
   const v1ManifestPath = manifestPath(projectRoot);
   sources.push({ filePath: v1ManifestPath, content: await readFile(v1ManifestPath, 'utf8') });
   const contextIds = (await readdir(contextsRoot(projectRoot))).sort();
@@ -69,11 +71,13 @@ async function sourceRecords(projectRoot: string): Promise<{ records: V1Record[]
       sources.push({ filePath, content });
       const snapshot = await readJson<Snapshot>(filePath);
       await rebuildSnapshot(projectRoot, contextId, snapshotId);
+      const git = { branch: snapshot.branch, head: snapshot.commit };
+      snapshotAnchors.set(`${contextId}:${snapshotId}`, git);
       records.push({
         kind: 'context',
         id: `${contextId}:${snapshotId}`,
         occurredAt: snapshot.createdAt,
-        git: { branch: snapshot.branch, head: snapshot.commit },
+        git,
         record: { context, snapshot },
         sourcePath: filePath,
         sourceHash: sha256(content),
@@ -99,7 +103,7 @@ async function sourceRecords(projectRoot: string): Promise<{ records: V1Record[]
       const snapshotId = 'snapshotId' in item ? item.snapshotId : 'sourceSnapshotId' in item ? item.sourceSnapshotId : null;
       if (snapshotId && !contextId) throw new Error(`${kind} ${id} has a snapshot without a context`);
       if (contextId && snapshotId) await rebuildSnapshot(projectRoot, contextId, snapshotId);
-      records.push({ kind, id, occurredAt, git: { branch: null, head: null }, record: item as unknown as Record<string, unknown>, sourcePath: filePath, sourceHash });
+      records.push({ kind, id, occurredAt, git: contextId && snapshotId ? snapshotAnchors.get(`${contextId}:${snapshotId}`) ?? { branch: null, head: null } : { branch: null, head: null }, record: item as unknown as Record<string, unknown>, sourcePath: filePath, sourceHash });
     }
   }
   const sourceHash = sha256(sources.sort((left, right) => left.filePath.localeCompare(right.filePath)).map((source) => `${source.filePath}\0${sha256(source.content)}`).join('\n'));
@@ -138,10 +142,10 @@ export async function importV1(startPath?: string): Promise<MigrationReport> {
       const receipt = JSON.parse(existingReceipt) as V1ImportReceipt;
       if (receipt.schemaVersion !== 2 || receipt.sourceHash !== sourceHash) throw new Error('v1 source changed after import; v2 historical import is immutable');
       await rebuildProjections(projectRoot);
+      await atomicWriteJson(cognitionV1SyncPath(projectRoot), { schemaVersion: 2, fingerprint: await v1Fingerprint(projectRoot), updatedAt: new Date().toISOString() });
       return { ...readiness, applied: true, importedEventIds: receipt.eventIds };
     }
     await writeV2Metadata(projectRoot);
-    const git = await readGitWorktreeState(projectRoot);
     const importedEventIds: string[] = [];
     for (const record of records) {
     const status = record.record.status;
@@ -153,15 +157,41 @@ export async function importV1(startPath?: string): Promise<MigrationReport> {
       occurredAt: record.occurredAt,
       source: { kind: 'migration' },
       idempotencyKey: `v1:${record.sourceHash}:${record.kind}:${record.id}`,
-      git: { worktreeId: git.worktreeId, branch: record.git.branch, ref: record.git.branch, head: record.git.head },
-      payload: { record: record.record, sourcePath: record.sourcePath, sourceHash: record.sourceHash },
+      git: { worktreeId: null, branch: record.git.branch, ref: record.git.branch, head: record.git.head },
+      payload: { record: record.record, sourcePath: record.sourcePath, sourceHash: record.sourceHash, anchorProvenance: record.git.branch === null && record.git.head === null ? 'global' : 'snapshot' },
     });
     importedEventIds.push(event.event.eventId);
     }
     await rebuildProjections(projectRoot);
+    await atomicWriteJson(cognitionV1SyncPath(projectRoot), { schemaVersion: 2, fingerprint: await v1Fingerprint(projectRoot), updatedAt: new Date().toISOString() });
     const receipt: V1ImportReceipt = { schemaVersion: 2, sourceHash, importedAt: new Date().toISOString(), eventIds: importedEventIds, counts: readiness.counts };
     await atomicWriteJson(cognitionV1ImportPath(projectRoot), receipt);
     return { ...readiness, v2Present: true, applied: true, importedEventIds };
+  });
+}
+
+export async function reconcileV1State(startPath?: string): Promise<void> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  await withLock(`${locksDirectory(projectRoot)}/cognition-migration.lock`, async () => {
+    const readiness = await migrationReadiness(projectRoot);
+    if (!readiness.eligible) return;
+    const { records, sourceHash } = await sourceRecords(projectRoot);
+    for (const record of records) {
+      const status = record.record.status;
+      await appendEvent(projectRoot, {
+        type: record.kind === 'context' ? 'context.state.recorded'
+          : record.kind === 'note' ? record.record.absorbedBySnapshotId ? 'note.absorbed' : record.record.status === 'resolved' ? 'note.resolved' : 'note.recorded'
+            : record.kind === 'knowledge' ? status === 'verified' ? 'knowledge.verified' : 'knowledge.proposed'
+              : status === 'verified' ? 'deadend.verified' : 'deadend.proposed',
+        occurredAt: record.occurredAt,
+        source: { kind: 'migration' },
+        idempotencyKey: `v1-live-sync:${sourceHash}:${record.kind}:${record.id}`,
+        git: { worktreeId: null, branch: record.git.branch, ref: record.git.branch, head: record.git.head },
+        payload: { record: record.record, sourcePath: record.sourcePath, sourceHash: record.sourceHash, anchorProvenance: record.git.branch === null && record.git.head === null ? 'global' : 'snapshot' },
+      });
+    }
+    await rebuildProjections(projectRoot);
+    await atomicWriteJson(cognitionV1SyncPath(projectRoot), { schemaVersion: 2, fingerprint: await v1Fingerprint(projectRoot), updatedAt: new Date().toISOString() });
   });
 }
 

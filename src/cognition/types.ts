@@ -119,12 +119,19 @@ export interface MigrationReport extends MigrationReadiness {
   importedEventIds: string[];
 }
 
+export interface CognitionRecordPayload<T extends Record<string, unknown> = Record<string, unknown>> {
+  record: T;
+  sourcePath?: string;
+  sourceHash?: string;
+  anchorProvenance?: 'snapshot' | 'live' | 'global';
+}
+
 export interface CognitionProjection {
   schemaVersion: 2;
-  contexts: Record<string, unknown>;
-  notes: Record<string, unknown>;
-  knowledge: Record<string, unknown>;
-  deadends: Record<string, unknown>;
+  contexts: Record<string, CognitionRecordPayload>;
+  notes: Record<string, CognitionRecordPayload>;
+  knowledge: Record<string, CognitionRecordPayload>;
+  deadends: Record<string, CognitionRecordPayload>;
   workspaces: Record<string, BranchWorkspace>;
 }
 

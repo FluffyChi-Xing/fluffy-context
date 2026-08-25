@@ -7,6 +7,9 @@ import path from 'node:path';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../src/integrations/claude-code.js';
 import { initProject } from '../src/runtime/init.js';
 import { saveContext } from '../src/agent/api.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
+import { enableRuntime } from '../src/cognition/runtime.js';
+import { readJournal } from '../src/cognition/journal.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
@@ -58,6 +61,30 @@ test('Claude Code hooks inject bounded phase guidance without modifying context 
     assert.match(JSON.parse(prompt.stdout).additionalContext, /ctx note/);
     assert.equal(await readFile(contextPath, 'utf8'), beforeContext);
     assert.equal(await readFile(indexPath, 'utf8'), beforeIndex);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Claude Code hooks capture redacted host events with stable identifiers', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await saveContext(root, { title: 'Hook context', progressSummary: 'Capture host event' });
+    await importV1(root);
+    await enableRuntime(root);
+    const input = JSON.stringify({ cwd: root, session_id: 'session-1', event_id: 'event-1', prompt: 'Use token=secret-value to finish the task' });
+    const first = await runCli(['hook', 'claude-code', 'user-prompt'], root, input);
+    const second = await runCli(['hook', 'claude-code', 'user-prompt'], root, input);
+    assert.equal(first.code, 0);
+    assert.equal(second.code, 0);
+    const events = await readJournal(root);
+    const captured = events.filter((event) => event.type === 'host.prompt.submitted');
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].privacy.classification, 'redacted-text');
+    assert.equal(captured[0].privacy.redactionCount, 1);
+    assert.match(JSON.stringify(captured[0].payload), /\[REDACTED\]/);
+    assert.doesNotMatch(JSON.stringify(captured[0].payload), /secret-value/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

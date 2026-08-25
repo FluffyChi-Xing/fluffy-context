@@ -33,6 +33,7 @@ export interface CheckpointOptions {
 import { loadManifest } from './init.js';
 import { filterPaths } from '../capture/context-filter.js';
 import { absorbNotes } from './notes.js';
+import { mirrorCheckpoint } from '../cognition/v1-bridge.js';
 
 const emptyContext = (): StructuredContext => ({
   progressSummary: '',
@@ -335,12 +336,40 @@ export async function checkpoint(startPath: string | undefined, input: Checkpoin
       updatedAt: now,
     });
     if (input.absorbNotes) await absorbNotes(projectRoot, contextId, snapshotId);
+    await mirrorCheckpoint(projectRoot, updatedContext, snapshot);
     return { status: 'saved', context: updatedContext, snapshot };
   });
 }
 
 export interface ResumeOptions {
   touchLastUsedAt?: boolean;
+}
+
+export async function resumeSnapshot(startPath: string | undefined, contextId: string, snapshotId: string, maxChars = 4000): Promise<ResumeResult> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  await loadManifest(projectRoot);
+  const [git, context, snapshot] = await Promise.all([
+    readGitState(projectRoot),
+    loadContext(projectRoot, contextId),
+    loadSnapshot(projectRoot, contextId, snapshotId),
+  ]);
+  const details = await rebuildSnapshot(projectRoot, contextId, snapshotId);
+  const budget = { remaining: Math.max(0, maxChars) };
+  return {
+    context,
+    snapshot,
+    details,
+    resumeSummary: {
+      progressSummary: limited(details.progressSummary, budget.remaining),
+      lastError: details.lastError === null ? null : limited(details.lastError, budget.remaining),
+      completed: limitedList(details.completed, budget),
+      pendingTasks: limitedList(details.pendingTasks, budget),
+      decisions: limitedList(details.decisions, budget),
+      risks: limitedList(details.risks, budget),
+      relatedFiles: limitedList(details.relatedFiles, budget),
+      branchOrCommitDrift: context.branch !== git.branch || context.commit !== git.commit,
+    },
+  };
 }
 
 export async function resume(startPath?: string, contextId?: string, maxChars = 4000, options: ResumeOptions = {}): Promise<ResumeResult> {

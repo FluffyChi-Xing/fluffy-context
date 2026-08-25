@@ -6,6 +6,7 @@ import { withLock } from '../storage/lock.js';
 import { contextMetadataPath, deadendsPath, knowledgePath, locksDirectory, snapshotPath } from '../storage/layout.js';
 import { rebuildSnapshot } from './runtime.js';
 import type { Deadend, DeadendDiscoverOptions, DeadendDiscoveryResult, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus } from './types.js';
+import { mirrorDeadend, mirrorKnowledge } from '../cognition/v1-bridge.js';
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -112,6 +113,7 @@ export async function learnKnowledge(startPath: string | undefined, statement: s
       updatedAt: now,
     };
     await atomicWriteJson(knowledgePath(projectRoot), { schemaVersion: 1, items: [...file.items, item] });
+    await mirrorKnowledge(projectRoot, item);
     return item;
   });
 }
@@ -204,6 +206,7 @@ export async function verifyKnowledge(startPath: string | undefined, knowledgeId
     item.confidence = Math.max(item.confidence, 0.8);
     item.updatedAt = new Date().toISOString();
     await atomicWriteJson(knowledgePath(projectRoot), file);
+    await mirrorKnowledge(projectRoot, item);
     return item;
   });
 }
@@ -228,6 +231,7 @@ export async function recordDeadend(startPath: string | undefined, attempt: stri
       updatedAt: now,
     };
     await atomicWriteJson(deadendsPath(projectRoot), { schemaVersion: 1, items: [...file.items, item] });
+    await mirrorDeadend(projectRoot, item);
     return item;
   });
 }
@@ -291,6 +295,7 @@ export async function verifyDeadend(startPath: string | undefined, deadendId: st
     item.status = 'verified';
     item.updatedAt = new Date().toISOString();
     await atomicWriteJson(deadendsPath(projectRoot), file);
+    await mirrorDeadend(projectRoot, item);
     return item;
   });
 }
