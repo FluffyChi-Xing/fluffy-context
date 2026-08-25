@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.5.0');
+    assert.equal(JSON.parse(result.stdout), '0.6.0');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -38,7 +38,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'feedback', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -60,6 +60,12 @@ test('each command has focused help without creating runtime files', async () =>
     const noteList = await runCli(['note', 'list', '--help'], root);
     assert.equal(noteList.code, 0);
     assert.match(noteList.stdout, /note list/);
+    const feedback = await runCli(['feedback', 'use', '--help'], root);
+    assert.equal(feedback.code, 0);
+    assert.match(feedback.stdout, /feedback use/);
+    const journal = await runCli(['journal', 'verify', '--help'], root);
+    assert.equal(journal.code, 0);
+    assert.match(journal.stdout, /journal verify/);
     const verify = await runCli(['knowledge', 'verify', '--help'], root);
     assert.equal(verify.code, 0);
     assert.match(verify.stdout, /knowledge verify/);
@@ -102,6 +108,29 @@ test('v1 migration CLI applies only on explicit confirmation and verifies the im
     assert.equal(JSON.parse(verification.stdout).verified, true);
     const invalid = await runCli(['migrate', 'v1', '--dry-run', '--apply', '--path', root], root);
     assert.notEqual(invalid.code, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('journal verify is read-only and governance commands validate transitions', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    const candidate = await runCli(['learn', 'Payment callbacks require signature validation', '--path', root], root);
+    assert.equal(candidate.code, 0);
+    const knowledgeId = JSON.parse(candidate.stdout).knowledgeId as string;
+    const rejected = await runCli(['knowledge', 'reject', knowledgeId, '--reason', 'insufficient evidence', '--path', root], root);
+    assert.equal(rejected.code, 0, rejected.stderr);
+    assert.equal(JSON.parse(rejected.stdout).status, 'rejected');
+    const invalid = await runCli(['knowledge', 'verify', knowledgeId, '--path', root], root);
+    assert.notEqual(invalid.code, 0);
+    assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
+    const before = await readFile(path.join(root, '.context', 'v2', 'journal', '00000001.ndjson'), 'utf8');
+    const verified = await runCli(['journal', 'verify', '--path', root], root);
+    assert.equal(verified.code, 0, verified.stderr);
+    assert.equal(JSON.parse(verified.stdout).verified, true);
+    assert.equal(await readFile(path.join(root, '.context', 'v2', 'journal', '00000001.ndjson'), 'utf8'), before);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

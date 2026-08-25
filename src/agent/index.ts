@@ -1,6 +1,8 @@
 export * from './api.js';
 export type {
   ContextOrientContext,
+  ContextUseInput,
+  ContextOrientExplanation,
   ContextOrientNoContextResult,
   ContextOrientOptions,
   ContextOrientReadyResult,

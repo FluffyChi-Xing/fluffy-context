@@ -2,13 +2,17 @@
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { contextOrient } from '../agent/api.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
+import { recordUse } from '../cognition/feedback.js';
+import { readJournal } from '../cognition/journal.js';
+import { projectEvents } from '../cognition/projections.js';
 import { disableRuntime, enableRuntime, runtimeStatus, serveRuntime, startRuntime, stopRuntime } from '../cognition/runtime.js';
 import { migrationReadiness } from '../cognition/readiness.js';
 import { runClaudeCodeHook } from '../hooks/claude-code.js';
+import { readGitWorktreeState } from '../git/git-adapter.js';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../integrations/claude-code.js';
 import { doctor, status } from '../runtime/diagnostics.js';
 import { initProject } from '../runtime/init.js';
-import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../runtime/knowledge.js';
+import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionKnowledge, transitionDeadend } from '../runtime/knowledge.js';
 import { addNote, listActivity, listNotes } from '../runtime/notes.js';
 import type { ActivityQuery, CheckpointInput, DeadendInput, KnowledgeInput, NoteInput, NoteKind, NoteStatus, NoteActor } from '../runtime/types.js';
 import { VERSION } from '../version.js';
@@ -156,16 +160,23 @@ Options:
   --evidence <items>     Comma-separated evidence references`,
   knowledge: `usage: ctx knowledge [--all] [--path <path>]
        ctx knowledge verify <knowledge-id> [--path <path>]
+       ctx knowledge deprecate|reject <knowledge-id> --reason <text> [--path <path>]
        ctx knowledge discover <query> [options]
 
-List candidate/verified knowledge, verify one item, or discover matching knowledge.
+List, govern, or discover project knowledge.
 
 Options:
   --all                  Include unverified items
   --path <path>          Project path`,
   'knowledge verify': `usage: ctx knowledge verify <knowledge-id> [--path <path>]
 
-Mark a knowledge item as verified.`,
+Mark a candidate knowledge item as verified.`,
+  'knowledge deprecate': `usage: ctx knowledge deprecate <knowledge-id> --reason <text> [--path <path>]
+
+Retire a verified knowledge item with an explicit governance reason.`,
+  'knowledge reject': `usage: ctx knowledge reject <knowledge-id> --reason <text> [--path <path>]
+
+Reject a candidate knowledge item with an explicit governance reason.`,
   'knowledge discover': `usage: ctx knowledge discover <query> [options]
 
 Find matching project knowledge using deterministic lexical and alias rules.
@@ -179,8 +190,9 @@ Options:
   --max-chars <number>   Maximum text characters per match`,
   deadend: `usage: ctx deadend [attempt] [options]
        ctx deadend verify <deadend-id> [--path <path>]
+       ctx deadend obsolete|reject <deadend-id> --reason <text> [--path <path>]
 
-Record or verify a candidate deadend.
+Record or govern a candidate deadend.
 
 Options:
   --path <path>          Project path
@@ -193,7 +205,25 @@ Options:
   --evidence <items>     Comma-separated evidence references`,
   'deadend verify': `usage: ctx deadend verify <deadend-id> [--path <path>]
 
-Mark a deadend as verified.`,
+Mark a candidate deadend as verified.`,
+  'deadend obsolete': `usage: ctx deadend obsolete <deadend-id> --reason <text> [--path <path>]
+
+Retire a verified deadend with an explicit governance reason.`,
+  'deadend reject': `usage: ctx deadend reject <deadend-id> --reason <text> [--path <path>]
+
+Reject a candidate deadend with an explicit governance reason.`,
+  feedback: `usage: ctx feedback use knowledge|deadend <id> --event-id <stable-id> [--path <path>]
+
+Record explicit use of verified v2 retrieval material.`,
+  'feedback use': `usage: ctx feedback use knowledge|deadend <id> --event-id <stable-id> [--path <path>]
+
+Record an idempotent use signal that affects deterministic rank only.`,
+  journal: `usage: ctx journal verify [--path <path>]
+
+Validate the v2 journal hash chain and replay projections in memory.`,
+  'journal verify': `usage: ctx journal verify [--path <path>]
+
+Validate journal integrity without writing derived state.`,
   deadends: `usage: ctx deadends [--all] [--path <path>]
 
 List recorded deadends.`,
@@ -281,7 +311,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime [options]
+  return `usage: ctx init|checkpoint|resume|orient|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|feedback|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -305,8 +335,10 @@ function printHelp(args: string[]): boolean {
   const nested = (command === 'agent' && args[1] === 'serve')
     || (command === 'hook' && args[1] === 'claude-code')
     || (command === 'integrate' && args[1] === 'claude')
-    || (command === 'knowledge' && ['verify', 'discover'].includes(args[1]))
-    || (command === 'deadend' && args[1] === 'verify')
+    || (command === 'knowledge' && ['verify', 'discover', 'deprecate', 'reject'].includes(args[1]))
+    || (command === 'deadend' && ['verify', 'obsolete', 'reject'].includes(args[1]))
+    || (command === 'feedback' && args[1] === 'use')
+    || (command === 'journal' && args[1] === 'verify')
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
     || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]));
@@ -419,16 +451,19 @@ async function run(args: string[]): Promise<void> {
       print(await doctor(target));
       return;
     case 'learn': {
-      const valueOptions = ['--path', '--kind', '--scope', '--context', '--snapshot', '--evidence'];
+      const valueOptions = ['--path', '--kind', '--scope', '--context', '--snapshot', '--evidence', '--branch-mode', '--paths'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const statement = positionals(args.slice(1), valueOptions);
       if (statement.length === 0) throw new Error(HELP.learn);
+      const branchMode = enumOption(args, '--branch-mode', ['global', 'exact'] as const) ?? 'global';
+      const git = branchMode === 'exact' ? await readGitWorktreeState(target ?? process.cwd()) : null;
       const input: KnowledgeInput = {
         kind: option(args, '--kind'),
         scope: option(args, '--scope'),
         sourceContextId: option(args, '--context'),
         sourceSnapshotId: option(args, '--snapshot'),
         evidence: listOption(args, '--evidence'),
+        applicability: { project: true, branchMode, ...(branchMode === 'exact' ? { branches: [git?.ref ?? git?.branch ?? 'detached'], sourceCommit: git?.commit ?? null } : {}), ...(listOption(args, '--paths') ? { paths: listOption(args, '--paths') } : {}) },
       };
       print(await learnKnowledge(target, statement.join(' '), input));
       return;
@@ -456,6 +491,25 @@ async function run(args: string[]): Promise<void> {
       } else {
         throw new Error(HELP.note);
       }
+      return;
+    }
+    case 'feedback': {
+      if (args[1] !== 'use' || !['knowledge', 'deadend'].includes(args[2])) throw new Error(HELP.feedback);
+      validateOptions(args.slice(3), ['--path', '--event-id'], ['--path', '--event-id']);
+      const values = positionals(args.slice(3), ['--path', '--event-id']);
+      if (values.length !== 1) throw new Error(HELP['feedback use']);
+      print(await recordUse(target, { entity: args[2] as 'knowledge' | 'deadend', entityId: values[0], eventId: option(args, '--event-id') ?? '' }));
+      return;
+    }
+    case 'journal': {
+      if (args[1] !== 'verify') throw new Error(HELP.journal);
+      validateOptions(args.slice(2), ['--path'], ['--path']);
+      validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['journal verify']);
+      const root = target ?? process.cwd();
+      const events = await readJournal(root);
+      const projection = projectEvents(events);
+      const last = events.at(-1);
+      print({ verified: true, eventCount: events.length, cursor: { eventId: last?.eventId ?? null, hash: last?.hash ?? null }, counts: { contexts: Object.keys(projection.contexts).length, notes: Object.keys(projection.notes).length, knowledge: Object.keys(projection.knowledge).length, deadends: Object.keys(projection.deadends).length } });
       return;
     }
     case 'migrate': {
@@ -523,6 +577,11 @@ async function run(args: string[]): Promise<void> {
         const values = positionals(args.slice(2), ['--path']);
         if (values.length !== 1) throw new Error(HELP['knowledge verify']);
         print(await verifyKnowledge(target, values[0]));
+      } else if (args[1] === 'deprecate' || args[1] === 'reject') {
+        validateOptions(args.slice(2), ['--path', '--reason'], ['--path', '--reason']);
+        const values = positionals(args.slice(2), ['--path', '--reason']);
+        if (values.length !== 1) throw new Error(HELP[`knowledge ${args[1]}`]);
+        print(await transitionKnowledge(target, values[0], args[1] === 'deprecate' ? 'deprecated' : 'rejected', option(args, '--reason') ?? ''));
       } else {
         validateOptions(args.slice(1), ['--all', '--path'], ['--path']);
         validatePositionals(positionals(args.slice(1), ['--path']), 0, HELP.knowledge);
@@ -536,16 +595,24 @@ async function run(args: string[]): Promise<void> {
         const values = positionals(args.slice(2), ['--path']);
         if (values.length !== 1) throw new Error(HELP['deadend verify']);
         print(await verifyDeadend(target, values[0]));
+      } else if (args[1] === 'obsolete' || args[1] === 'reject') {
+        validateOptions(args.slice(2), ['--path', '--reason'], ['--path', '--reason']);
+        const values = positionals(args.slice(2), ['--path', '--reason']);
+        if (values.length !== 1) throw new Error(HELP[`deadend ${args[1]}`]);
+        print(await transitionDeadend(target, values[0], args[1] === 'obsolete' ? 'obsolete' : 'rejected', option(args, '--reason') ?? ''));
       } else {
-        const valueOptions = ['--path', '--attempt', '--reason', '-m', '--scope', '--context', '--snapshot', '--evidence'];
+        const valueOptions = ['--path', '--attempt', '--reason', '-m', '--scope', '--context', '--snapshot', '--evidence', '--branch-mode', '--paths'];
         validateOptions(args.slice(1), valueOptions, valueOptions);
         const values = positionals(args.slice(1), valueOptions);
         validatePositionals(values, 1, HELP.deadend);
+        const branchMode = enumOption(args, '--branch-mode', ['global', 'exact'] as const) ?? 'global';
+        const git = branchMode === 'exact' ? await readGitWorktreeState(target ?? process.cwd()) : null;
         const input: DeadendInput = {
           scope: option(args, '--scope'),
           sourceContextId: option(args, '--context'),
           sourceSnapshotId: option(args, '--snapshot'),
           evidence: listOption(args, '--evidence'),
+          applicability: { project: true, branchMode, ...(branchMode === 'exact' ? { branches: [git?.ref ?? git?.branch ?? 'detached'], sourceCommit: git?.commit ?? null } : {}), ...(listOption(args, '--paths') ? { paths: listOption(args, '--paths') } : {}) },
         };
         print(await recordDeadend(target, option(args, '--attempt') ?? values[0], option(args, '--reason') ?? option(args, '-m') ?? '', input));
       }

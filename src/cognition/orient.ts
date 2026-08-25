@@ -5,8 +5,9 @@ import { readJson } from '../storage/json-store.js';
 import { loadManifest } from '../runtime/init.js';
 import { readJournal } from './journal.js';
 import { projectEvents, workspaceKey } from './projections.js';
+import { buildRetrievalProjection } from './retrieval.js';
 import { v1Synced } from './v1-bridge.js';
-import type { CognitionEvent, CognitionManifest, CognitionRuntimePolicy } from './types.js';
+import type { CognitionEvent, CognitionManifest, CognitionRuntimePolicy, CognitionRetrievalProjection } from './types.js';
 
 export interface V2OrientationPlan {
   contextId: string;
@@ -14,6 +15,9 @@ export interface V2OrientationPlan {
   knowledgeIds: ReadonlySet<string>;
   deadendIds: ReadonlySet<string>;
   noteIds: ReadonlySet<string>;
+  retrieval: CognitionRetrievalProjection;
+  currentGit: CognitionEvent['git'];
+  selection: 'requested-context' | 'exact-worktree-ref' | 'legacy-ref-branch';
 }
 
 function contextReference(value: string): { contextId: string; snapshotId: string } | null {
@@ -62,6 +66,7 @@ export async function selectV2Orientation(projectRoot: string, contextId?: strin
     if (events.length === 0) return null;
     const projection = projectEvents(events);
     let selected: { contextId: string; snapshotId: string } | null = null;
+    let selection: V2OrientationPlan['selection'] = 'requested-context';
     if (contextId) {
       const matching = [...Object.keys(projection.contexts)].reverse().find((reference) => contextReference(reference)?.contextId === contextId);
       selected = matching ? contextReference(matching) : null;
@@ -70,9 +75,16 @@ export async function selectV2Orientation(projectRoot: string, contextId?: strin
       const legacy = Object.values(projection.workspaces).find((workspace) => workspace.worktreeId === null && (workspace.ref === current.ref || workspace.branch === current.branch));
       const reference = (exact?.activeContextRef ? exact : legacy)?.activeContextRef;
       selected = reference ? contextReference(reference) : null;
+      selection = exact?.activeContextRef ? 'exact-worktree-ref' : 'legacy-ref-branch';
     }
     if (!selected || !projection.contexts[`${selected.contextId}:${selected.snapshotId}`]) return null;
-    return { ...selected, ...latestRecords(events, current, selected.contextId) };
+    return {
+      ...selected,
+      ...latestRecords(events, current, selected.contextId),
+      retrieval: buildRetrievalProjection(events),
+      currentGit: { worktreeId: current.worktreeId, branch: current.branch, ref: current.ref, head: current.commit },
+      selection,
+    };
   } catch {
     return null;
   }

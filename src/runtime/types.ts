@@ -155,6 +155,14 @@ export interface ActivityResult {
 export type KnowledgeStatus = 'candidate' | 'verified' | 'deprecated' | 'rejected';
 export type DeadendStatus = 'candidate' | 'verified' | 'obsolete' | 'rejected';
 
+export interface RecordApplicability {
+  project: true;
+  branches?: string[];
+  branchMode: 'global' | 'exact';
+  paths?: string[];
+  sourceCommit?: string | null;
+}
+
 export interface Knowledge {
   knowledgeId: string;
   kind: string;
@@ -165,6 +173,8 @@ export interface Knowledge {
   sourceContextIds: string[];
   sourceSnapshotIds: string[];
   supportingEvidence: string[];
+  applicability?: RecordApplicability;
+  governance?: { reason: string; transitionedAt: string };
   createdAt: string;
   updatedAt: string;
 }
@@ -175,6 +185,7 @@ export interface KnowledgeInput {
   sourceContextId?: string;
   sourceSnapshotId?: string;
   evidence?: string[];
+  applicability?: RecordApplicability;
 }
 
 export interface KnowledgeDiscoverOptions {
@@ -233,6 +244,7 @@ export interface DeadendInput {
   sourceContextId?: string;
   sourceSnapshotId?: string;
   evidence?: string[];
+  applicability?: RecordApplicability;
 }
 
 export interface Deadend {
@@ -244,6 +256,8 @@ export interface Deadend {
   status: DeadendStatus;
   sourceContextId: string | null;
   sourceSnapshotId: string | null;
+  applicability?: RecordApplicability;
+  governance?: { reason: string; transitionedAt: string };
   createdAt: string;
   updatedAt: string;
 }

@@ -5,7 +5,7 @@ import { isRecord, readJson } from '../storage/json-store.js';
 import { withLock } from '../storage/lock.js';
 import { contextMetadataPath, deadendsPath, knowledgePath, locksDirectory, snapshotPath } from '../storage/layout.js';
 import { rebuildSnapshot } from './runtime.js';
-import type { Deadend, DeadendDiscoverOptions, DeadendDiscoveryResult, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus } from './types.js';
+import type { Deadend, DeadendDiscoverOptions, DeadendDiscoveryResult, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus, RecordApplicability } from './types.js';
 import { mirrorDeadend, mirrorKnowledge } from '../cognition/v1-bridge.js';
 
 function id(prefix: string): string {
@@ -39,6 +39,21 @@ function isKnowledgeFile(value: unknown): value is KnowledgeFile {
 
 function cleanList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function cleanApplicability(input: RecordApplicability | undefined): RecordApplicability {
+  if (!input) return { project: true, branchMode: 'global' };
+  if (input.project !== true || !['global', 'exact'].includes(input.branchMode)) throw new Error('invalid record applicability');
+  const branches = cleanList(input.branches);
+  const paths = cleanList(input.paths);
+  if (input.branchMode === 'exact' && branches.length === 0) throw new Error('exact applicability requires a branch');
+  return {
+    project: true,
+    branchMode: input.branchMode,
+    ...(branches.length > 0 ? { branches } : {}),
+    ...(paths.length > 0 ? { paths } : {}),
+    ...(input.sourceCommit === undefined ? {} : { sourceCommit: input.sourceCommit }),
+  };
 }
 
 function normalized(value: string): string {
@@ -109,6 +124,7 @@ export async function learnKnowledge(startPath: string | undefined, statement: s
       sourceContextIds: cleanList(input.sourceContextId ? [input.sourceContextId] : []),
       sourceSnapshotIds: cleanList(input.sourceSnapshotId ? [input.sourceSnapshotId] : []),
       supportingEvidence: cleanList(input.evidence),
+      applicability: cleanApplicability(input.applicability),
       createdAt: now,
       updatedAt: now,
     };
@@ -202,9 +218,29 @@ export async function verifyKnowledge(startPath: string | undefined, knowledgeId
     const file = await loadKnowledge(projectRoot);
     const item = file.items.find((candidate) => candidate.knowledgeId === knowledgeId);
     if (!item) throw new Error(`knowledge not found: ${knowledgeId}`);
+    if (item.status !== 'candidate') throw new Error(`knowledge must be a candidate to verify: ${knowledgeId}`);
     item.status = 'verified';
     item.confidence = Math.max(item.confidence, 0.8);
     item.updatedAt = new Date().toISOString();
+    await atomicWriteJson(knowledgePath(projectRoot), file);
+    await mirrorKnowledge(projectRoot, item);
+    return item;
+  });
+}
+
+export async function transitionKnowledge(startPath: string | undefined, knowledgeId: string, status: 'deprecated' | 'rejected', reason: string): Promise<Knowledge> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  if (!reason.trim()) throw new Error('knowledge transition reason must not be empty');
+  return withLock(`${locksDirectory(projectRoot)}/knowledge.lock`, async () => {
+    const file = await loadKnowledge(projectRoot);
+    const item = file.items.find((candidate) => candidate.knowledgeId === knowledgeId);
+    if (!item) throw new Error(`knowledge not found: ${knowledgeId}`);
+    if ((status === 'deprecated' && item.status !== 'verified') || (status === 'rejected' && item.status !== 'candidate')) {
+      throw new Error(`invalid knowledge transition: ${item.status} to ${status}`);
+    }
+    item.status = status;
+    item.updatedAt = new Date().toISOString();
+    item.governance = { reason: reason.trim(), transitionedAt: item.updatedAt };
     await atomicWriteJson(knowledgePath(projectRoot), file);
     await mirrorKnowledge(projectRoot, item);
     return item;
@@ -227,6 +263,7 @@ export async function recordDeadend(startPath: string | undefined, attempt: stri
       status: 'candidate',
       sourceContextId: input.sourceContextId ?? null,
       sourceSnapshotId: input.sourceSnapshotId ?? null,
+      applicability: cleanApplicability(input.applicability),
       createdAt: now,
       updatedAt: now,
     };
@@ -286,12 +323,32 @@ export async function discoverDeadends(startPath: string | undefined, query: str
   };
 }
 
+export async function transitionDeadend(startPath: string | undefined, deadendId: string, status: 'obsolete' | 'rejected', reason: string): Promise<Deadend> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  if (!reason.trim()) throw new Error('deadend transition reason must not be empty');
+  return withLock(`${locksDirectory(projectRoot)}/deadends.lock`, async () => {
+    const file = await loadDeadends(projectRoot);
+    const item = file.items.find((candidate) => candidate.deadendId === deadendId);
+    if (!item) throw new Error(`deadend not found: ${deadendId}`);
+    if ((status === 'obsolete' && item.status !== 'verified') || (status === 'rejected' && item.status !== 'candidate')) {
+      throw new Error(`invalid deadend transition: ${item.status} to ${status}`);
+    }
+    item.status = status;
+    item.updatedAt = new Date().toISOString();
+    item.governance = { reason: reason.trim(), transitionedAt: item.updatedAt };
+    await atomicWriteJson(deadendsPath(projectRoot), file);
+    await mirrorDeadend(projectRoot, item);
+    return item;
+  });
+}
+
 export async function verifyDeadend(startPath: string | undefined, deadendId: string): Promise<Deadend> {
   const projectRoot = await resolveProjectRoot(startPath);
   return withLock(`${locksDirectory(projectRoot)}/deadends.lock`, async () => {
     const file = await loadDeadends(projectRoot);
     const item = file.items.find((candidate) => candidate.deadendId === deadendId);
     if (!item) throw new Error(`deadend not found: ${deadendId}`);
+    if (item.status !== 'candidate') throw new Error(`deadend must be a candidate to verify: ${deadendId}`);
     item.status = 'verified';
     item.updatedAt = new Date().toISOString();
     await atomicWriteJson(deadendsPath(projectRoot), file);

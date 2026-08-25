@@ -4,7 +4,20 @@
 
 Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，项目文档仍然负责设计；`fluffy-context` 补齐的是持续演进的项目认知层。最终架构是 `project → knowledge runtime → LLM`：CLI、MCP、Claude Hook 和未来 IDE/Agent 集成只是事件入口与信息注入适配器，而不是认知本体。
 
-0.5.0 在 v2 迁移、可验证事件日志、确定性投影和按项目 Runtime 基础上，完成首个 branch-aware 注入闭环：迁移并启用 Runtime 后，Orient、MCP 与 Claude Hook 会按当前 worktree/ref 选择 Context，避免跨分支任务状态泄漏。v1 的 checkpoint、Note、Knowledge 与 Deadend 写入会最佳努力镜像为 v2 事件；Runtime 也会协调检测到的外部 v1 变更。自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。
+0.6.0 在 branch-aware 注入闭环上补齐了可治理的确定性检索：迁移并启用 Runtime 后，Orient 从 v2 journal 的可重建索引检索已验证、适用的 Knowledge 与 Deadend，并返回有界的选择、排除与截断说明。v1 的 checkpoint、Note、Knowledge 与 Deadend 写入仍会最佳努力镜像为 v2 事件；Runtime 也会协调检测到的外部 v1 变更。自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。
+
+## 版本演进
+
+| 版本 | 主要能力 | 关键特点 |
+| --- | --- | --- |
+| 0.1.0 | 本地 Context CLI、baseline/patch Snapshot、resume、Note、Candidate Knowledge/Deadend | Git 继续作为代码权威；Context 只保存有界任务状态，不复制项目文件；checkpoint 显式触发且支持 no-op、限流与敏感路径过滤。 |
+| 0.2.0 | 确定性 Knowledge Discovery、Agent TypeScript API、可安装 Skill | Candidate 与 Verified 分离；默认只注入已验证共识；不依赖向量库、模型或远端服务。 |
+| 0.3.x | MCP `context_orient`、Claude Code Hook 与集成配置生成 | 通过 stdio MCP 和 fail-open Hook 降低 Agent 主动调用成本；集成安装仅在 `--apply` 时写入项目配置。 |
+| 0.4.0 | v2 事件 journal、v1 显式迁移、可重建投影、本地 Runtime、Git 观察 | v2 与 v1 并存；NDJSON hash chain 是 v2 权威；Runtime 仅监听 loopback 并记录分支、ref 与 HEAD 元数据。 |
+| 0.5.0 | branch-aware Orient、v1 写入镜像、Runtime 协调、宿主事件捕获 | Context 按当前 worktree/ref 选择，避免跨分支任务状态泄漏；稳定宿主 ID 才会写入限长、脱敏后的 session/prompt intent。 |
+| 0.6.0 | journal 派生的确定性检索、治理终态、可解释 Orient、显式使用反馈 | 启用 v2 后直接从可重建索引检索已验证且适用的共识；使用反馈只影响稳定排序，绝不自动验证或提升 Candidate。 |
+
+所有版本均保持本地优先、显式治理与 fail-open 集成原则。v1 数据不会在迁移过程中被重写；当 v2 未启用、不可用、损坏或尚未同步时，读取接口会回退到兼容的 v1 行为。
 
 ## 适用场景
 
@@ -93,7 +106,11 @@ ctx note add "测试环境缺少回调凭据" --kind problem --context <context-
 ctx activity --context <context-id> --open
 ctx knowledge discover "支付回调"
 ctx knowledge verify <knowledge-id>
+ctx knowledge deprecate <knowledge-id> --reason "已被新的结论取代"
 ctx deadend verify <deadend-id>
+ctx deadend obsolete <deadend-id> --reason "当前架构已不再适用"
+ctx feedback use knowledge <knowledge-id> --event-id <stable-id>
+ctx journal verify
 ctx migrate v1 --dry-run
 ctx migrate v1 --apply
 ctx migrate verify
@@ -127,7 +144,7 @@ ctx runtime disable
 
 Runtime 是单项目、按需启动的本地守护进程。它只绑定 `127.0.0.1` 的动态端口，并要求存储在项目本地 `.context/v2/runtime/secret` 中的能力令牌；令牌不会显示在 CLI 状态输出或写入事件日志。启动后，Runtime 持续观察当前 worktree 的 Git 状态：初始状态会记录 `git.state.observed`，分支/ref 切换记录 `git.branch.changed`，HEAD 更新记录 `git.head.changed`。这些事件会重建 branch workspace 投影，但不会自动创建 checkpoint 或将候选信息提升为已验证共识。
 
-完成迁移并显式 `ctx runtime enable` 后，`ctx orient`、MCP `context_orient` 与 Claude Hook 会优先选择当前 worktree/ref 的 v2 workspace；它不会借用其他分支的 Context。没有匹配 workspace、v2 状态不可用或 Runtime 已禁用时，接口会安全回退到既有 v1 选择逻辑。Runtime 停止时仍可读取已验证的 v2 状态，但运行中的 Runtime 负责持续 Git 观察和 v1 写入镜像。
+完成迁移并显式 `ctx runtime enable` 后，`ctx orient`、MCP `context_orient` 与 Claude Hook 会优先选择当前 worktree/ref 的 v2 workspace；它不会借用其他分支的 Context。v2 可用时，Knowledge 与 Deadend 由 journal 重放出的确定性倒排索引直接检索，默认仅返回已验证且适用的记录；无匹配 workspace、v2 状态不可用、journal 损坏、v1 尚未同步或 Runtime 已禁用时，接口会安全回退到既有 v1 选择逻辑。Runtime 停止时仍可读取已验证的 v2 状态，但运行中的 Runtime 负责持续 Git 观察和 v1 写入镜像。
 
 Claude Hook 仅在宿主提供稳定的 session 与 event 标识时记录 `host.session.started` 或 `host.prompt.submitted`。提示只保存按 `promptIntentMaxChars` 截断并经过敏感值脱敏后的 intent，绝不保存原始提示；缺少稳定标识时不写入事件。默认 Hook 不启动守护进程；将 v2 policy 的 `allowHookStartup` 设为 `true` 后，SessionStart 才会在严格超时内尽力启动 Runtime，失败仍会 fail open。UserPromptSubmit 不会启动 Runtime。
 
@@ -141,7 +158,11 @@ Claude Hook 仅在宿主提供稳定的 session 与 event 标识时记录 `host.
 
 ### Knowledge 与 Deadend
 
-`ctx learn` 和 `ctx deadend` 默认创建 `candidate` 项。普通发现与 `ctx orient` 只使用已验证项目共识；候选项需要通过 `ctx knowledge verify` 或 `ctx deadend verify` 显式确认，或以 `--all` 审查。
+`ctx learn` 和 `ctx deadend` 默认创建 `candidate` 项。普通发现与 `ctx orient` 只使用已验证项目共识；候选项需要通过 `ctx knowledge verify` 或 `ctx deadend verify` 显式确认，或以 `--all` 审查。验证后的 Knowledge 可用 `ctx knowledge deprecate` 退役，候选项可用 `ctx knowledge reject` 拒绝；验证后的 Deadend 可用 `ctx deadend obsolete` 退役，候选项可用 `ctx deadend reject` 拒绝。终态记录保留证据与治理原因，但不会被默认注入。
+
+新记录默认具有 `global` 适用性。需要限制到当前 worktree/ref 时，可使用 `--branch-mode exact`；`--paths` 只保存精确项目相对路径约束，当前版本不会推断目录前缀、Git 祖先关系、依赖关系或语义相似路径。`ctx orient` 的 `explanation` 字段会有界地给出 v2/v1 选择方式、排除计数和各类别截断原因。
+
+`ctx feedback use knowledge|deadend ... --event-id <stable-id>` 只记录一个幂等的 v2 使用信号。它只作为同等词法相关性结果的确定性排序因素，永不改变验证状态、confidence、evidence 或适用性；Orient、MCP 与 Hook 不会隐式写入该信号。
 
 ```bash
 ctx learn "订单取消后不能再次进入支付中状态" --scope project
@@ -222,6 +243,6 @@ npm pack --dry-run --json
 
 ## 当前范围
 
-0.5.0 聚焦单项目、本地优先的 branch-aware Knowledge Runtime MVP：有界 Orient、显式 checkpoint、确定性 Knowledge/Deadend discovery、MCP `context_orient`、可选 Claude Code Hook，以及 v1 到 v2 的显式事件日志迁移和 Git-aware 本地 Runtime。完成迁移并启用 Runtime 后，Orient、MCP 与 Hook 使用当前 worktree/ref 的 workspace 选择分支正确的 Context，并在 v2 不可用时保持 v1 回退；Runtime 负责可靠捕获生命周期、Git 元数据与后续 v1 写入镜像。带稳定宿主标识的 Hook 事件仅以脱敏、限长 intent 进入 journal。
+0.6.0 聚焦单项目、本地优先、可治理的 branch-aware Knowledge Runtime MVP：有界且可解释的 Orient、显式 checkpoint、journal 派生的确定性 Knowledge/Deadend 检索、终态治理、显式使用反馈、MCP `context_orient`、可选 Claude Code Hook，以及 v1 到 v2 的显式事件日志迁移和 Git-aware 本地 Runtime。完成迁移并启用 Runtime 后，Orient、MCP 与 Hook 使用当前 worktree/ref 的 workspace 选择分支正确的 Context，并在 v2 不可用时保持 v1 回退；Runtime 负责可靠捕获生命周期、Git 元数据与后续 v1 写入镜像。带稳定宿主标识的 Hook 事件仅以脱敏、限长 intent 进入 journal。
 
 远程同步、多人协作、复杂语义检索、自动模型总结、自动 checkpoint、Context merge、自动验证候选共识，以及更多状态变更型 MCP 工具不属于当前版本范围。

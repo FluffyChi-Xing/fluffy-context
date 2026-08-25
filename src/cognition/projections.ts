@@ -9,8 +9,10 @@ import {
   cognitionKnowledgeProjectionPath,
   cognitionNotesProjectionPath,
   cognitionProjectionCursorPath,
+  cognitionRetrievalProjectionPath,
 } from '../storage/layout.js';
 import { readJournal } from './journal.js';
+import { buildRetrievalProjection } from './retrieval.js';
 import type { BranchWorkspace, CognitionEvent, CognitionGitAnchor, CognitionProjection, CognitionRecordPayload, ProjectionCursor } from './types.js';
 
 export function workspaceKey(anchor: Pick<CognitionGitAnchor, 'worktreeId' | 'branch' | 'ref'>): string {
@@ -83,11 +85,11 @@ export function projectEvents(events: CognitionEvent[]): CognitionProjection {
       const noteId = recordId(record, 'note');
       if (noteId) projection.notes[noteId] = payload!;
     }
-    if ((event.type === 'knowledge.proposed' || event.type === 'knowledge.verified') && record) {
+    if (['knowledge.proposed', 'knowledge.verified', 'knowledge.deprecated', 'knowledge.rejected'].includes(event.type) && record) {
       const knowledgeId = recordId(record, 'knowledge');
       if (knowledgeId) projection.knowledge[knowledgeId] = payload!;
     }
-    if ((event.type === 'deadend.proposed' || event.type === 'deadend.verified') && record) {
+    if (['deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected'].includes(event.type) && record) {
       const deadendId = recordId(record, 'deadend');
       if (deadendId) projection.deadends[deadendId] = payload!;
     }
@@ -114,6 +116,7 @@ async function removeObsoleteWorkspaceFiles(projectRoot: string, workspaceKeys: 
 export async function rebuildProjections(projectRoot: string): Promise<{ projection: CognitionProjection; cursor: ProjectionCursor }> {
   const events = await readJournal(projectRoot);
   const projection = projectEvents(events);
+  const retrieval = buildRetrievalProjection(events);
   const last = events.at(-1);
   const cursor: ProjectionCursor = {
     schemaVersion: 2,
@@ -127,6 +130,7 @@ export async function rebuildProjections(projectRoot: string): Promise<{ project
     atomicWriteJson(cognitionNotesProjectionPath(projectRoot), projection.notes),
     atomicWriteJson(cognitionKnowledgeProjectionPath(projectRoot), projection.knowledge),
     atomicWriteJson(cognitionDeadendsProjectionPath(projectRoot), projection.deadends),
+    atomicWriteJson(cognitionRetrievalProjectionPath(projectRoot), retrieval),
     ...Object.values(projection.workspaces).map((workspace) => atomicWriteJson(`${cognitionBranchesDirectory(projectRoot)}/${workspace.workspaceKey}.json`, workspace)),
   ]);
   await atomicWriteJson(cognitionProjectionCursorPath(projectRoot), cursor);

@@ -47,6 +47,14 @@ function isNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
+function eventType(record: V1Record, live = false): import('./types.js').CognitionEventType {
+  const status = record.record.status;
+  if (record.kind === 'context') return live ? 'context.state.recorded' : 'context.checkpoint.imported';
+  if (record.kind === 'note') return record.record.absorbedBySnapshotId ? 'note.absorbed' : record.record.status === 'resolved' ? 'note.resolved' : 'note.recorded';
+  if (record.kind === 'knowledge') return status === 'verified' ? 'knowledge.verified' : status === 'deprecated' ? 'knowledge.deprecated' : status === 'rejected' ? 'knowledge.rejected' : 'knowledge.proposed';
+  return status === 'verified' ? 'deadend.verified' : status === 'obsolete' ? 'deadend.obsoleted' : status === 'rejected' ? 'deadend.rejected' : 'deadend.proposed';
+}
+
 async function readOptional(filePath: string): Promise<string | null> {
   try { return await readFile(filePath, 'utf8'); } catch (error) { if (isNotFound(error)) return null; throw error; }
 }
@@ -148,12 +156,8 @@ export async function importV1(startPath?: string): Promise<MigrationReport> {
     await writeV2Metadata(projectRoot);
     const importedEventIds: string[] = [];
     for (const record of records) {
-    const status = record.record.status;
     const event = await appendEvent(projectRoot, {
-      type: record.kind === 'context' ? 'context.checkpoint.imported'
-        : record.kind === 'note' ? 'note.recorded'
-          : record.kind === 'knowledge' ? status === 'verified' ? 'knowledge.verified' : 'knowledge.proposed'
-            : status === 'verified' ? 'deadend.verified' : 'deadend.proposed',
+      type: eventType(record),
       occurredAt: record.occurredAt,
       source: { kind: 'migration' },
       idempotencyKey: `v1:${record.sourceHash}:${record.kind}:${record.id}`,
@@ -177,12 +181,8 @@ export async function reconcileV1State(startPath?: string): Promise<void> {
     if (!readiness.eligible) return;
     const { records, sourceHash } = await sourceRecords(projectRoot);
     for (const record of records) {
-      const status = record.record.status;
       await appendEvent(projectRoot, {
-        type: record.kind === 'context' ? 'context.state.recorded'
-          : record.kind === 'note' ? record.record.absorbedBySnapshotId ? 'note.absorbed' : record.record.status === 'resolved' ? 'note.resolved' : 'note.recorded'
-            : record.kind === 'knowledge' ? status === 'verified' ? 'knowledge.verified' : 'knowledge.proposed'
-              : status === 'verified' ? 'deadend.verified' : 'deadend.proposed',
+        type: eventType(record, true),
         occurredAt: record.occurredAt,
         source: { kind: 'migration' },
         idempotencyKey: `v1-live-sync:${sourceHash}:${record.kind}:${record.id}`,

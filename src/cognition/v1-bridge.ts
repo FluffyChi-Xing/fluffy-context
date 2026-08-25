@@ -45,7 +45,7 @@ async function enabled(projectRoot: string): Promise<boolean> {
   }
 }
 
-async function mirror(projectRoot: string, type: 'context.state.recorded' | 'note.recorded' | 'note.absorbed' | 'knowledge.proposed' | 'knowledge.verified' | 'deadend.proposed' | 'deadend.verified', record: Record<string, unknown>, identity: string): Promise<void> {
+async function mirror(projectRoot: string, type: 'context.state.recorded' | 'note.recorded' | 'note.absorbed' | 'knowledge.proposed' | 'knowledge.verified' | 'knowledge.deprecated' | 'knowledge.rejected' | 'deadend.proposed' | 'deadend.verified' | 'deadend.obsoleted' | 'deadend.rejected', record: Record<string, unknown>, identity: string): Promise<void> {
   if (!await enabled(projectRoot)) return;
   try {
     const state = await readGitWorktreeState(projectRoot);
@@ -72,9 +72,17 @@ export async function mirrorNote(projectRoot: string, note: Note, absorbed = fal
 }
 
 export async function mirrorKnowledge(projectRoot: string, knowledge: Knowledge): Promise<void> {
-  await mirror(projectRoot, knowledge.status === 'verified' ? 'knowledge.verified' : 'knowledge.proposed', knowledge as unknown as Record<string, unknown>, knowledge.knowledgeId);
+  const type = knowledge.status === 'verified' ? 'knowledge.verified'
+    : knowledge.status === 'deprecated' ? 'knowledge.deprecated'
+      : knowledge.status === 'rejected' ? 'knowledge.rejected'
+        : 'knowledge.proposed';
+  await mirror(projectRoot, type, knowledge as unknown as Record<string, unknown>, knowledge.knowledgeId);
 }
 
 export async function mirrorDeadend(projectRoot: string, deadend: Deadend): Promise<void> {
-  await mirror(projectRoot, deadend.status === 'verified' ? 'deadend.verified' : 'deadend.proposed', deadend as unknown as Record<string, unknown>, deadend.deadendId);
+  const type = deadend.status === 'verified' ? 'deadend.verified'
+    : deadend.status === 'obsolete' ? 'deadend.obsoleted'
+      : deadend.status === 'rejected' ? 'deadend.rejected'
+        : 'deadend.proposed';
+  await mirror(projectRoot, type, deadend as unknown as Record<string, unknown>, deadend.deadendId);
 }

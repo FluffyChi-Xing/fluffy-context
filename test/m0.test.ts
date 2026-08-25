@@ -7,7 +7,7 @@ import { initProject } from '../src/runtime/init.js';
 import { checkpoint, resume } from '../src/runtime/runtime.js';
 import { addNote, listActivity, listNotes } from '../src/runtime/notes.js';
 import { doctor, status } from '../src/runtime/diagnostics.js';
-import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../src/runtime/knowledge.js';
+import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionDeadend, transitionKnowledge } from '../src/runtime/knowledge.js';
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-runtime-'));
@@ -115,6 +115,28 @@ test('knowledge and deadends stay candidate until verified', async () => {
     assert.deepEqual(await listDeadends(root), []);
     await verifyDeadend(root, deadend.deadendId);
     assert.equal((await listDeadends(root)).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('governance transitions retain terminal evidence and reject invalid reversals', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const knowledge = await learnKnowledge(root, 'Orders reject duplicate payment requests');
+    await assert.rejects(() => transitionKnowledge(root, knowledge.knowledgeId, 'deprecated', 'superseded'), /invalid knowledge transition/);
+    const rejectedKnowledge = await transitionKnowledge(root, knowledge.knowledgeId, 'rejected', 'insufficient evidence');
+    assert.equal(rejectedKnowledge.status, 'rejected');
+    assert.equal(rejectedKnowledge.governance?.reason, 'insufficient evidence');
+    await assert.rejects(() => verifyKnowledge(root, knowledge.knowledgeId), /must be a candidate/);
+
+    const deadend = await recordDeadend(root, 'Share mutable payment state', 'Leaks state');
+    await verifyDeadend(root, deadend.deadendId);
+    const obsoleteDeadend = await transitionDeadend(root, deadend.deadendId, 'obsolete', 'isolated state now supported');
+    assert.equal(obsoleteDeadend.status, 'obsolete');
+    assert.equal(obsoleteDeadend.governance?.reason, 'isolated state now supported');
+    await assert.rejects(() => transitionDeadend(root, deadend.deadendId, 'rejected', 'late reversal'), /invalid deadend transition/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

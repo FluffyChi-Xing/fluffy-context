@@ -8,7 +8,7 @@ import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { discoverKnowledge, recordDeadend, verifyDeadend, verifyKnowledge, learnKnowledge } from '../src/runtime/knowledge.js';
 import { addNote } from '../src/runtime/notes.js';
-import { contextOrient, saveContext, loadContext, searchContext } from '../src/agent/api.js';
+import { contextOrient, saveContext, loadContext, recordContextUse, searchContext } from '../src/agent/api.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { enableRuntime } from '../src/cognition/runtime.js';
 
@@ -141,6 +141,38 @@ test('v2 orientation mirrors live checkpoint state after migration', async () =>
     assert.equal(result.status, 'ready');
     if (result.status !== 'ready') return;
     assert.equal(result.resumeSummary.progressSummary, 'Live mirrored state');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('v2 orientation retrieves journal-projected consensus and explains feedback ranking', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await saveContext(root, { title: 'Payments', progressSummary: 'Use gateway validation' });
+    assert.equal(saved.result.status, 'saved');
+    if (saved.result.status !== 'saved') return;
+    const first = await learnKnowledge(root, 'Payment callback validates the gateway signature');
+    const second = await learnKnowledge(root, 'Payment callback validates the payload signature');
+    await verifyKnowledge(root, first.knowledgeId);
+    await verifyKnowledge(root, second.knowledgeId);
+    await importV1(root);
+    await enableRuntime(root);
+    const initial = await contextOrient(root, { query: 'payment callback validates', knowledgeLimit: 2 });
+    assert.equal(initial.status, 'ready');
+    if (initial.status !== 'ready') return;
+    assert.equal(initial.explanation.mode, 'v2');
+    assert.equal(initial.knowledge.total, 2);
+    const use = await recordContextUse(root, { entity: 'knowledge', entityId: second.knowledgeId, eventId: 'feedback-1' });
+    assert.equal(use.recorded, true);
+    assert.equal((await recordContextUse(root, { entity: 'knowledge', entityId: second.knowledgeId, eventId: 'feedback-1' })).recorded, false);
+    const ranked = await contextOrient(root, { query: 'payment callback validates', knowledgeLimit: 2 });
+    assert.equal(ranked.status, 'ready');
+    if (ranked.status !== 'ready') return;
+    assert.equal(ranked.knowledge.hits[0].knowledge.knowledgeId, second.knowledgeId);
+    assert.ok(ranked.knowledge.hits[0].why.includes('prior recorded use'));
+    assert.ok(Object.hasOwn(ranked.explanation.retrieval.knowledge, 'status_not_verified'));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

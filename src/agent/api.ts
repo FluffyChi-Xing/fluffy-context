@@ -3,7 +3,9 @@ import { resolveProjectRoot } from '../project/project-resolver.js';
 import { contextsRoot, contextMetadataPath } from '../storage/layout.js';
 import { isRecord, readJson } from '../storage/json-store.js';
 import { checkpoint, rebuildSnapshot, resume, resumeSnapshot } from '../runtime/runtime.js';
+import { recordUse } from '../cognition/feedback.js';
 import { selectV2Orientation } from '../cognition/orient.js';
+import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import type {
@@ -21,7 +23,7 @@ import type {
   ResumeSummary,
   StructuredContext,
 } from '../runtime/types.js';
-import type { ContextOrientOptions, ContextOrientResult } from './types.js';
+import type { ContextOrientOptions, ContextOrientResult, ContextUseInput } from './types.js';
 
 function normalized(value: string): string {
   return value.trim().toLocaleLowerCase();
@@ -199,6 +201,12 @@ export async function contextOrient(startPath: string | undefined, options: Cont
         deadends: emptyDeadends(query ?? ''),
         notes: [],
         truncated: false,
+        explanation: {
+          mode: 'v1-fallback',
+          selection: 'v1',
+          retrieval: { knowledge: {}, deadends: {} },
+          truncation: { summary: false, knowledge: false, deadends: false, notes: false },
+        },
       };
     }
     throw error;
@@ -211,26 +219,30 @@ export async function contextOrient(startPath: string | undefined, options: Cont
     limit: v2 ? Number.MAX_SAFE_INTEGER : options.noteLimit ?? 20,
     maxChars: options.maxChars ?? 4000,
   })).filter((note) => !v2 || v2.noteIds.has(note.noteId)).slice(0, options.noteLimit ?? 20);
-  const knowledge = query === null
+  const v2Knowledge = query === null || !v2 ? null : discoverV2Knowledge(v2.retrieval, query, v2.currentGit, {
+    scope: options.scope,
+    limit: options.knowledgeLimit ?? 10,
+    maxChars: options.maxChars ?? 4000,
+  });
+  const v2Deadends = query === null || !v2 ? null : discoverV2Deadends(v2.retrieval, query, v2.currentGit, {
+    scope: options.scope,
+    limit: options.deadendLimit ?? 10,
+    maxChars: options.maxChars ?? 4000,
+  });
+  const applicableKnowledge = query === null
     ? emptyKnowledge('')
-    : await discoverKnowledge(projectRoot, query, {
+    : v2Knowledge?.result ?? await discoverKnowledge(projectRoot, query, {
       scope: options.scope,
-      limit: v2 ? Number.MAX_SAFE_INTEGER : options.knowledgeLimit ?? 10,
+      limit: options.knowledgeLimit ?? 10,
       maxChars: options.maxChars ?? 4000,
     });
-  const deadends = query === null
+  const applicableDeadends = query === null
     ? emptyDeadends('')
-    : await discoverDeadends(projectRoot, query, {
+    : v2Deadends?.result ?? await discoverDeadends(projectRoot, query, {
       scope: options.scope,
-      limit: v2 ? Number.MAX_SAFE_INTEGER : options.deadendLimit ?? 10,
+      limit: options.deadendLimit ?? 10,
       maxChars: options.maxChars ?? 4000,
     });
-  const applicableKnowledge = v2
-    ? { ...knowledge, total: knowledge.hits.filter((hit) => v2.knowledgeIds.has(hit.knowledge.knowledgeId)).length, hits: knowledge.hits.filter((hit) => v2.knowledgeIds.has(hit.knowledge.knowledgeId)).slice(0, options.knowledgeLimit ?? 10) }
-    : knowledge;
-  const applicableDeadends = v2
-    ? { ...deadends, total: deadends.hits.filter((hit) => v2.deadendIds.has(hit.deadend.deadendId)).length, hits: deadends.hits.filter((hit) => v2.deadendIds.has(hit.deadend.deadendId)).slice(0, options.deadendLimit ?? 10) }
-    : deadends;
 
   const budget = { remaining: Math.max(0, options.maxChars ?? 4000) };
   const resumeSummary: ResumeSummary = {
@@ -278,7 +290,25 @@ export async function contextOrient(startPath: string | undefined, options: Cont
     deadends: limitedDeadendResult.result,
     notes: limitedNotesResult.notes,
     truncated: resumeTruncated || limitedKnowledgeResult.truncated || limitedDeadendResult.truncated || limitedNotesResult.truncated,
+    explanation: {
+      mode: v2 ? 'v2' : 'v1-fallback',
+      selection: v2?.selection ?? 'v1',
+      retrieval: {
+        knowledge: v2Knowledge?.exclusions ?? {},
+        deadends: v2Deadends?.exclusions ?? {},
+      },
+      truncation: {
+        summary: resumeTruncated,
+        knowledge: limitedKnowledgeResult.truncated,
+        deadends: limitedDeadendResult.truncated,
+        notes: limitedNotesResult.truncated,
+      },
+    },
   };
+}
+
+export async function recordContextUse(startPath: string | undefined, input: ContextUseInput): Promise<{ recorded: boolean; eventId: string }> {
+  return recordUse(startPath, input);
 }
 
 export async function searchContext(startPath: string | undefined, query: string, options: ContextSearchOptions = {}): Promise<ContextSearchResult> {

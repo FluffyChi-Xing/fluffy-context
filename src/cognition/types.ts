@@ -19,9 +19,12 @@ export type CognitionEventType =
   | 'knowledge.proposed'
   | 'knowledge.verified'
   | 'knowledge.deprecated'
+  | 'knowledge.rejected'
   | 'deadend.proposed'
   | 'deadend.verified'
   | 'deadend.obsoleted'
+  | 'deadend.rejected'
+  | 'record.used'
   | 'projection.advanced'
   | 'projection.failed';
 
@@ -74,6 +77,48 @@ export interface Applicability {
   paths?: string[];
   sourceCommit?: string | null;
   dependencyConstraints?: string[];
+}
+
+export interface CognitionLifecycleTransition {
+  entity: 'knowledge' | 'deadend';
+  entityId: string;
+  from: 'candidate' | 'verified';
+  to: 'verified' | 'deprecated' | 'rejected' | 'obsolete';
+  reason?: string;
+}
+
+export interface CognitionUseFeedback {
+  feedbackId: string;
+  entity: 'knowledge' | 'deadend';
+  entityId: string;
+  outcome: 'used';
+}
+
+export interface CognitionRetrievalEntry {
+  entity: 'knowledge' | 'deadend';
+  entityId: string;
+  status: string;
+  record: Record<string, unknown>;
+  applicability: Applicability;
+  searchable: Record<string, string>;
+  normalizedTerms: string[];
+  provenance: {
+    eventId: string;
+    eventType: CognitionEventType;
+    occurredAt: string;
+    git: CognitionGitAnchor;
+    anchorProvenance?: CognitionRecordPayload['anchorProvenance'];
+  };
+  feedback: {
+    usedCount: number;
+    latestUsedAt: string | null;
+  };
+}
+
+export interface CognitionRetrievalProjection {
+  schemaVersion: 2;
+  entries: Record<string, CognitionRetrievalEntry>;
+  terms: Record<string, string[]>;
 }
 
 export interface BranchWorkspace {
