@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.2.0');
+    assert.equal(JSON.parse(result.stdout), '0.3.1');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -38,13 +38,22 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
       assert.match(result.stdout, new RegExp(`usage: ctx ${command}`), command);
       assert.equal(result.stderr, '');
     }
+    const agentServe = await runCli(['agent', 'serve', '--help'], root);
+    assert.equal(agentServe.code, 0);
+    assert.match(agentServe.stdout, /agent serve/);
+    const hook = await runCli(['hook', 'claude-code', '--help'], root);
+    assert.equal(hook.code, 0);
+    assert.match(hook.stdout, /hook claude-code/);
+    const integrate = await runCli(['integrate', 'claude', 'install', '--help'], root);
+    assert.equal(integrate.code, 0);
+    assert.match(integrate.stdout, /integrate claude install/);
     const noteAdd = await runCli(['note', 'add', '--help'], root);
     assert.equal(noteAdd.code, 0);
     assert.match(noteAdd.stdout, /note add/);
@@ -98,6 +107,51 @@ test('knowledge discover CLI returns deterministic JSON and validates filters', 
     const unknown = await runCli(['knowledge', 'discover', 'auth', '--unknown', '--path', root], root);
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /unknown option/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('orient CLI returns no_context and validates options', async () => {
+  const root = await project();
+  try {
+    const init = await runCli(['init', '--path', root], root);
+    assert.equal(init.code, 0);
+    const noContext = await runCli(['orient', 'authentication', '--path', root, '--scope', 'project', '--knowledge-limit', '1', '--deadend-limit', '1', '--note-limit', '1'], root);
+    assert.equal(noContext.code, 0);
+    const output = JSON.parse(noContext.stdout);
+    assert.equal(output.status, 'no_context');
+    assert.equal(output.query, 'authentication');
+    assert.equal(output.context, null);
+
+    const tooMany = await runCli(['orient', 'authentication', 'extra', '--path', root], root);
+    assert.notEqual(tooMany.code, 0);
+    assert.match(tooMany.stderr, /ctx orient/);
+    const unknown = await runCli(['orient', '--unknown', '--path', root], root);
+    assert.notEqual(unknown.code, 0);
+    assert.match(unknown.stderr, /unknown option/);
+    const invalidLimit = await runCli(['orient', '--max-chars', 'invalid', '--path', root], root);
+    assert.notEqual(invalidLimit.code, 0);
+    assert.match(invalidLimit.stderr, /non-negative integer/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Claude integration CLI previews and validates nested commands', async () => {
+  const root = await project();
+  try {
+    const preview = await runCli(['integrate', 'claude', 'install', '--path', root], root);
+    assert.equal(preview.code, 0);
+    assert.equal(JSON.parse(preview.stdout).applied, false);
+    assert.deepEqual(await readdir(root), []);
+
+    const unknown = await runCli(['integrate', 'claude', 'install', '--unknown', '--path', root], root);
+    assert.notEqual(unknown.code, 0);
+    assert.match(unknown.stderr, /unknown option/);
+    const invalid = await runCli(['hook', 'claude-code', 'unknown'], root);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stderr, /hook claude-code/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

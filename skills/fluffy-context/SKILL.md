@@ -15,8 +15,9 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 下班交接或完成一个阶段时运行 `ctx checkpoint`，不要为了每条消息频繁保存。
 - 开发过程中遇到问题、找到解决措施、做出临时决策或发现重要观察时，Agent 应优先使用低成本的 `ctx note add`，不要为了单条记录创建 Snapshot。
 - 人类需要了解 Agent 发生了什么时使用 `ctx activity`；它是只读时间线，不要求人类参与 Agent 的高频记录操作。
-- 新会话优先运行 `ctx resume --max-chars <预算>`，先看摘要，再按需读取 `details`。
-- Agent 集成可从 `dist/src/agent/index.js` 调用 `saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context`。
+- 新会话与新任务优先运行 `ctx orient [query] --max-chars <预算>`；它只读地返回有界摘要、匹配的已验证共识和当前 Context 的 open Note，不会创建 Snapshot 或更新 `lastUsedAt`。
+- 仅需要完整详情时再运行 `ctx resume --max-chars <预算>`；它会保留既有的 `lastUsedAt` 更新语义。
+- Agent 集成从 `fluffy-context` 或 `fluffy-context/agent` 导入 `contextOrient`、`saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context` 或导入内部 `dist/...` 路径。
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。
@@ -26,18 +27,20 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 ```text
 ctx init
   ↓
-ctx resume --max-chars 4000 / loadContext(...)
+ctx orient "当前任务" --max-chars 4000 / contextOrient(...)
   ↓
-ctx knowledge discover "需求" / searchContext(...)
+Plan：先形成实现计划
   ↓
-ctx note add "观察或问题"
+Implement：ctx note add "观察、决策或问题"
   ↓
-ctx checkpoint --title ... --progress ...
+Verify：执行适用检查并记录重要失败
   ↓
-ctx learn ... / ctx deadend ...
+Handoff：ctx checkpoint --title ... --progress ...
   ↓
-ctx knowledge verify ... / ctx deadend verify ...
+ctx learn ... / ctx deadend ... → 显式 verify
 ```
+
+`ctx orient` 不带查询时也有效，用于恢复当前任务和 open Note。带查询时只发现已验证的 Knowledge 与 Deadend；不要以候选项驱动普通实现。
 
 ### 初始化
 
@@ -93,6 +96,30 @@ ctx resume --path path/to/project --max-chars 2000
 - 可以保存：`status: "saved"`。
 
 遇到 `rate_limited` 时不要循环重试；完成更多阶段性工作后，在 `retryAt` 之后再保存。
+
+## MCP 与 Claude Code 集成
+
+`ctx agent serve` 提供 MCP stdio server，注册 `context_orient` 工具。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+
+```bash
+ctx agent serve
+```
+
+Claude Code 项目集成必须显式安装，且默认不修改文件：
+
+```bash
+ctx integrate claude inspect
+ctx integrate claude install
+ctx integrate claude install --apply
+```
+
+只有 `--apply` 会合并项目的 `.claude/settings.json` 和 `.mcp.json`。它保留无关配置，遇到无效 JSON、无效结构或同名 `fluffy-context` MCP server 冲突时必须拒绝覆盖。安装后 Hook 使用以下阶段引导：
+
+```text
+Orient → Plan → Implement → Verify → Handoff
+```
+
+Hook 是 fail-open 的只读提示：输入损坏、项目未初始化或定位失败时不应阻止任务；它不自动保存 Note 或 checkpoint。阶段结束时 Agent 应自行评估后执行一次带完成项、待办、决策和风险的 `ctx checkpoint`。
 
 ## Agent 短期记录与 Human 可观测性
 
@@ -268,7 +295,7 @@ ctx doctor --path <project-path>
 
 ### 5. `--help` 不能用 `JSON.parse` 解析
 
-`ctx --help` 和 `ctx --version` 是面向终端用户的文本输出；业务命令返回 JSON。脚本应根据命令区分处理：
+`ctx --help` 是面向终端用户的文本输出；`ctx --version` 输出 JSON 字符串，业务命令返回 JSON。脚本应根据命令区分处理：
 
 ```bash
 ctx --help
@@ -304,11 +331,14 @@ ctx learn "订单取消后不能再次进入支付中状态"
 [ ] 变更 checkpoint 为 patch
 [ ] 相同输入为 no_change
 [ ] 短时间变更输入为 rate_limited
-[ ] resumeSummary 受 --max-chars 限制
+[ ] ctx orient 的摘要、共识和 Note 受预算限制且不改写 Context
 [ ] .contextignored 排除敏感和越界路径
 [ ] Knowledge candidate → verified
 [ ] Deadend candidate → verified
-[ ] 不存在的来源被拒绝
+[ ] MCP context_orient 的 no_context 和单次错误不会终止 server
+[ ] Claude 集成预览不写文件，--apply 幂等且拒绝冲突
+[ ] Hook 失败时 fail open，且不会自动 checkpoint
+[ ] npm pack 的安装包可运行 ctx 并导入 contextOrient
 [ ] 未知参数返回非零退出码
 ```
 

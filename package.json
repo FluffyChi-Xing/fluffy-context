@@ -1,41 +1,73 @@
 {
   "name": "fluffy-context",
-  "version": "0.2.0",
-  "description": "面向 AI 编程会话的本地上下文运行时 CLI",
+  "version": "0.3.1",
+  "description": "Local context management CLI and MCP tools for AI coding agents",
+  "license": "MIT",
+  "author": "FluffyChi-Xing",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FluffyChi-Xing/fluffy-context.git"
+  },
+  "homepage": "https://github.com/FluffyChi-Xing/fluffy-context#readme",
+  "bugs": {
+    "url": "https://github.com/FluffyChi-Xing/fluffy-context/issues"
+  },
   "type": "module",
   "keywords": [
-    "context-runtime",
     "ai-agent",
-    "coding-agent",
-    "developer-tools",
+    "agent-context",
+    "claude-code",
     "cli",
     "context-management",
-    "session-resume",
-    "knowledge-base",
-    "deadend-tracking",
-    "snapshot"
+    "context-runtime",
+    "developer-tools",
+    "mcp",
+    "model-context-protocol",
+    "session-resume"
   ],
   "bin": {
     "ctx": "dist/src/cli/main.js"
   },
+  "types": "./dist/src/agent/index.d.ts",
   "exports": {
-    ".": "./dist/src/agent/index.js",
-    "./agent": "./dist/src/agent/index.js",
-    "./version": "./dist/src/version.js"
+    ".": {
+      "types": "./dist/src/agent/index.d.ts",
+      "default": "./dist/src/agent/index.js"
+    },
+    "./agent": {
+      "types": "./dist/src/agent/index.d.ts",
+      "default": "./dist/src/agent/index.js"
+    },
+    "./version": {
+      "types": "./dist/src/version.d.ts",
+      "default": "./dist/src/version.js"
+    }
   },
   "files": [
-    "dist/src"
+    "dist/src",
+    "README.md",
+    "LICENSE",
+    "skills/fluffy-context/SKILL.md"
   ],
   "engines": {
     "node": ">=20.19.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test dist/test/*.test.js",
+    "pack:check": "tsc -p tsconfig.test.json && node --test dist/test/package-smoke.test.js",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm test && npm run pack:check",
     "ctx": "npm run build && node dist/src/cli/main.js"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.4.3"
   }
 }

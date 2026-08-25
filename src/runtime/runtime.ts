@@ -339,11 +339,15 @@ export async function checkpoint(startPath: string | undefined, input: Checkpoin
   });
 }
 
-export async function resume(startPath?: string, contextId?: string, maxChars = 4000): Promise<ResumeResult> {
+export interface ResumeOptions {
+  touchLastUsedAt?: boolean;
+}
+
+export async function resume(startPath?: string, contextId?: string, maxChars = 4000, options: ResumeOptions = {}): Promise<ResumeResult> {
   const projectRoot = await resolveProjectRoot(startPath);
   await loadManifest(projectRoot);
   const git = await readGitState(projectRoot);
-  const index = await rebuildIndex(projectRoot);
+  const index = await rebuildIndex(projectRoot, options.touchLastUsedAt !== false);
   const candidates = index.contexts
     .filter((entry) => !contextId || entry.contextId === contextId)
     .filter((entry) => ['active', 'stable'].includes(entry.status))
@@ -355,8 +359,10 @@ export async function resume(startPath?: string, contextId?: string, maxChars = 
   const snapshot = await loadSnapshot(projectRoot, candidate.contextId, context.currentSnapshotId);
   const content = await rebuildSnapshot(projectRoot, candidate.contextId, snapshot.snapshotId);
   const drift = context.branch !== git.branch || context.commit !== git.commit;
-  context.lastUsedAt = new Date().toISOString();
-  await atomicWriteJson(contextMetadataPath(projectRoot, context.id), context);
+  if (options.touchLastUsedAt !== false) {
+    context.lastUsedAt = new Date().toISOString();
+    await atomicWriteJson(contextMetadataPath(projectRoot, context.id), context);
+  }
   const budget = { remaining: Math.max(0, maxChars) };
   const resumeSummary = {
     progressSummary: limited(content.progressSummary, budget.remaining),

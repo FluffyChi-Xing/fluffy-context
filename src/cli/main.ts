@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
+import { contextOrient } from '../agent/api.js';
+import { runClaudeCodeHook } from '../hooks/claude-code.js';
+import { inspectClaudeIntegration, installClaudeIntegration } from '../integrations/claude-code.js';
 import { doctor, status } from '../runtime/diagnostics.js';
 import { initProject } from '../runtime/init.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend } from '../runtime/knowledge.js';
@@ -91,6 +94,46 @@ Options:
   --path <path>          Project path
   --context <id>         Context ID
   --max-chars <number>   Maximum summary characters`,
+  orient: `usage: ctx orient [query] [options]
+
+Prepare bounded task context from the current work, verified consensus, matching deadends, and open notes.
+
+Options:
+  --path <path>              Project path
+  --context <id>             Context ID
+  --scope <scope>            Exact consensus scope
+  --max-chars <number>       Maximum display characters
+  --knowledge-limit <number> Maximum knowledge matches (default: 10)
+  --deadend-limit <number>   Maximum deadend matches (default: 10)
+  --note-limit <number>      Maximum open notes (default: 20)`,
+  agent: `usage: ctx agent serve
+
+Start an MCP stdio server for Agent integrations.
+
+Run "ctx agent serve --help" for details.`,
+  'agent serve': `usage: ctx agent serve
+
+Start an MCP stdio server exposing the context_orient tool.
+
+The server owns standard input/output; do not use it interactively.`,
+  hook: `usage: ctx hook claude-code session-start|user-prompt
+
+Run a Claude Code lifecycle hook. This command reads Hook JSON from standard input.`,
+  'hook claude-code': `usage: ctx hook claude-code session-start|user-prompt
+
+Emit best-effort, read-only phased Context guidance for Claude Code.`,
+  integrate: `usage: ctx integrate claude inspect|install [--path <path>] [--apply]
+
+Inspect or explicitly install project-local Claude Code hooks and MCP configuration.`,
+  'integrate claude': `usage: ctx integrate claude inspect|install [--path <path>] [--apply]
+
+Inspect configuration, or preview/install project-local Claude Code integration.`,
+  'integrate claude inspect': `usage: ctx integrate claude inspect [--path <path>]
+
+Report whether the project has the Claude Code hooks and MCP server configured.`,
+  'integrate claude install': `usage: ctx integrate claude install [--path <path>] [--apply]
+
+Preview configuration changes by default. Pass --apply to merge project-local .claude/settings.json and .mcp.json.`,
   status: `usage: ctx status [--path <path>]
 
 Show the initialized project and context index.`,
@@ -193,7 +236,7 @@ Options:
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|status|doctor|learn|knowledge|deadend|deadends|note|activity [options]
+  return `usage: ctx init|checkpoint|resume|orient|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -202,14 +245,21 @@ function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+async function stdin(): Promise<string> {
+  let value = '';
+  for await (const chunk of process.stdin) value += chunk.toString();
+  return value;
+}
+
 function printHelp(args: string[]): boolean {
   const command = args[0];
   if (!command) {
     process.stdout.write(`${usage()}\n`);
     return true;
   }
-  const key = args[1] === 'verify' || args[1] === 'add' || args[1] === 'list' || args[1] === 'discover' ? `${command} ${args[1]}` : command;
-  const help = HELP[key];
+  const key = args[1] === 'verify' || args[1] === 'add' || args[1] === 'list' || args[1] === 'discover' || args[1] === 'serve' || args[1] === 'claude' ? `${command} ${args[1]}` : command;
+  const nestedKey = key === 'integrate claude' && (args[2] === 'inspect' || args[2] === 'install') ? `${key} ${args[2]}` : key;
+  const help = HELP[nestedKey];
   if (!help) return false;
   if (args.includes('--help')) {
     process.stdout.write(`${help}\n`);
@@ -266,6 +316,45 @@ async function run(args: string[]): Promise<void> {
       validatePositionals(positionals(args.slice(1), ['--path', '--context', '--max-chars']), 0, HELP.resume);
       print(await resume(target, option(args, '--context'), numericOption(args, '--max-chars', 4000)));
       return;
+    case 'orient': {
+      const valueOptions = ['--path', '--context', '--scope', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit'];
+      validateOptions(args.slice(1), valueOptions, valueOptions);
+      const query = positionals(args.slice(1), valueOptions);
+      validatePositionals(query, 1, HELP.orient);
+      print(await contextOrient(target, {
+        contextId: option(args, '--context'),
+        query: query[0],
+        scope: option(args, '--scope'),
+        maxChars: numericOption(args, '--max-chars', 4000),
+        knowledgeLimit: numericOption(args, '--knowledge-limit', 10),
+        deadendLimit: numericOption(args, '--deadend-limit', 10),
+        noteLimit: numericOption(args, '--note-limit', 20),
+      }));
+      return;
+    }
+    case 'agent':
+      if (args[1] !== 'serve') throw new Error(HELP.agent);
+      validateOptions(args.slice(2), [], []);
+      validatePositionals(positionals(args.slice(2), []), 0, HELP['agent serve']);
+      await import('../mcp/main.js');
+      return;
+    case 'hook': {
+      if (args[1] !== 'claude-code' || !['session-start', 'user-prompt'].includes(args[2])) throw new Error(HELP['hook claude-code']);
+      validateOptions(args.slice(3), [], []);
+      validatePositionals(positionals(args.slice(3), []), 0, HELP['hook claude-code']);
+      process.stdout.write(await runClaudeCodeHook(args[2] as 'session-start' | 'user-prompt', await stdin()));
+      return;
+    }
+    case 'integrate': {
+      if (args[1] !== 'claude' || !['inspect', 'install'].includes(args[2])) throw new Error(HELP['integrate claude']);
+      const valueOptions = ['--path'];
+      const allowed = args[2] === 'install' ? [...valueOptions, '--apply'] : valueOptions;
+      validateOptions(args.slice(3), allowed, valueOptions);
+      validatePositionals(positionals(args.slice(3), valueOptions), 0, HELP[`integrate claude ${args[2]}`]);
+      if (args[2] === 'inspect') print(await inspectClaudeIntegration(target));
+      else print(await installClaudeIntegration(target, args.includes('--apply')));
+      return;
+    }
     case 'status':
       validateOptions(args.slice(1), ['--path'], ['--path']);
       validatePositionals(positionals(args.slice(1), ['--path']), 0, HELP.status);

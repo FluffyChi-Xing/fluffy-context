@@ -133,7 +133,14 @@ dist
 # overview & design docs
 docs/overview
 docs/design
+docs/todos
 
 # jetbrains
 .idea/
+
+# fluffy-context local runtime
+.context/
+.contextignored
+.mcp.json
+.claude/
 

@@ -4,6 +4,7 @@ import { contextsRoot, contextMetadataPath } from '../storage/layout.js';
 import { isRecord, readJson } from '../storage/json-store.js';
 import { checkpoint, rebuildSnapshot, resume } from '../runtime/runtime.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
+import { listNotes } from '../runtime/notes.js';
 import type {
   AgentLoadOptions,
   AgentLoadResult,
@@ -13,10 +14,13 @@ import type {
   ContextSearchHit,
   ContextSearchOptions,
   ContextSearchResult,
+  DeadendDiscoveryResult,
   KnowledgeDiscoveryResult,
+  Note,
   ResumeSummary,
   StructuredContext,
 } from '../runtime/types.js';
+import type { ContextOrientOptions, ContextOrientResult } from './types.js';
 
 function normalized(value: string): string {
   return value.trim().toLocaleLowerCase();
@@ -39,6 +43,64 @@ function limitedList(values: string[], budget: { remaining: number }): string[] 
     const result = limited(value, budget);
     return result ? [result] : [];
   });
+}
+
+function textLength(value: string | null | string[]): number {
+  return Array.isArray(value) ? value.reduce((total, item) => total + item.length, 0) : value?.length ?? 0;
+}
+
+function emptyKnowledge(query: string): KnowledgeDiscoveryResult {
+  return { query, total: 0, truncated: false, hits: [], duplicateIds: [], possibleConflicts: [] };
+}
+
+function emptyDeadends(query: string): DeadendDiscoveryResult {
+  return { query, total: 0, truncated: false, hits: [] };
+}
+
+function limitKnowledge(result: KnowledgeDiscoveryResult, budget: { remaining: number }): { result: KnowledgeDiscoveryResult; truncated: boolean } {
+  let truncated = false;
+  const hits = [];
+  for (const hit of result.hits) {
+    if (budget.remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    const statement = limited(hit.knowledge.statement, budget);
+    const supportingEvidence = limitedList(hit.knowledge.supportingEvidence, budget);
+    if (statement.length < hit.knowledge.statement.length || supportingEvidence.length < hit.knowledge.supportingEvidence.length) truncated = true;
+    hits.push({ ...hit, knowledge: { ...hit.knowledge, statement, supportingEvidence } });
+  }
+  if (hits.length < result.hits.length) truncated = true;
+  return { result: { ...result, hits, truncated: result.truncated || truncated }, truncated };
+}
+
+function limitDeadends(result: DeadendDiscoveryResult, budget: { remaining: number }): { result: DeadendDiscoveryResult; truncated: boolean } {
+  let truncated = false;
+  const hits = [];
+  for (const hit of result.hits) {
+    if (budget.remaining <= 0) {
+      truncated = true;
+      break;
+    }
+    const attempt = limited(hit.deadend.attempt, budget);
+    const reason = limited(hit.deadend.reason, budget);
+    const observedEvidence = limitedList(hit.deadend.observedEvidence, budget);
+    if (attempt.length < hit.deadend.attempt.length || reason.length < hit.deadend.reason.length || observedEvidence.length < hit.deadend.observedEvidence.length) truncated = true;
+    hits.push({ ...hit, deadend: { ...hit.deadend, attempt, reason, observedEvidence } });
+  }
+  if (hits.length < result.hits.length) truncated = true;
+  return { result: { ...result, hits, truncated: result.truncated || truncated }, truncated };
+}
+
+function limitNotes(notes: Note[], budget: { remaining: number }): { notes: Note[]; truncated: boolean } {
+  const result: Note[] = [];
+  for (const note of notes) {
+    if (budget.remaining <= 0) return { notes: result, truncated: true };
+    const message = limited(note.message, budget);
+    result.push({ ...note, message });
+    if (message.length < note.message.length) return { notes: result, truncated: true };
+  }
+  return { notes: result, truncated: false };
 }
 
 function summary(content: StructuredContext, maxChars: number, branchOrCommitDrift = false): ResumeSummary {
@@ -109,6 +171,102 @@ export async function loadContext(startPath: string | undefined, options: AgentL
     ...(options.includeDetails ? { details: result.details } : {}),
     knowledge,
     verifiedDeadendIds: verifiedDeadends.map((item) => item.deadendId),
+  };
+}
+
+export async function contextOrient(startPath: string | undefined, options: ContextOrientOptions = {}): Promise<ContextOrientResult> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  const query = options.query === undefined ? null : options.query.trim();
+  if (query === '') throw new Error('context orient query must not be empty');
+
+  let loaded;
+  try {
+    loaded = await resume(projectRoot, options.contextId, options.maxChars ?? 4000, { touchLastUsedAt: false });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'no active context found') {
+      return {
+        status: 'no_context',
+        projectRoot,
+        query,
+        context: null,
+        snapshot: null,
+        resumeSummary: null,
+        knowledge: emptyKnowledge(query ?? ''),
+        deadends: emptyDeadends(query ?? ''),
+        notes: [],
+        truncated: false,
+      };
+    }
+    throw error;
+  }
+
+  const notes = await listNotes(projectRoot, {
+    contextId: loaded.context.id,
+    openOnly: true,
+    limit: options.noteLimit ?? 20,
+    maxChars: options.maxChars ?? 4000,
+  });
+  const knowledge = query === null
+    ? emptyKnowledge('')
+    : await discoverKnowledge(projectRoot, query, {
+      scope: options.scope,
+      limit: options.knowledgeLimit ?? 10,
+      maxChars: options.maxChars ?? 4000,
+    });
+  const deadends = query === null
+    ? emptyDeadends('')
+    : await discoverDeadends(projectRoot, query, {
+      scope: options.scope,
+      limit: options.deadendLimit ?? 10,
+      maxChars: options.maxChars ?? 4000,
+    });
+
+  const budget = { remaining: Math.max(0, options.maxChars ?? 4000) };
+  const resumeSummary: ResumeSummary = {
+    progressSummary: limited(loaded.resumeSummary.progressSummary, budget),
+    lastError: loaded.resumeSummary.lastError === null ? null : limited(loaded.resumeSummary.lastError, budget),
+    completed: limitedList(loaded.resumeSummary.completed, budget),
+    pendingTasks: limitedList(loaded.resumeSummary.pendingTasks, budget),
+    decisions: limitedList(loaded.resumeSummary.decisions, budget),
+    risks: limitedList(loaded.resumeSummary.risks, budget),
+    relatedFiles: limitedList(loaded.resumeSummary.relatedFiles, budget),
+    branchOrCommitDrift: loaded.resumeSummary.branchOrCommitDrift,
+  };
+  const resumeTruncated = textLength(resumeSummary.progressSummary) < textLength(loaded.resumeSummary.progressSummary)
+    || textLength(resumeSummary.lastError) < textLength(loaded.resumeSummary.lastError)
+    || textLength(resumeSummary.completed) < textLength(loaded.resumeSummary.completed)
+    || textLength(resumeSummary.pendingTasks) < textLength(loaded.resumeSummary.pendingTasks)
+    || textLength(resumeSummary.decisions) < textLength(loaded.resumeSummary.decisions)
+    || textLength(resumeSummary.risks) < textLength(loaded.resumeSummary.risks)
+    || textLength(resumeSummary.relatedFiles) < textLength(loaded.resumeSummary.relatedFiles);
+  const limitedKnowledgeResult = limitKnowledge(knowledge, budget);
+  const limitedDeadendResult = limitDeadends(deadends, budget);
+  const limitedNotesResult = limitNotes(notes, budget);
+
+  return {
+    status: 'ready',
+    projectRoot,
+    query,
+    context: {
+      id: loaded.context.id,
+      title: loaded.context.title,
+      status: loaded.context.status,
+      branch: loaded.context.branch,
+      commit: loaded.context.commit,
+      updatedAt: loaded.context.updatedAt,
+    },
+    snapshot: {
+      snapshotId: loaded.snapshot.snapshotId,
+      mode: loaded.snapshot.mode,
+      createdAt: loaded.snapshot.createdAt,
+      branch: loaded.snapshot.branch,
+      commit: loaded.snapshot.commit,
+    },
+    resumeSummary,
+    knowledge: limitedKnowledgeResult.result,
+    deadends: limitedDeadendResult.result,
+    notes: limitedNotesResult.notes,
+    truncated: resumeTruncated || limitedKnowledgeResult.truncated || limitedDeadendResult.truncated || limitedNotesResult.truncated,
   };
 }
 
