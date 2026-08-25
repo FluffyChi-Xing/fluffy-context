@@ -51,3 +51,71 @@ export function deadendsPath(projectRoot: string): string {
 export function notesPath(projectRoot: string): string {
   return path.join(contextRoot(projectRoot), 'notes.json');
 }
+
+export function cognitionRoot(projectRoot: string): string {
+  return path.join(contextRoot(projectRoot), 'v2');
+}
+
+export function cognitionManifestPath(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'manifest.json');
+}
+
+export function cognitionPolicyPath(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'policy.json');
+}
+
+export function cognitionJournalDirectory(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'journal');
+}
+
+export function cognitionProjectionsDirectory(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'projections');
+}
+
+export function cognitionProjectionCursorPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'cursor.json');
+}
+
+export function cognitionBranchesDirectory(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'branches');
+}
+
+export function cognitionContextsProjectionPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'contexts.json');
+}
+
+export function cognitionKnowledgeProjectionPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'knowledge.json');
+}
+
+export function cognitionDeadendsProjectionPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'deadends.json');
+}
+
+export function cognitionNotesProjectionPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'notes.json');
+}
+
+export function cognitionMigrationsDirectory(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'migrations');
+}
+
+export function cognitionV1ImportPath(projectRoot: string): string {
+  return path.join(cognitionMigrationsDirectory(projectRoot), 'v1-import.json');
+}
+
+export function cognitionRuntimeDirectory(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'runtime');
+}
+
+export function cognitionRuntimeLeasePath(projectRoot: string): string {
+  return path.join(cognitionRuntimeDirectory(projectRoot), 'lease.json');
+}
+
+export function cognitionRuntimeSecretPath(projectRoot: string): string {
+  return path.join(cognitionRuntimeDirectory(projectRoot), 'secret');
+}
+
+export function cognitionQuarantineDirectory(projectRoot: string): string {
+  return path.join(cognitionRoot(projectRoot), 'quarantine');
+}

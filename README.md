@@ -1,8 +1,10 @@
 # Context Runtime
 
-`fluffy-context` 是面向 AI 编程会话的本地 Context Runtime CLI。0.3.1 提供可重复、安全调用的任务定位入口、MCP 工具，以及 Claude Code 的阶段性工作流引导，让 Agent 不必自行拼接恢复、共识发现与短期记录。
+`fluffy-context` 正在从面向 AI 编程会话的本地 Context Runtime CLI，演进为 **Agent 无关的本地 Knowledge Runtime**。它负责自动捕获开发过程中产生的事件、候选共识、问题、不可达路径和分支工作状态，并向任意 Agent 注入有界、可验证的业务认知。
 
-它更接近“Context 的 Git”，而不是代码备份工具：Git 仍然负责代码和真实文件变更；Context Runtime 负责 AI 工作状态、已验证共识与交接信息的本地保存和恢复。
+Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，项目文档仍然负责设计；`fluffy-context` 补齐的是持续演进的项目认知层。最终架构是 `project → knowledge runtime → LLM`：CLI、MCP、Claude Hook 和未来 IDE/Agent 集成只是事件入口与信息注入适配器，而不是认知本体。
+
+0.3.1 仍提供可靠、可重复调用的 Context、Knowledge、Deadend 与 Note 存储，以及 MCP 和 Claude Code 的阶段性引导。v2 将在显式启用后以事件日志、分支 workspace 和按需 Runtime 守护进程消除 Agent 必须主动记得调用 `ctx` 的前提；自动产物默认仅进入 Candidate，Verified Knowledge 仍需治理确认。
 
 ## 适用场景
 

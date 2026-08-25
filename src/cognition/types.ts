@@ -1,0 +1,129 @@
+export const COGNITION_LAYOUT_VERSION = 'event-journal-v2' as const;
+
+export type CognitionEventSource = 'cli' | 'claude-hook' | 'mcp' | 'git-observer' | 'fs-observer' | 'migration';
+export type CognitionEventType =
+  | 'runtime.enabled'
+  | 'runtime.started'
+  | 'runtime.stopped'
+  | 'host.session.started'
+  | 'host.prompt.submitted'
+  | 'git.state.observed'
+  | 'git.branch.changed'
+  | 'git.head.changed'
+  | 'workspace.paths.changed'
+  | 'context.checkpoint.imported'
+  | 'context.state.recorded'
+  | 'note.recorded'
+  | 'note.resolved'
+  | 'note.absorbed'
+  | 'knowledge.proposed'
+  | 'knowledge.verified'
+  | 'knowledge.deprecated'
+  | 'deadend.proposed'
+  | 'deadend.verified'
+  | 'deadend.obsoleted'
+  | 'projection.advanced'
+  | 'projection.failed';
+
+export interface CognitionGitAnchor {
+  worktreeId: string | null;
+  branch: string | null;
+  ref: string | null;
+  head: string | null;
+}
+
+export interface CognitionEvent<T = Record<string, unknown>> {
+  eventId: string;
+  schemaVersion: 2;
+  type: CognitionEventType;
+  occurredAt: string;
+  observedAt: string;
+  projectId: string;
+  source: { kind: CognitionEventSource; instanceId?: string };
+  correlationId?: string;
+  idempotencyKey: string;
+  git: CognitionGitAnchor;
+  privacy: { classification: 'metadata' | 'redacted-text'; redactionCount: number };
+  payload: T;
+  previousHash: string | null;
+  hash: string;
+}
+
+export interface CognitionRuntimePolicy {
+  schemaVersion: 2;
+  enabled: boolean;
+  allowHookStartup: boolean;
+  inactivityTimeoutMs: number;
+  promptIntentMaxChars: number;
+  filesystemEventsEnabled: boolean;
+  retentionMaxBytes: number;
+}
+
+export interface CognitionManifest {
+  schemaVersion: 2;
+  layoutVersion: typeof COGNITION_LAYOUT_VERSION;
+  projectId: string;
+  createdAt: string;
+  policyVersion: 1;
+}
+
+export interface Applicability {
+  project: true;
+  branches?: string[];
+  branchMode: 'global' | 'exact' | 'ancestor-of-source' | 'descendant-of-source';
+  paths?: string[];
+  sourceCommit?: string | null;
+  dependencyConstraints?: string[];
+}
+
+export interface BranchWorkspace {
+  schemaVersion: 2;
+  workspaceKey: string;
+  worktreeId: string | null;
+  branch: string | null;
+  ref: string | null;
+  head: string | null;
+  activeContextRef: string | null;
+  openObservationEventIds: string[];
+  pathFocus: string[];
+  recentEventIds: string[];
+  lastActivatedAt: string;
+}
+
+export interface ProjectionCursor {
+  schemaVersion: 2;
+  lastEventId: string | null;
+  lastEventHash: string | null;
+  updatedAt: string | null;
+}
+
+export interface MigrationReadiness {
+  projectRoot: string;
+  eligible: boolean;
+  v1Present: boolean;
+  v2Present: boolean;
+  counts: { contexts: number; snapshots: number; notes: number; knowledge: number; deadends: number };
+  issues: string[];
+}
+
+export interface V1ImportReceipt {
+  schemaVersion: 2;
+  sourceHash: string;
+  importedAt: string;
+  eventIds: string[];
+  counts: MigrationReadiness['counts'];
+}
+
+export interface MigrationReport extends MigrationReadiness {
+  applied: boolean;
+  importedEventIds: string[];
+}
+
+export interface CognitionProjection {
+  schemaVersion: 2;
+  contexts: Record<string, unknown>;
+  notes: Record<string, unknown>;
+  knowledge: Record<string, unknown>;
+  deadends: Record<string, unknown>;
+  workspaces: Record<string, BranchWorkspace>;
+}

@@ -38,7 +38,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -69,7 +69,54 @@ test('each command has focused help without creating runtime files', async () =>
     const discover = await runCli(['knowledge', 'discover', '--help'], root);
     assert.equal(discover.code, 0);
     assert.match(discover.stdout, /knowledge discover/);
+    const migrate = await runCli(['migrate', 'v1', '--help'], root);
+    assert.equal(migrate.code, 0);
+    assert.match(migrate.stdout, /migrate v1/);
+    const migrateVerify = await runCli(['migrate', 'verify', '--help'], root);
+    assert.equal(migrateVerify.code, 0);
+    assert.match(migrateVerify.stdout, /migrate verify/);
+    const runtime = await runCli(['runtime', 'status', '--help'], root);
+    assert.equal(runtime.code, 0);
+    assert.match(runtime.stdout, /runtime status/);
     assert.deepEqual(await readdir(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('v1 migration CLI applies only on explicit confirmation and verifies the import', async () => {
+  const root = await project();
+  try {
+    const initialized = await runCli(['init', '--path', root], root);
+    assert.equal(initialized.code, 0);
+    const preview = await runCli(['migrate', 'v1', '--dry-run', '--path', root], root);
+    assert.equal(preview.code, 0, preview.stderr);
+    assert.deepEqual(await readdir(path.join(root, '.context')), ['contexts', 'index.json', 'locks', 'manifest.json']);
+    const applied = await runCli(['migrate', 'v1', '--apply', '--path', root], root);
+    assert.equal(applied.code, 0, applied.stderr);
+    assert.equal(JSON.parse(applied.stdout).applied, true);
+    const verification = await runCli(['migrate', 'verify', '--path', root], root);
+    assert.equal(verification.code, 0, verification.stderr);
+    assert.equal(JSON.parse(verification.stdout).verified, true);
+    const invalid = await runCli(['migrate', 'v1', '--dry-run', '--apply', '--path', root], root);
+    assert.notEqual(invalid.code, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runtime status and v1 migration dry-run remain read-only', async () => {
+  const root = await project();
+  try {
+    const initialized = await runCli(['init', '--path', root], root);
+    assert.equal(initialized.code, 0);
+    const migration = await runCli(['migrate', 'v1', '--dry-run', '--path', root], root);
+    assert.equal(migration.code, 0, migration.stderr);
+    assert.equal(JSON.parse(migration.stdout).eligible, true);
+    const runtime = await runCli(['runtime', 'status', '--path', root], root);
+    assert.equal(runtime.code, 0, runtime.stderr);
+    assert.equal(JSON.parse(runtime.stdout).v2Present, false);
+    assert.deepEqual((await readdir(path.join(root, '.context'))).sort(), ['contexts', 'index.json', 'locks', 'manifest.json']);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -4,6 +4,7 @@ import { readJson } from '../storage/json-store.js';
 import { contextRoot, contextMetadataPath, contextsRoot, indexPath, manifestPath, notesPath, snapshotPath } from '../storage/layout.js';
 import { rebuildIndex, rebuildSnapshot } from './runtime.js';
 import { isValidNote } from './notes.js';
+import { migrationReadiness } from '../cognition/readiness.js';
 import { filterPaths } from '../capture/context-filter.js';
 import type { ContextMetadata, IndexFile, Manifest, NoteFile } from './types.js';
 
@@ -86,6 +87,10 @@ export async function doctor(startPath?: string): Promise<{ healthy: boolean; pr
     const storedIds = new Set(stored.contexts.map((entry) => entry.contextId));
     if (rebuiltIds.size !== rebuilt.contexts.length || storedIds.size !== stored.contexts.length) throw new Error('duplicate index context id');
     if (rebuiltIds.size !== storedIds.size || [...rebuiltIds].some((id) => !storedIds.has(id))) throw new Error('index rebuild mismatch');
+  });
+  await check('v2 migration readiness', async () => {
+    const readiness = await migrationReadiness(projectRoot);
+    if (!readiness.eligible) throw new Error(readiness.issues.join('; '));
   });
 
   return { healthy, projectRoot, checks };

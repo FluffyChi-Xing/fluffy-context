@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { contextOrient } from '../agent/api.js';
+import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
+import { migrationReadiness } from '../cognition/readiness.js';
 import { runClaudeCodeHook } from '../hooks/claude-code.js';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../integrations/claude-code.js';
 import { doctor, status } from '../runtime/diagnostics.js';
@@ -233,10 +235,37 @@ Options:
   --open                 Only open notes
   --limit <number>       Maximum items (default: 50)
   --max-chars <number>   Maximum message characters`,
+  migrate: `usage: ctx migrate v1 --dry-run|--apply [--path <path>]
+       ctx migrate verify [--path <path>]
+
+Inspect, explicitly import, or verify v1 Context data for the event-journal runtime.`,
+  'migrate v1': `usage: ctx migrate v1 --dry-run|--apply [--path <path>]
+
+Validate v1 Context, Snapshot, Note, Knowledge, and Deadend data for v2 migration.
+
+Options:
+  --dry-run              Inspect only; no v2 data is created
+  --apply                Explicitly append immutable v1 provenance events
+  --path <path>          Project path`,
+  'migrate verify': `usage: ctx migrate verify [--path <path>]
+
+Rebuild v2 projections and verify imported v1 parity.
+
+Options:
+  --path <path>          Project path`,
+  runtime: `usage: ctx runtime status [--path <path>]
+
+Inspect whether the future event-driven Knowledge Runtime can be enabled.`,
+  'runtime status': `usage: ctx runtime status [--path <path>]
+
+Show read-only v2 migration readiness. Runtime start and enablement are not available yet.
+
+Options:
+  --path <path>          Project path`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity [options]
+  return `usage: ctx init|checkpoint|resume|orient|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -257,7 +286,15 @@ function printHelp(args: string[]): boolean {
     process.stdout.write(`${usage()}\n`);
     return true;
   }
-  const key = args[1] === 'verify' || args[1] === 'add' || args[1] === 'list' || args[1] === 'discover' || args[1] === 'serve' || args[1] === 'claude' ? `${command} ${args[1]}` : command;
+  const nested = (command === 'agent' && args[1] === 'serve')
+    || (command === 'hook' && args[1] === 'claude-code')
+    || (command === 'integrate' && args[1] === 'claude')
+    || (command === 'knowledge' && ['verify', 'discover'].includes(args[1]))
+    || (command === 'deadend' && args[1] === 'verify')
+    || (command === 'note' && ['add', 'list'].includes(args[1]))
+    || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
+    || (command === 'runtime' && args[1] === 'status');
+  const key = nested ? `${command} ${args[1]}` : command;
   const nestedKey = key === 'integrate claude' && (args[2] === 'inspect' || args[2] === 'install') ? `${key} ${args[2]}` : key;
   const help = HELP[nestedKey];
   if (!help) return false;
@@ -403,6 +440,28 @@ async function run(args: string[]): Promise<void> {
       } else {
         throw new Error(HELP.note);
       }
+      return;
+    }
+    case 'migrate': {
+      if (args[1] === 'v1') {
+        validateOptions(args.slice(2), ['--dry-run', '--apply', '--path'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['migrate v1']);
+        if (args.includes('--dry-run') === args.includes('--apply')) throw new Error(HELP['migrate v1']);
+        print(args.includes('--apply') ? await importV1(target) : await migrationReadiness(target));
+      } else if (args[1] === 'verify') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['migrate verify']);
+        print(await verifyV1Import(target));
+      } else {
+        throw new Error(HELP.migrate);
+      }
+      return;
+    }
+    case 'runtime': {
+      if (args[1] !== 'status') throw new Error(HELP.runtime);
+      validateOptions(args.slice(2), ['--path'], ['--path']);
+      validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['runtime status']);
+      print(await migrationReadiness(target));
       return;
     }
     case 'activity': {
