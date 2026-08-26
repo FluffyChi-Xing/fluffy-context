@@ -306,7 +306,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
   };
   return {
     schemaVersion: 1,
-    compilerVersion: '0.7.0',
+    compilerVersion: '0.7.1',
     rankingVersion: 'compiler-ranking-v1',
     status: orientation.status,
     projectRoot: sources.anchor.projectRoot,

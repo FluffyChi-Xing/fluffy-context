@@ -165,7 +165,7 @@ export interface ContextCompileOptions {
 
 export interface ContextManifest {
   schemaVersion: 1;
-  compilerVersion: '0.7.0';
+  compilerVersion: '0.7.1';
   rankingVersion: 'compiler-ranking-v1';
   status: 'ready' | 'no_context';
   projectRoot: string;
