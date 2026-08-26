@@ -19,6 +19,7 @@ export type {
 } from '../runtime/types.js';
 export { compileContext } from '../compiler/compile.js';
 export type {
+  ContextActivityRecord,
   ContextAnchor,
   ContextBudget,
   ContextBudgetReport,

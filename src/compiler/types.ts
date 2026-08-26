@@ -1,10 +1,10 @@
-import type { CognitionGitAnchor } from '../cognition/types.js';
+import type { CognitionGitAnchor, WorkspacePathChange } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
 import type { Deadend, Knowledge, Note, ResumeSummary, StructuredContext } from '../runtime/types.js';
 
 export type ContextScenario = 'resume' | 'implementation' | 'debugging' | 'verification' | 'handoff' | 'exploration' | 'unknown';
 export type ContextSourceKind = 'current-context' | 'checkpoint' | 'note' | 'journal' | 'knowledge' | 'deadend';
-export type ContextCandidateSection = 'summary' | 'pending' | 'decision' | 'risk' | 'note' | 'knowledge' | 'deadend';
+export type ContextCandidateSection = 'summary' | 'pending' | 'decision' | 'risk' | 'note' | 'knowledge' | 'deadend' | 'activity';
 export type ContextSignalOrigin = 'explicit' | 'deterministic';
 
 export interface ContextAnchor {
@@ -81,6 +81,18 @@ export interface ContextSourceDescriptor {
   provenance: ContextProvenance;
 }
 
+export interface ContextActivityRecord {
+  eventId: string;
+  occurredAt: string;
+  anchor: ContextAnchor;
+  paths: string[];
+  changes: WorkspacePathChange[];
+  pathCount: number;
+  coalesced: boolean;
+  truncated: boolean;
+  focusMatch: boolean;
+}
+
 export interface ContextCandidate<T = unknown> {
   candidateId: string;
   section: ContextCandidateSection;
@@ -128,6 +140,7 @@ export interface ContextTruncation {
   notes: boolean;
   knowledge: boolean;
   deadends: boolean;
+  activity: boolean;
   candidatesOmittedByBudget: number;
   candidatesPartiallyTruncated: number;
 }
@@ -157,6 +170,7 @@ export interface ContextCompileOptions {
   knowledgeLimit?: number;
   deadendLimit?: number;
   noteLimit?: number;
+  activityLimit?: number;
   trigger?: ContextIntent['trigger'];
   adapter?: string;
   sessionId?: string;
@@ -165,8 +179,8 @@ export interface ContextCompileOptions {
 
 export interface ContextManifest {
   schemaVersion: 1;
-  compilerVersion: '0.7.1';
-  rankingVersion: 'compiler-ranking-v1';
+  compilerVersion: '0.7.2';
+  rankingVersion: 'compiler-ranking-v2';
   status: 'ready' | 'no_context';
   projectRoot: string;
   mode: 'v2' | 'v1-fallback';
@@ -183,6 +197,7 @@ export interface ContextManifest {
     notes: ContextCandidate[];
     knowledge: ContextCandidate[];
     deadends: ContextCandidate[];
+    activity: ContextCandidate<ContextActivityRecord>[];
   };
   selected: ContextCandidate[];
   excluded: ContextExclusion[];

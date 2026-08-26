@@ -6,6 +6,8 @@ import path from 'node:path';
 import { compileContext } from '../src/compiler/compile.js';
 import { FilesystemObserver, type WatchCallback } from '../src/cognition/filesystem-observer.js';
 import { projectEvents } from '../src/cognition/projections.js';
+import { appendEvent } from '../src/cognition/journal.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
 import { initProject } from '../src/runtime/init.js';
 import { checkpoint } from '../src/runtime/runtime.js';
 import { addNote } from '../src/runtime/notes.js';
@@ -71,6 +73,103 @@ test('Compiler emits a deterministic bounded manifest with governed sources', as
     assert.equal(empty.budget.usedChars, 0);
     assert.equal(empty.selected.length, 0);
     assert.equal(empty.truncation.truncated, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Compiler includes recent exact-workspace filesystem activity without contents', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { title: 'Activity compiler test' });
+    await importV1(root);
+    await appendEvent(root, {
+      eventId: 'activity-main',
+      type: 'workspace.paths.changed',
+      occurredAt: '2026-08-27T00:00:01.000Z',
+      source: { kind: 'fs-observer' },
+      idempotencyKey: 'activity-main',
+      git: { worktreeId: null, branch: null, ref: null, head: null },
+      payload: {
+        schemaVersion: 1,
+        paths: ['src/auth.ts', '.env'],
+        changes: [
+          { path: 'src/auth.ts', kind: 'modified', fileType: 'file', sizeBytes: 12, mtimeMs: 1 },
+          { path: '.env', kind: 'modified', fileType: 'file', sizeBytes: 99, mtimeMs: 2 },
+        ],
+        pathCount: 2,
+        coalesced: true,
+        truncated: false,
+      },
+    });
+    await appendEvent(root, {
+      eventId: 'activity-newest',
+      type: 'workspace.paths.changed',
+      occurredAt: '2026-08-27T00:00:02.000Z',
+      source: { kind: 'fs-observer' },
+      idempotencyKey: 'activity-newest',
+      git: { worktreeId: null, branch: null, ref: null, head: null },
+      payload: {
+        schemaVersion: 1,
+        paths: ['src/newest.ts'],
+        changes: [{ path: 'src/newest.ts', kind: 'created', fileType: 'file' }],
+        pathCount: 1,
+        coalesced: false,
+        truncated: false,
+      },
+    });
+    const manifest = await compileContext(root, { contextId: saved.context.id, query: 'activity', activityLimit: 5, maxChars: 4000 });
+    assert.equal(manifest.sections.activity.length, 2);
+    assert.deepEqual(
+      manifest.sections.activity.map((item) => item.content.paths),
+      [['src/auth.ts'], ['src/newest.ts']],
+    );
+    assert.equal(manifest.sections.activity.find((item) => item.source.provenance.eventId === 'activity-main')?.source.provenance.origin, 'v2-journal');
+    assert.equal(manifest.text.includes('.env'), false);
+    assert.equal(manifest.text.includes(root), false);
+
+    const limited = await compileContext(root, { contextId: saved.context.id, query: 'activity', activityLimit: 1, maxChars: 4000 });
+    assert.deepEqual(limited.sections.activity.map((item) => item.content.paths), [['src/newest.ts']]);
+    assert.deepEqual(limited, await compileContext(root, { contextId: saved.context.id, query: 'activity', activityLimit: 1, maxChars: 4000 }));
+
+    const otherBranch = {
+      schemaVersion: 2 as const,
+      type: 'workspace.paths.changed' as const,
+      source: { kind: 'fs-observer' as const },
+      idempotencyKey: 'activity-other',
+      git: { worktreeId: 'other', branch: 'other', ref: 'refs/heads/other', head: 'other-head' },
+      payload: {
+        schemaVersion: 1 as const,
+        paths: ['other.ts'],
+        changes: [{ path: 'other.ts', kind: 'modified' as const, fileType: 'file' as const }],
+        pathCount: 1,
+        coalesced: false,
+        truncated: false,
+      },
+    };
+    await appendEvent(root, otherBranch);
+    const isolated = await compileContext(root, { contextId: saved.context.id, query: 'activity', activityLimit: 5, maxChars: 4000 });
+    assert.equal(isolated.sections.activity.some((candidate) => candidate.content.paths.includes('other.ts')), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Compiler keeps activity empty in v1 fallback mode', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { title: 'v1 fallback activity test' });
+    const manifest = await compileContext(root, {
+      contextId: saved.context.id,
+      query: 'activity',
+      activityLimit: 10,
+      maxChars: 4000,
+    });
+    assert.equal(manifest.mode, 'v1-fallback');
+    assert.deepEqual(manifest.sections.activity, []);
+    assert.equal(manifest.provenance.journalRead, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

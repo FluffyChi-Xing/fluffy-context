@@ -1,7 +1,8 @@
 import { readGitWorktreeState } from '../git/git-adapter.js';
 import { contextOrient } from '../agent/api.js';
 import { readJournal } from '../cognition/journal.js';
-import type { CognitionEvent } from '../cognition/types.js';
+import { projectEvents, workspaceKey } from '../cognition/projections.js';
+import type { BranchWorkspace, CognitionEvent } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
 import type { ContextAnchor, ContextProvenance, ContextSourceDescriptor, ContextSourceApplicability } from './types.js';
 import type { ContextCompileOptions } from './types.js';
@@ -10,6 +11,7 @@ export interface CompilerSources {
   orientation: ContextOrientResult;
   anchor: ContextAnchor;
   events: CognitionEvent[];
+  workspace: BranchWorkspace | null;
   fallbackReason: string | null;
 }
 
@@ -31,6 +33,7 @@ function payloadRecord(event: CognitionEvent): Record<string, unknown> | null {
 }
 
 function matchesRecord(event: CognitionEvent, entityId: string): boolean {
+  if (event.eventId === entityId) return true;
   const record = payloadRecord(event);
   return record?.contextId === entityId
     || record?.knowledgeId === entityId
@@ -129,7 +132,10 @@ export async function loadCompilerSources(startPath: string | undefined, options
   } catch (error) {
     fallbackReason = error instanceof Error ? error.message : 'journal-unavailable';
   }
-  return { orientation, anchor: anchorFromGit(git, projectRoot), events, fallbackReason };
+  const anchor = anchorFromGit(git, projectRoot);
+  const projection = events.length > 0 ? projectEvents(events) : null;
+  const workspace = projection?.workspaces[workspaceKey(anchor)] ?? null;
+  return { orientation, anchor, events, workspace, fallbackReason };
 }
 
 export function latestHostIntent(events: CognitionEvent[], anchor: ContextAnchor): { value: string; eventId: string } | null {

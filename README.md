@@ -32,6 +32,7 @@
 | 0.6.6 | 无感 Runtime 生命周期 | 通过 `ensureRuntimeForSession()` 在已迁移项目的首次会话、Claude Hook、MCP 握手或 CLI Orient 时幂等拉起 Runtime；显式 disable 保持禁用，启动失败继续 fail-open。 |
 | 0.7.0 | Context Compiler 与文件活动基础能力 | 提供 `compileContext()`、`ctx compile`、provider-neutral `ContextManifest`、确定性候选排序、来源 provenance、纳入/排除说明、字符预算、v1/v2 来源和默认关闭的文件活动观察器。 |
 | 0.7.1 | Correctness hardening 与显式文件监听开关 | 强化 policy 校验、journal schema/hash/幂等性验证、Runtime 清理、候选 ID 稳定性，并提供 `ctx filesystem enable|disable|status`；文件观察严格复用 `.contextignored` 过滤规则。 |
+| 0.7.2 | 文件活动进入 Context Compiler | 将当前 branch/worktree/ref 的 `workspace.paths.changed` 活动作为有界 `activity` section 编译；支持 `--activity-limit`，再次执行 `.contextignored` 和内置敏感路径过滤，不记录内容或 diff。 |
 
 所有版本均保持本地优先、显式治理与 fail-open 集成原则。v1 数据不会在迁移过程中被重写；当 v2 未启用、不可用、损坏或尚未同步时，支持回退的读取接口会回退到兼容的 v1 行为。0.7.x 的 `ctx compile`、journal verify 和 Runtime 文件观察均保留明确的来源、验证或过滤边界。
 
@@ -143,9 +144,12 @@ ctx orient --context <context-id> --note-limit 10
 ```bash
 ctx compile "修复支付回调" --max-chars 4000
 ctx compile "验证签名逻辑" --scenario verification --paths src/auth.ts
+ctx compile "查看最近修改" --activity-limit 10 --max-chars 4000
 ```
 
 Manifest 包含 `intent`、`selected`、`sections`、`excluded`、`provenance`、`budget` 和最终 `text`。`maxChars` 使用 JavaScript UTF-16 字符串长度；Compiler 不调用模型、不写入 Context 或 journal，重复输入会得到确定性结果。普通查询默认只纳入已验证 Knowledge 和 Deadend，Candidate、deprecated、rejected、obsolete 等记录会明确排除。
+
+0.7.2 新增的 `activity` section 来自已记录的 `workspace.paths.changed` 事件，只包含近期当前 branch/worktree/ref 的相对路径和有限 metadata。它表示“观察到文件发生变化”，不表示文件已被读取、理解或测试；不包含内容、diff、命令或输出。`--activity-limit 0` 可在单次编译中关闭 activity 候选，且不会修改 Runtime 的文件监听策略。v1 fallback 没有等价的文件活动来源，因此返回空的 `activity` section。
 
 ### 文件变化观察
 
@@ -164,7 +168,7 @@ ctx filesystem disable
 
 如果 Runtime 已在运行，enable/disable 会自动按新策略重启 Runtime；如果 Runtime 尚未运行，只更新 policy。观察器只记录项目相对路径、文件类型、大小和修改时间等有限 metadata，不记录文件内容、diff、命令或输出。
 
-文件路径会经过与 Context 关联文件相同的 `.contextignored` 规则过滤。被 `.contextignored` 排除的文件，即使发生创建、修改或删除，也不会写入 `workspace.paths.changed` 事件。内置保护规则仍然优先排除 `.context/`、`.git/`、依赖/构建目录、环境变量、密钥和越界路径。
+文件路径会经过与 Context 关联文件相同的 `.contextignored` 规则过滤。被 `.contextignored` 排除的文件，即使发生创建、修改或删除，也不会写入 `workspace.paths.changed` 事件；即使历史事件中存在这类路径，Compiler 也会再次过滤。内置保护规则仍然优先排除 `.context/`、`.git/`、依赖/构建目录、环境变量、密钥和越界路径。
 
 ## Agent 工作流
 

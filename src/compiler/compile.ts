@@ -3,7 +3,9 @@ import { queryTerms } from '../cognition/retrieval.js';
 import { listDeadends, listKnowledge } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import type { Deadend, Knowledge, Note } from '../runtime/types.js';
+import { extractActivity } from './activity.js';
 import { latestHostIntent, loadCompilerSources, sourceDescriptor, type CompilerSources } from './sources.js';
+import type { ContextActivityRecord } from './types.js';
 import type {
   ContextAnchor,
   ContextCandidate,
@@ -36,6 +38,7 @@ const priorities: Record<ContextCandidateSection, number> = {
   note: 85,
   knowledge: 75,
   deadend: 73,
+  activity: 70,
 };
 
 function clean(value: string): string {
@@ -162,7 +165,12 @@ function textForSummary(label: string, value: string | null): string {
   return value ? `${label}: ${value}` : '';
 }
 
-function createCandidates(sources: CompilerSources, intent: ContextIntent, notes: Note[], knowledge: Knowledge[], deadends: Deadend[]): ContextCandidate[] {
+function activityText(record: ContextActivityRecord): string {
+  const changes = record.changes.map((change) => `${change.path} (${change.kind})`).join(', ');
+  return `activity: ${changes}`;
+}
+
+function createCandidates(sources: CompilerSources, intent: ContextIntent, notes: Note[], knowledge: Knowledge[], deadends: Deadend[], activities: ContextActivityRecord[]): ContextCandidate[] {
   if (sources.orientation.status !== 'ready') return [];
   const { context, snapshot, resumeSummary } = sources.orientation;
   const terms = intent.normalizedTerms;
@@ -201,11 +209,15 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
     const source = sourceApplicability(item as unknown as Record<string, unknown>, sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'deadend', item.deadendId, item.sourceContextId, item.sourceSnapshotId, item.status, item.scope, sourcePaths(item as unknown as Record<string, unknown>)));
     candidates.push(makeCandidate('deadend', source, item, `${item.attempt}: ${item.reason}`, terms, ['attempt', 'reason', 'scope'], item.deadendId));
   }
+  for (const item of activities) {
+    const source = sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'journal', item.eventId, null, null, null, null, item.paths);
+    candidates.push(makeCandidate('activity', source, item, activityText(item), terms, ['paths'], item.eventId));
+  }
   return candidates;
 }
 
 function emptyTruncation(): ContextTruncation {
-  return { truncated: false, summary: false, pending: false, decisions: false, risks: false, notes: false, knowledge: false, deadends: false, candidatesOmittedByBudget: 0, candidatesPartiallyTruncated: 0 };
+  return { truncated: false, summary: false, pending: false, decisions: false, risks: false, notes: false, knowledge: false, deadends: false, activity: false, candidatesOmittedByBudget: 0, candidatesPartiallyTruncated: 0 };
 }
 
 function manifestText(selected: ContextCandidate[]): string {
@@ -234,7 +246,7 @@ function intentFor(sources: CompilerSources, options: ContextCompileOptions, nor
     contextId: options.contextId ?? (orientation.status === 'ready' ? orientation.context.id : null),
     anchor: anchorFromSources(sources),
     signals,
-    requestedSections: ['summary', 'pending', 'decision', 'risk', 'note', 'knowledge', 'deadend'],
+    requestedSections: ['summary', 'pending', 'decision', 'risk', 'note', 'knowledge', 'deadend', 'activity'],
     budget: { unit: 'chars', total: Math.max(0, options.maxChars ?? 4000), reservedForRenderer: 0 },
     adapter: options.adapter ?? 'generic',
     sessionId: options.sessionId ?? null,
@@ -251,7 +263,8 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const notes = orientation.status === 'ready' ? (await listNotes(sources.anchor.projectRoot, { contextId: orientation.context.id, openOnly: true, limit: Number.MAX_SAFE_INTEGER, maxChars: Number.MAX_SAFE_INTEGER })).filter((note) => !orientation || orientation.notes.some((selected) => selected.noteId === note.noteId)) : [];
   const knowledge = orientation.status === 'ready' && intent.query ? await listKnowledge(sources.anchor.projectRoot, true) : [];
   const deadends = orientation.status === 'ready' && intent.query ? await listDeadends(sources.anchor.projectRoot, true) : [];
-  const all = createCandidates(sources, intent, notes, knowledge, deadends);
+  const activities = await extractActivity(sources.anchor.projectRoot, sources.events, sources.anchor, sources.workspace, options.activityLimit ?? 20);
+  const all = createCandidates(sources, intent, notes, knowledge, deadends, activities);
   const excluded: ContextExclusion[] = [];
   const eligible = all.filter((candidate) => {
     const check = applicable(candidate, intent);
@@ -293,6 +306,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
       if (item.section === 'note') truncation.notes = true;
       if (item.section === 'knowledge') truncation.knowledge = true;
       if (item.section === 'deadend') truncation.deadends = true;
+      if (item.section === 'activity') truncation.activity = true;
     }
   }
   const sections = {
@@ -303,11 +317,12 @@ export async function compileContext(startPath?: string, options: ContextCompile
     notes: selected.filter((item) => item.section === 'note'),
     knowledge: selected.filter((item) => item.section === 'knowledge'),
     deadends: selected.filter((item) => item.section === 'deadend'),
+    activity: selected.filter((item) => item.section === 'activity') as ContextCandidate<ContextActivityRecord>[],
   };
   return {
     schemaVersion: 1,
-    compilerVersion: '0.7.1',
-    rankingVersion: 'compiler-ranking-v1',
+    compilerVersion: '0.7.2',
+    rankingVersion: 'compiler-ranking-v2',
     status: orientation.status,
     projectRoot: sources.anchor.projectRoot,
     mode: orientation.explanation.mode,

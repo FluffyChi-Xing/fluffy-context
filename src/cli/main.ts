@@ -128,7 +128,8 @@ Options:
   --max-chars <number>       Maximum compiled characters
   --knowledge-limit <number> Maximum knowledge matches (default: 10)
   --deadend-limit <number>   Maximum deadend matches (default: 10)
-  --note-limit <number>      Maximum open notes (default: 20)`,
+  --note-limit <number>      Maximum open notes (default: 20)
+  --activity-limit <number>  Maximum recent activity groups (default: 20)`,
   agent: `usage: ctx agent serve
 
 Start an MCP stdio server for Agent integrations.
@@ -369,7 +370,8 @@ function printHelp(args: string[]): boolean {
     || (command === 'journal' && args[1] === 'verify')
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
-    || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]));
+    || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]))
+    || (command === 'filesystem' && ['enable', 'disable', 'status'].includes(args[1]));
   const key = nested ? `${command} ${args[1]}` : command;
   const nestedKey = key === 'integrate claude' && (args[2] === 'inspect' || args[2] === 'install') ? `${key} ${args[2]}` : key;
   const help = HELP[nestedKey];
@@ -447,7 +449,7 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'compile': {
-      const valueOptions = ['--path', '--context', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit'];
+      const valueOptions = ['--path', '--context', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const query = positionals(args.slice(1), valueOptions);
       validatePositionals(query, 1, HELP.compile);
@@ -461,6 +463,7 @@ async function run(args: string[]): Promise<void> {
         knowledgeLimit: numericOption(args, '--knowledge-limit', 10),
         deadendLimit: numericOption(args, '--deadend-limit', 10),
         noteLimit: numericOption(args, '--note-limit', 20),
+        activityLimit: numericOption(args, '--activity-limit', 20),
       }));
       return;
     }

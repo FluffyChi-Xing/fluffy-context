@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.7.1');
+    assert.equal(JSON.parse(result.stdout), '0.7.2');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -231,6 +231,12 @@ test('compile CLI returns a manifest and validates compiler options', async () =
     assert.equal(output.intent.query, 'debug authentication');
     assert.equal(output.intent.scenario, 'debugging');
     assert.equal(output.budget.usedChars, 0);
+    const disabledActivity = await runCli(['compile', 'debug authentication', '--path', root, '--activity-limit', '0'], root);
+    assert.equal(disabledActivity.code, 0, disabledActivity.stderr);
+    assert.deepEqual(JSON.parse(disabledActivity.stdout).sections.activity, []);
+    const invalidActivityLimit = await runCli(['compile', '--activity-limit', 'invalid', '--path', root], root);
+    assert.notEqual(invalidActivityLimit.code, 0);
+    assert.match(invalidActivityLimit.stderr, /non-negative integer/);
     const invalid = await runCli(['compile', '--scenario', 'invalid', '--path', root], root);
     assert.notEqual(invalid.code, 0);
     assert.match(invalid.stderr, /must be one of/);
