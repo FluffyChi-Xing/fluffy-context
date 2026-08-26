@@ -108,10 +108,11 @@ function makeCandidate<T>(
   text: string,
   terms: string[],
   matchedFields: string[],
+  discriminator: string,
 ): ContextCandidate<T> {
   const hit = matched(text, terms);
   return {
-    candidateId: `${section}:${source.sourceId}:${matchedFields.join('.')}`,
+    candidateId: `${section}:${source.sourceId}:${matchedFields.join('.')}:${discriminator}`,
     section,
     source,
     content,
@@ -174,7 +175,7 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
   ];
   for (const [field, value, section] of summaryFields) {
     const text = textForSummary(field, value);
-    if (text) candidates.push(makeCandidate(section, contextSource, { field, value }, text, terms, [field]));
+    if (text) candidates.push(makeCandidate(section, contextSource, { field, value }, text, terms, [field], field));
   }
   const listFields: Array<[string, string[], ContextCandidateSection]> = [
     ['pendingTasks', resumeSummary.pendingTasks, 'pending'],
@@ -184,21 +185,21 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
     ['relatedFiles', resumeSummary.relatedFiles, 'summary'],
   ];
   for (const [field, values, section] of listFields) {
-    for (const value of values) {
-      candidates.push(makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field]));
+    for (const [index, value] of values.entries()) {
+      candidates.push(makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field], `${field}:${index}`));
     }
   }
   for (const note of notes) {
     const source = sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'note', note.noteId, note.contextId, note.snapshotId, note.status, null, note.relatedFiles);
-    candidates.push(makeCandidate('note', source, note, `${note.kind}: ${note.message}`, terms, ['kind', 'message']));
+    candidates.push(makeCandidate('note', source, note, `${note.kind}: ${note.message}`, terms, ['kind', 'message'], note.noteId));
   }
   for (const item of knowledge) {
     const source = sourceApplicability(item as unknown as Record<string, unknown>, sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'knowledge', item.knowledgeId, item.sourceContextIds[0] ?? null, item.sourceSnapshotIds[0] ?? null, item.status, item.scope, sourcePaths(item as unknown as Record<string, unknown>)));
-    candidates.push(makeCandidate('knowledge', source, item, item.statement, terms, ['statement', 'kind', 'scope']));
+    candidates.push(makeCandidate('knowledge', source, item, item.statement, terms, ['statement', 'kind', 'scope'], item.knowledgeId));
   }
   for (const item of deadends) {
     const source = sourceApplicability(item as unknown as Record<string, unknown>, sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'deadend', item.deadendId, item.sourceContextId, item.sourceSnapshotId, item.status, item.scope, sourcePaths(item as unknown as Record<string, unknown>)));
-    candidates.push(makeCandidate('deadend', source, item, `${item.attempt}: ${item.reason}`, terms, ['attempt', 'reason', 'scope']));
+    candidates.push(makeCandidate('deadend', source, item, `${item.attempt}: ${item.reason}`, terms, ['attempt', 'reason', 'scope'], item.deadendId));
   }
   return candidates;
 }

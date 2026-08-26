@@ -4,9 +4,10 @@ import { contextOrient } from '../agent/api.js';
 import { compileContext } from '../compiler/compile.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
-import { readJournal } from '../cognition/journal.js';
+import { readJournal, verifyJournal } from '../cognition/journal.js';
 import { projectEvents } from '../cognition/projections.js';
-import { disableRuntime, enableRuntime, ensureRuntimeForSession, runtimeStatus, serveRuntime, startRuntime, stopRuntime } from '../cognition/runtime.js';
+import { disableRuntime, enableRuntime, ensureRuntimeForSession, runtimeStatus, serveRuntime, setFilesystemEvents, startRuntime, stopRuntime } from '../cognition/runtime.js';
+import { loadRuntimePolicy } from '../cognition/policy.js';
 import { migrationReadiness } from '../cognition/readiness.js';
 import { runClaudeCodeHook } from '../hooks/claude-code.js';
 import { readGitWorktreeState } from '../git/git-adapter.js';
@@ -302,6 +303,18 @@ Options:
   runtime: `usage: ctx runtime enable|disable|start|stop|status [--path <path>]
 
 Control the local event-driven Knowledge Runtime after v1 migration verification.`,
+  filesystem: `usage: ctx filesystem enable|disable|status [--path <path>]
+
+Control whether the Runtime records filtered file metadata changes.`,
+  'filesystem enable': `usage: ctx filesystem enable [--path <path>]
+
+Enable filtered filesystem change observation and restart a running Runtime.`,
+  'filesystem disable': `usage: ctx filesystem disable [--path <path>]
+
+Disable filesystem change observation and restart a running Runtime.`,
+  'filesystem status': `usage: ctx filesystem status [--path <path>]
+
+Show the filesystem observation policy and Runtime status.`,
   'runtime status': `usage: ctx runtime status [--path <path>]
 
 Show the read-only runtime policy, migration and authenticated lease status.
@@ -326,7 +339,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|feedback|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -535,12 +548,24 @@ async function run(args: string[]): Promise<void> {
       print(await recordUse(target, { entity: args[2] as 'knowledge' | 'deadend', entityId: values[0], eventId: option(args, '--event-id') ?? '' }));
       return;
     }
+    case 'filesystem': {
+      if (!['enable', 'disable', 'status'].includes(args[1])) throw new Error(HELP.filesystem);
+      validateOptions(args.slice(2), ['--path'], ['--path']);
+      validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP[`filesystem ${args[1]}`]);
+      if (args[1] === 'status') {
+        const status = await runtimeStatus(target);
+        print({ projectRoot: status.projectRoot, migrated: status.migrated, enabled: status.enabled, running: status.running, filesystemEventsEnabled: status.migrated ? (await loadRuntimePolicy(status.projectRoot)).filesystemEventsEnabled : false });
+      } else {
+        print(await setFilesystemEvents(target, args[1] === 'enable'));
+      }
+      return;
+    }
     case 'journal': {
       if (args[1] !== 'verify') throw new Error(HELP.journal);
       validateOptions(args.slice(2), ['--path'], ['--path']);
       validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['journal verify']);
       const root = target ?? process.cwd();
-      const events = await readJournal(root);
+      const events = await verifyJournal(root);
       const projection = projectEvents(events);
       const last = events.at(-1);
       print({ verified: true, eventCount: events.length, cursor: { eventId: last?.eventId ?? null, hash: last?.hash ?? null }, counts: { contexts: Object.keys(projection.contexts).length, notes: Object.keys(projection.notes).length, knowledge: Object.keys(projection.knowledge).length, deadends: Object.keys(projection.deadends).length } });

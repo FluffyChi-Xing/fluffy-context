@@ -1,8 +1,20 @@
-# Context Runtime
+# fluffy-context
 
-`fluffy-context` 正在从面向 AI 编程会话的本地 Context Runtime CLI，演进为 **Agent 无关的本地 Knowledge Runtime**。它负责自动捕获开发过程中产生的事件、候选共识、问题、不可达路径和分支工作状态，并向任意 Agent 注入有界、可验证的业务认知。
+`fluffy-context` 是一个本地优先、Agent 无关的 Context 与 Knowledge Runtime。它帮助 AI 编程 Agent 在新会话中恢复任务状态、检索已验证共识、避开已验证死路，并将结果编译成有界、可追溯的上下文。
 
-Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，项目文档仍然负责设计；`fluffy-context` 补齐的是持续演进的项目认知层。最终架构是 `project → knowledge runtime → LLM`：CLI、MCP、Claude Hook 和未来 IDE/Agent 集成只是事件入口与信息注入适配器，而不是认知本体。
+```text
+项目代码与 Git → Context Runtime → Context Compiler → Agent / MCP / Hook
+```
+
+它不替代 Git、Issue 系统、项目文档、`CLAUDE.md`、`AGENTS.md` 或宿主 Skills：Git 仍是代码和文件变更的权威，文档仍负责设计，`fluffy-context` 只维护任务认知及其来源。
+
+## 你可以用它做什么
+
+- 保存和恢复进行中的任务、进度、待办、决策与风险。
+- 让 Agent 只读取已验证的 Knowledge 和 Deadend，减少重复试错。
+- 使用 `ctx compile` 生成带 provenance、纳入/排除原因和字符预算的 provider-neutral Manifest。
+- 通过 MCP 或 Claude Code Hook 在会话开始时注入有界上下文。
+- 可选记录经过 `.contextignored` 过滤的文件变化 metadata；默认关闭，不记录文件内容或 diff。
 
 0.6.0 在 branch-aware 注入闭环上补齐了可治理的确定性检索：迁移并启用 Runtime 后，Orient 从 v2 journal 的可重建索引检索已验证、适用的 Knowledge 与 Deadend，并返回有界的选择、排除与截断说明。v1 的 checkpoint、Note、Knowledge 与 Deadend 写入仍会最佳努力镜像为 v2 事件；Runtime 也会协调检测到的外部 v1 变更。自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。0.6.6 已在此基础上完成无感 Runtime 生命周期的首个闭环：已迁移项目默认自动启动，Claude Hook、MCP 与 CLI Orient 可幂等唤醒 Runtime，显式 disable 仍保持永久禁用，启动失败继续 fail-open。
 
@@ -18,8 +30,10 @@ Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，�
 | 0.6.0 | journal 派生的确定性检索、治理终态、可解释 Orient、显式使用反馈 | 启用 v2 后直接从可重建索引检索已验证且适用的共识；使用反馈只影响稳定排序，绝不自动验证或提升 Candidate。 |
 | 0.6.5 | Runtime 活跃度修复与 Hook 保活 | Git 真实状态变化、宿主 Hook 活动和认证 IPC 会刷新 Runtime；heartbeat 与无变化轮询不会伪装成活跃，Runtime 在不可用时保持 fail-open。 |
 | 0.6.6 | 无感 Runtime 生命周期 | 通过 `ensureRuntimeForSession()` 在已迁移项目的首次会话、Claude Hook、MCP 握手或 CLI Orient 时幂等拉起 Runtime；显式 disable 保持禁用，启动失败继续 fail-open。 |
+| 0.7.0 | Context Compiler 与文件活动基础能力 | 提供 `compileContext()`、`ctx compile`、provider-neutral `ContextManifest`、确定性候选排序、来源 provenance、纳入/排除说明、字符预算、v1/v2 来源和默认关闭的文件活动观察器。 |
+| 0.7.1 | Correctness hardening 与显式文件监听开关 | 强化 policy 校验、journal schema/hash/幂等性验证、Runtime 清理、候选 ID 稳定性，并提供 `ctx filesystem enable|disable|status`；文件观察严格复用 `.contextignored` 过滤规则。 |
 
-所有版本均保持本地优先、显式治理与 fail-open 集成原则。v1 数据不会在迁移过程中被重写；当 v2 未启用、不可用、损坏或尚未同步时，读取接口会回退到兼容的 v1 行为。
+所有版本均保持本地优先、显式治理与 fail-open 集成原则。v1 数据不会在迁移过程中被重写；当 v2 未启用、不可用、损坏或尚未同步时，支持回退的读取接口会回退到兼容的 v1 行为。0.7.x 的 `ctx compile`、journal verify 和 Runtime 文件观察均保留明确的来源、验证或过滤边界。
 
 ## 产品愿景与 1.0 前路线图
 
@@ -35,7 +49,7 @@ CLI 是 Runtime 面向用户的 console pane / frontend：它用于初始化、�
 
 | 计划版本 | 核心目标 | 主要能力 | 明确边界 |
 | --- | --- | --- | --- |
-| 0.7.0 | Context Compiler 基础 | 定义版本化 `ContextSourceDescriptor`、`ContextIntent`、`ContextManifest` 与 `ContextAdapter`；将当前 Context、checkpoint、Note、journal 派生事件、已验证 Knowledge/Deadend 和受治理外部来源统一为可追溯输入；确定性解析任务场景、意图、路径与 worktree/ref 约束，按 Token Budget 选择、排序、截断并生成纳入/排除理由；为 Claude、MCP、CLI、IDE 和通用 Agent 提供 provider-neutral adapter。`ctx orient` 演进为编译结果的检视与调试视图，并保留兼容输出。 | 不自动把原始事件提炼为 Verified Knowledge；不重写、合并或同步外部规则；不做模型调用、向量/Embedding、远程注册表或 provider-specific 核心依赖。 |
+| 0.7.0 | Context Compiler 基础 | 提供版本化 `ContextSourceDescriptor`、`ContextIntent`、`ContextManifest`，将当前 Context、checkpoint、Note、v2 journal 派生来源和已验证 Knowledge/Deadend 统一编译为可追溯输入；按字符预算确定性选择、排序、截断并生成纳入/排除理由。 | 不自动把原始事件提炼为 Verified Knowledge；不重写、合并或同步外部规则；不做模型调用、向量/Embedding、远程注册表或 provider-specific Renderer。 |
 | 0.8.0 | Decision Graph | 将 Decision 升级为可治理、可追溯的一等 journal 对象，记录结果、理由、备选方案、证据、适用性与生命周期；通过 `depends-on`、`supersedes`、`contradicts`、`supported-by`、`rejected-alternative`、`implemented-by` 等边构成确定性投影图；Compiler 只注入当前任务所需的有界决策子图。 | 不自动从代码或模型输出推断决策；不自动解决冲突；不自动提升 Candidate。 |
 | 0.9.0 | Knowledge Evolution | 以受治理事件支持 Knowledge 的合并、拆分、替代、适用范围收窄/扩展、退役、归档，以及作为新记录的复活；根据 Git/path 事件、source anchor、Decision Graph 依赖、重复/冲突和适用性漂移生成确定性的 `review-needed` 信号；Compiler 优先选择新鲜、适用且已验证的认知。 | 自动机制只能提出待审查候选，不能自动验证、降级、归档或作出真实性结论；不引入远程同步、团队权限、强制模型提供方或语义向量依赖。 |
 
@@ -121,6 +135,36 @@ ctx orient "订单状态机异常路径" --max-chars 4000
 ctx orient
 ctx orient --context <context-id> --note-limit 10
 ```
+
+### 0.7.x Context Compiler
+
+`ctx orient` 面向快速恢复，`ctx compile` 面向需要结构化输入的 Agent 或适配器。Compiler 只读当前 Context、Snapshot、open Note、已验证 Knowledge/Deadend 及可用的 v2 来源，返回 JSON Manifest：
+
+```bash
+ctx compile "修复支付回调" --max-chars 4000
+ctx compile "验证签名逻辑" --scenario verification --paths src/auth.ts
+```
+
+Manifest 包含 `intent`、`selected`、`sections`、`excluded`、`provenance`、`budget` 和最终 `text`。`maxChars` 使用 JavaScript UTF-16 字符串长度；Compiler 不调用模型、不写入 Context 或 journal，重复输入会得到确定性结果。普通查询默认只纳入已验证 Knowledge 和 Deadend，Candidate、deprecated、rejected、obsolete 等记录会明确排除。
+
+### 文件变化观察
+
+文件监听是可选能力，默认关闭。要显式开启：
+
+```bash
+ctx filesystem enable
+ctx filesystem status
+```
+
+关闭监听：
+
+```bash
+ctx filesystem disable
+```
+
+如果 Runtime 已在运行，enable/disable 会自动按新策略重启 Runtime；如果 Runtime 尚未运行，只更新 policy。观察器只记录项目相对路径、文件类型、大小和修改时间等有限 metadata，不记录文件内容、diff、命令或输出。
+
+文件路径会经过与 Context 关联文件相同的 `.contextignored` 规则过滤。被 `.contextignored` 排除的文件，即使发生创建、修改或删除，也不会写入 `workspace.paths.changed` 事件。内置保护规则仍然优先排除 `.context/`、`.git/`、依赖/构建目录、环境变量、密钥和越界路径。
 
 ## Agent 工作流
 

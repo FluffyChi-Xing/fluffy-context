@@ -143,26 +143,40 @@ async function writeLease(projectRoot: string, lease: RuntimeLease): Promise<voi
   await atomicWriteJson(cognitionRuntimeLeasePath(projectRoot), lease);
 }
 
-async function closeServer(projectRoot: string, server: Server, observer: GitObserver, filesystem: FilesystemObserver, heartbeat: NodeJS.Timeout, poller: NodeJS.Timeout, inactivity: NodeJS.Timeout, background: Promise<void>, leaseWrite: Promise<void>, lease: RuntimeLease, reason: string): Promise<void> {
-  clearInterval(heartbeat);
-  clearInterval(poller);
-  clearTimeout(inactivity);
-  filesystem.stop();
-  await filesystem.flush();
-  await observer.drain();
-  await filesystem.drain();
-  await background;
-  await rebuildProjections(projectRoot);
-  await leaseWrite;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  await new Promise((resolve) => setImmediate(resolve));
-  await removeOwnedRuntimeFiles(projectRoot, lease.instanceId);
-  await appendEvent(projectRoot, {
-    type: 'runtime.stopped',
-    source: { kind: 'cli', instanceId: lease.instanceId },
-    idempotencyKey: `runtime:stopped:${lease.instanceId}`,
-    payload: { reason },
-  });
+async function closeServer(projectRoot: string, server: Server, observer: GitObserver, filesystem: FilesystemObserver, heartbeat: NodeJS.Timeout | null, poller: NodeJS.Timeout | null, inactivity: NodeJS.Timeout | null, background: Promise<void>, leaseWrite: Promise<void>, lease: RuntimeLease, reason: string): Promise<void> {
+  if (heartbeat) clearInterval(heartbeat);
+  if (poller) clearInterval(poller);
+  if (inactivity) clearTimeout(inactivity);
+  let failure: unknown;
+  try {
+    filesystem.stop();
+    await filesystem.flush();
+    await observer.drain();
+    await filesystem.drain();
+    await background;
+    await rebuildProjections(projectRoot);
+    await leaseWrite;
+  } catch (error) {
+    failure = error;
+  } finally {
+    await new Promise<void>((resolve) => {
+      if (!server.listening) { resolve(); return; }
+      server.close(() => resolve());
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await removeOwnedRuntimeFiles(projectRoot, lease.instanceId);
+  }
+  try {
+    await appendEvent(projectRoot, {
+      type: 'runtime.stopped',
+      source: { kind: 'cli', instanceId: lease.instanceId },
+      idempotencyKey: `runtime:stopped:${lease.instanceId}`,
+      payload: { reason },
+    });
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure) throw failure;
 }
 
 function attachProtocol(server: Server, secret: string, lease: RuntimeLease, touch: () => void, observe: () => Promise<{ changed: boolean }>, close: (reason: string) => Promise<void>): void {
@@ -223,9 +237,9 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   const secret = createToken();
   const observer = new GitObserver(projectRoot);
   let filesystem: FilesystemObserver;
-  let heartbeat: NodeJS.Timeout;
-  let poller: NodeJS.Timeout;
-  let inactivity: NodeJS.Timeout;
+  let heartbeat: NodeJS.Timeout | null = null;
+  let poller: NodeJS.Timeout | null = null;
+  let inactivity: NodeJS.Timeout | null = null;
   let background = Promise.resolve();
   let leaseWrite = Promise.resolve();
   let filesystemEventPending = false;
@@ -241,7 +255,7 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
     return closing;
   };
   const touch = (): void => {
-    clearTimeout(inactivity);
+    if (inactivity) clearTimeout(inactivity);
     inactivity = setTimeout(() => { void close('inactivity').catch(() => undefined); }, inactivityTimeoutMs);
   };
   const observe = (): Promise<{ changed: boolean }> => enqueueObservation(async () => {
@@ -325,6 +339,17 @@ export async function disableRuntime(startPath?: string): Promise<RuntimeStatus>
   return runtimeStatus(projectRoot);
 }
 
+export async function setFilesystemEvents(startPath: string | undefined, enabled: boolean): Promise<RuntimeStatus> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  if (!await exists(cognitionManifestPath(projectRoot))) throw new Error('v2 migration is required before configuring filesystem events');
+  const wasRunning = (await runtimeStatus(projectRoot)).running;
+  if (wasRunning) await stopRuntime(projectRoot);
+  const current = await loadPolicy(projectRoot);
+  await writeRuntimePolicy(projectRoot, { ...current, filesystemEventsEnabled: enabled });
+  if (wasRunning) return startRuntime(projectRoot);
+  return runtimeStatus(projectRoot);
+}
+
 async function waitForRuntime(projectRoot: string, timeoutMs: number): Promise<RuntimeStatus | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -378,7 +403,7 @@ export async function ensureRuntimeForSession(startPath?: string, options: Ensur
   const projectRoot = await resolveProjectRoot(startPath);
   if (!await exists(cognitionManifestPath(projectRoot))) return { projectRoot, started: false, running: false, skipped: 'not-migrated' };
   const current = await loadPolicy(projectRoot);
-  if (!current.enabled || !current.autoStart) return { projectRoot, started: false, running: false, skipped: 'disabled' };
+  if (!current.enabled || !current.autoStart || (options.source === 'claude-hook' && !current.allowHookStartup)) return { projectRoot, started: false, running: false, skipped: 'disabled' };
   if (await liveLease(projectRoot)) return { projectRoot, started: false, running: true, skipped: 'already-running' };
   const pending = startupPromises.get(projectRoot);
   if (pending) {

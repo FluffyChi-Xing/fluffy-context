@@ -7,6 +7,16 @@ import { withLock } from '../storage/lock.js';
 import { cognitionJournalDirectory, locksDirectory } from '../storage/layout.js';
 import type { CognitionEvent, CognitionEventSource, CognitionEventType, CognitionGitAnchor } from './types.js';
 
+const eventTypes: ReadonlySet<string> = new Set([
+  'runtime.enabled', 'runtime.started', 'runtime.stopped', 'host.session.started', 'host.prompt.submitted',
+  'git.state.observed', 'git.branch.changed', 'git.head.changed', 'workspace.paths.changed',
+  'context.checkpoint.imported', 'context.state.recorded', 'note.recorded', 'note.resolved', 'note.absorbed',
+  'knowledge.proposed', 'knowledge.verified', 'knowledge.deprecated', 'knowledge.rejected',
+  'deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected', 'record.used',
+  'projection.advanced', 'projection.failed',
+]);
+const sourceKinds: ReadonlySet<string> = new Set(['cli', 'claude-hook', 'mcp', 'git-observer', 'fs-observer', 'migration']);
+
 const segmentName = '00000001.ndjson';
 
 export interface AppendEventInput<T = Record<string, unknown>> {
@@ -49,6 +59,53 @@ async function journalFiles(projectRoot: string): Promise<string[]> {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validGitAnchor(value: unknown): value is CognitionGitAnchor {
+  return isRecord(value)
+    && (typeof value.worktreeId === 'string' || value.worktreeId === null)
+    && (typeof value.branch === 'string' || value.branch === null)
+    && (typeof value.ref === 'string' || value.ref === null)
+    && (typeof value.head === 'string' || value.head === null);
+}
+
+function validIsoDate(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+function validateEventShape(event: unknown, projectId: string, file: string, line: number): asserts event is CognitionEvent {
+  if (!isRecord(event)
+    || event.schemaVersion !== 2
+    || typeof event.eventId !== 'string'
+    || event.eventId.length === 0
+    || typeof event.type !== 'string'
+    || !eventTypes.has(event.type)
+    || !validIsoDate(event.occurredAt)
+    || !validIsoDate(event.observedAt)
+    || event.projectId !== projectId
+    || !isRecord(event.source)
+    || typeof event.source.kind !== 'string'
+    || !sourceKinds.has(event.source.kind)
+    || (event.source.instanceId !== undefined && typeof event.source.instanceId !== 'string')
+    || (event.correlationId !== undefined && typeof event.correlationId !== 'string')
+    || typeof event.idempotencyKey !== 'string'
+    || event.idempotencyKey.length === 0
+    || !validGitAnchor(event.git)
+    || !isRecord(event.privacy)
+    || (event.privacy.classification !== 'metadata' && event.privacy.classification !== 'redacted-text')
+    || typeof event.privacy.redactionCount !== 'number'
+    || !Number.isSafeInteger(event.privacy.redactionCount)
+    || event.privacy.redactionCount < 0
+    || !isRecord(event.payload)
+    || (event.previousHash !== null && typeof event.previousHash !== 'string')
+    || typeof event.hash !== 'string'
+    || event.hash.length === 0) {
+    throw new Error(`invalid journal record schema at ${file}:${line}`);
+  }
+}
+
 async function recoverPartialTail(projectRoot: string): Promise<void> {
   const files = await journalFiles(projectRoot);
   const file = files.at(-1);
@@ -60,13 +117,15 @@ async function recoverPartialTail(projectRoot: string): Promise<void> {
   const tail = content.slice(boundary + 1);
   try {
     JSON.parse(tail);
+    await appendFile(filePath, '\n', 'utf8');
   } catch {
     await truncate(filePath, boundary < 0 ? 0 : boundary + 1);
   }
 }
 
-export async function readJournal(startPath?: string): Promise<CognitionEvent[]> {
+export async function readJournal(startPath?: string, options: { allowPartialTail?: boolean } = {}): Promise<CognitionEvent[]> {
   const projectRoot = await resolveProjectRoot(startPath);
+  const projectId = (await loadManifest(projectRoot)).projectId;
   const events: CognitionEvent[] = [];
   let previousHash: string | null = null;
   for (const file of await journalFiles(projectRoot)) {
@@ -79,11 +138,12 @@ export async function readJournal(startPath?: string): Promise<CognitionEvent[]>
       try {
         event = JSON.parse(line) as CognitionEvent;
       } catch (error) {
-        if (index === lines.length - 1 && !content.endsWith('\n')) break;
+        if (options.allowPartialTail !== false && index === lines.length - 1 && !content.endsWith('\n')) break;
         throw new Error(`invalid journal record ${file}:${index + 1}: ${error instanceof Error ? error.message : 'invalid JSON'}`);
       }
+      validateEventShape(event, projectId, file, index + 1);
       const { hash, ...withoutHash } = event;
-      if (event.schemaVersion !== 2 || !event.eventId || event.previousHash !== previousHash || hash !== eventHash(withoutHash)) {
+      if (event.previousHash !== previousHash || hash !== eventHash(withoutHash)) {
         throw new Error(`invalid journal hash chain at ${file}:${index + 1}`);
       }
       previousHash = event.hash;
@@ -93,13 +153,38 @@ export async function readJournal(startPath?: string): Promise<CognitionEvent[]>
   return events;
 }
 
+export async function verifyJournal(startPath?: string): Promise<CognitionEvent[]> {
+  return readJournal(startPath, { allowPartialTail: false });
+}
+
 export async function appendEvent<T>(startPath: string | undefined, input: AppendEventInput<T>): Promise<{ event: CognitionEvent<T>; appended: boolean }> {
   const projectRoot = await resolveProjectRoot(startPath);
   return withLock(`${locksDirectory(projectRoot)}/cognition-journal.lock`, async () => {
     await recoverPartialTail(projectRoot);
     const existing = await readJournal(projectRoot);
     const duplicate = existing.find((event) => event.idempotencyKey === input.idempotencyKey);
-    if (duplicate) return { event: duplicate as CognitionEvent<T>, appended: false };
+    if (duplicate) {
+      const candidate = {
+        type: input.type,
+        source: input.source ?? { kind: 'cli' },
+        correlationId: input.correlationId,
+        idempotencyKey: input.idempotencyKey,
+        git: input.git ?? { worktreeId: null, branch: null, ref: null, head: null },
+        privacy: input.privacy ?? { classification: 'metadata', redactionCount: 0 },
+        payload: input.payload,
+      };
+      const existingSemantic = {
+        type: duplicate.type,
+        source: duplicate.source,
+        correlationId: duplicate.correlationId,
+        idempotencyKey: duplicate.idempotencyKey,
+        git: duplicate.git,
+        privacy: duplicate.privacy,
+        payload: duplicate.payload,
+      };
+      if (canonical(candidate) !== canonical(existingSemantic)) throw new Error(`idempotency key conflict: ${input.idempotencyKey}`);
+      return { event: duplicate as CognitionEvent<T>, appended: false };
+    }
     const now = new Date().toISOString();
     const eventWithoutHash: Omit<CognitionEvent<T>, 'hash'> = {
       eventId: input.eventId ?? eventId(),

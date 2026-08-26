@@ -8,7 +8,7 @@ import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { readJournal } from '../src/cognition/journal.js';
-import { disableRuntime, enableRuntime, ensureRuntimeForSession, observeRuntime, runtimeStatus, serveRuntime, stopRuntime, touchRuntime } from '../src/cognition/runtime.js';
+import { disableRuntime, enableRuntime, ensureRuntimeForSession, observeRuntime, runtimeStatus, serveRuntime, setFilesystemEvents, stopRuntime, touchRuntime } from '../src/cognition/runtime.js';
 import { cognitionRuntimeSecretPath } from '../src/storage/layout.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.js';
 
@@ -138,6 +138,38 @@ test('runtime records allowed filesystem changes without recording file contents
     assert.ok(changed);
     assert.deepEqual((changed.payload as { paths: string[] }).paths, ['runtime-observed.txt']);
     assert.equal(JSON.stringify(changed).includes('private file content'), false);
+  } finally {
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('filesystem observation can be enabled explicitly and still respects .contextignored', async () => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initProject(root);
+    await importV1(root);
+    await writeFile(path.join(root, '.contextignored'), 'ignored.txt\n');
+    const disabled = await loadRuntimePolicy(root);
+    assert.equal(disabled.filesystemEventsEnabled, false);
+    const status = await setFilesystemEvents(root, true);
+    assert.equal(status.running, false);
+    assert.equal((await loadRuntimePolicy(root)).filesystemEventsEnabled, true);
+    runtime = await serveRuntime(root, { pollIntervalMs: 100, heartbeatIntervalMs: 50 });
+    await writeFile(path.join(root, 'observed.txt'), 'recorded');
+    await writeFile(path.join(root, 'ignored.txt'), 'not recorded');
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const events = await readJournal(root);
+      if (events.some((event) => event.type === 'workspace.paths.changed')) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const events = await readJournal(root);
+    const changed = events.filter((event) => event.type === 'workspace.paths.changed');
+    assert.ok(changed.length > 0);
+    const paths = changed.flatMap((event) => (event.payload as { paths: string[] }).paths);
+    assert.ok(paths.includes('observed.txt'));
+    assert.equal(paths.includes('ignored.txt'), false);
   } finally {
     await runtime?.close('test');
     await rm(root, { recursive: true, force: true });

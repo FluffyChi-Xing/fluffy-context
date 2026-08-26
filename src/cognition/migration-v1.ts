@@ -121,7 +121,7 @@ async function sourceRecords(projectRoot: string): Promise<{ records: V1Record[]
 async function writeV2Metadata(projectRoot: string): Promise<void> {
   const v1 = await loadManifest(projectRoot);
   const manifest: CognitionManifest = { schemaVersion: 2, layoutVersion: COGNITION_LAYOUT_VERSION, projectId: v1.projectId, createdAt: new Date().toISOString(), policyVersion: 1 };
-  const policy: CognitionRuntimePolicy = { schemaVersion: 2, enabled: true, autoStart: true, allowHookStartup: false, inactivityTimeoutMs: 300_000, promptIntentMaxChars: 500, filesystemEventsEnabled: false, retentionMaxBytes: 64 * 1024 * 1024 };
+  const policy: CognitionRuntimePolicy = { schemaVersion: 2, enabled: true, autoStart: true, allowHookStartup: true, inactivityTimeoutMs: 300_000, promptIntentMaxChars: 500, filesystemEventsEnabled: false, retentionMaxBytes: 64 * 1024 * 1024 };
   await Promise.all([atomicWriteJson(cognitionManifestPath(projectRoot), manifest), atomicWriteJson(cognitionPolicyPath(projectRoot), policy)]);
 }
 
