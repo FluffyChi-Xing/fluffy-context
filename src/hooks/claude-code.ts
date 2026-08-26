@@ -2,12 +2,10 @@ import { contextOrient } from '../agent/api.js';
 import type { ContextOrientReadyResult } from '../agent/types.js';
 import { appendEvent } from '../cognition/journal.js';
 import { v2Enabled } from '../cognition/orient.js';
-import { startRuntime } from '../cognition/runtime.js';
-import type { CognitionRuntimePolicy } from '../cognition/types.js';
+import { ensureRuntimeForSession, touchRuntime } from '../cognition/runtime.js';
+import { loadRuntimePolicy } from '../cognition/policy.js';
 import { readGitWorktreeState } from '../git/git-adapter.js';
 import { resolveProjectRoot } from '../project/project-resolver.js';
-import { cognitionPolicyPath } from '../storage/layout.js';
-import { readJson } from '../storage/json-store.js';
 
 interface ClaudeCodeHookInput {
   cwd?: unknown;
@@ -86,15 +84,11 @@ function redactIntent(value: string): { intent: string; redactionCount: number }
   return { intent, redactionCount };
 }
 
-async function within<T>(task: Promise<T>, milliseconds: number): Promise<T> {
-  return Promise.race([task, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('hook deadline exceeded')), milliseconds))]);
-}
-
 async function capture(event: 'session-start' | 'user-prompt', input: ClaudeCodeHookInput): Promise<void> {
   const cwd = text(input.cwd);
   const projectRoot = await resolveProjectRoot(cwd);
   if (!await v2Enabled(projectRoot)) return;
-  const policy = await readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot));
+  const policy = await loadRuntimePolicy(projectRoot);
   const sessionId = stableId(input, 'session');
   const eventId = stableId(input, 'event');
   if (!sessionId || !eventId) return;
@@ -112,10 +106,7 @@ async function capture(event: 'session-start' | 'user-prompt', input: ClaudeCode
 }
 
 async function maybeStartRuntime(input: ClaudeCodeHookInput): Promise<void> {
-  const projectRoot = await resolveProjectRoot(text(input.cwd));
-  if (!await v2Enabled(projectRoot)) return;
-  const policy = await readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot));
-  if (policy.allowHookStartup) await within(startRuntime(projectRoot), 1_000);
+  await ensureRuntimeForSession(text(input.cwd), { source: 'claude-hook', timeoutMs: 1_000 });
 }
 
 async function parseInput(raw: string): Promise<ClaudeCodeHookInput | null> {
@@ -131,8 +122,10 @@ export async function runClaudeCodeHook(event: 'session-start' | 'user-prompt', 
   const input = await parseInput(raw);
   if (!input) return HOOK_RESPONSE;
   try {
-    if (event === 'session-start') await maybeStartRuntime(input).catch(() => undefined);
+    await maybeStartRuntime(input).catch(() => undefined);
+    await touchRuntime(text(input.cwd)).catch(() => false);
     await capture(event, input).catch(() => undefined);
+    await touchRuntime(text(input.cwd)).catch(() => false);
     const cwd = text(input.cwd);
     const result = event === 'session-start'
       ? await contextOrient(cwd, { maxChars: 1200, noteLimit: 8 })

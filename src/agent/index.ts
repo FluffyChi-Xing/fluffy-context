@@ -17,3 +17,21 @@ export type {
   ContextSearchOptions,
   ContextSearchResult,
 } from '../runtime/types.js';
+export { compileContext } from '../compiler/compile.js';
+export type {
+  ContextAnchor,
+  ContextBudget,
+  ContextBudgetReport,
+  ContextCandidate,
+  ContextCandidateSection,
+  ContextCompileOptions,
+  ContextExclusion,
+  ContextExclusionReason,
+  ContextIntent,
+  ContextIntentSignal,
+  ContextManifest,
+  ContextProvenance,
+  ContextScenario,
+  ContextSourceDescriptor,
+  ContextTruncation,
+} from '../compiler/types.js';

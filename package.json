@@ -1,6 +1,6 @@
 {
   "name": "fluffy-context",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Local context management CLI and MCP tools for AI coding agents",
   "license": "MIT",
   "author": "FluffyChi-Xing",

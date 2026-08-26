@@ -1,6 +1,5 @@
 import { readGitWorktreeState, type GitWorktreeState } from '../git/git-adapter.js';
 import { appendEvent } from './journal.js';
-import { rebuildProjections } from './projections.js';
 
 function anchor(state: GitWorktreeState) {
   return { worktreeId: state.worktreeId, branch: state.branch, ref: state.ref, head: state.commit };
@@ -15,6 +14,10 @@ export class GitObserver {
   private pending = Promise.resolve();
 
   constructor(private readonly projectRoot: string) {}
+
+  get current(): GitWorktreeState | null {
+    return this.previous;
+  }
 
   observeNow(): Promise<{ state: GitWorktreeState; changed: boolean }> {
     const observation = this.pending.then(() => this.observe());
@@ -58,7 +61,6 @@ export class GitObserver {
       });
     }
     this.previous = state;
-    await rebuildProjections(this.projectRoot);
     return { state, changed: true };
   }
 }

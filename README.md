@@ -4,7 +4,7 @@
 
 Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，项目文档仍然负责设计；`fluffy-context` 补齐的是持续演进的项目认知层。最终架构是 `project → knowledge runtime → LLM`：CLI、MCP、Claude Hook 和未来 IDE/Agent 集成只是事件入口与信息注入适配器，而不是认知本体。
 
-0.6.0 在 branch-aware 注入闭环上补齐了可治理的确定性检索：迁移并启用 Runtime 后，Orient 从 v2 journal 的可重建索引检索已验证、适用的 Knowledge 与 Deadend，并返回有界的选择、排除与截断说明。v1 的 checkpoint、Note、Knowledge 与 Deadend 写入仍会最佳努力镜像为 v2 事件；Runtime 也会协调检测到的外部 v1 变更。自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。
+0.6.0 在 branch-aware 注入闭环上补齐了可治理的确定性检索：迁移并启用 Runtime 后，Orient 从 v2 journal 的可重建索引检索已验证、适用的 Knowledge 与 Deadend，并返回有界的选择、排除与截断说明。v1 的 checkpoint、Note、Knowledge 与 Deadend 写入仍会最佳努力镜像为 v2 事件；Runtime 也会协调检测到的外部 v1 变更。自动产物默认仍仅进入 Candidate，Verified Knowledge 仍需治理确认。0.6.6 已在此基础上完成无感 Runtime 生命周期的首个闭环：已迁移项目默认自动启动，Claude Hook、MCP 与 CLI Orient 可幂等唤醒 Runtime，显式 disable 仍保持永久禁用，启动失败继续 fail-open。
 
 ## 版本演进
 
@@ -16,8 +16,51 @@ Git 仍然负责代码和真实文件变更，Issue 系统仍然负责任务，�
 | 0.4.0 | v2 事件 journal、v1 显式迁移、可重建投影、本地 Runtime、Git 观察 | v2 与 v1 并存；NDJSON hash chain 是 v2 权威；Runtime 仅监听 loopback 并记录分支、ref 与 HEAD 元数据。 |
 | 0.5.0 | branch-aware Orient、v1 写入镜像、Runtime 协调、宿主事件捕获 | Context 按当前 worktree/ref 选择，避免跨分支任务状态泄漏；稳定宿主 ID 才会写入限长、脱敏后的 session/prompt intent。 |
 | 0.6.0 | journal 派生的确定性检索、治理终态、可解释 Orient、显式使用反馈 | 启用 v2 后直接从可重建索引检索已验证且适用的共识；使用反馈只影响稳定排序，绝不自动验证或提升 Candidate。 |
+| 0.6.5 | Runtime 活跃度修复与 Hook 保活 | Git 真实状态变化、宿主 Hook 活动和认证 IPC 会刷新 Runtime；heartbeat 与无变化轮询不会伪装成活跃，Runtime 在不可用时保持 fail-open。 |
+| 0.6.6 | 无感 Runtime 生命周期 | 通过 `ensureRuntimeForSession()` 在已迁移项目的首次会话、Claude Hook、MCP 握手或 CLI Orient 时幂等拉起 Runtime；显式 disable 保持禁用，启动失败继续 fail-open。 |
 
 所有版本均保持本地优先、显式治理与 fail-open 集成原则。v1 数据不会在迁移过程中被重写；当 v2 未启用、不可用、损坏或尚未同步时，读取接口会回退到兼容的 v1 行为。
+
+## 产品愿景与 1.0 前路线图
+
+`fluffy-context` 的目标不是成为另一套规则、Memory 或 Agent 能力系统，而是成为本地优先、Agent 无关的 **Context Orchestrator（上下文编排层）**：在理解当前任务、项目、worktree/ref、工作状态与 Token Budget 后，选择并编译最适合当前 Agent 的有界上下文。
+
+```text
+project → knowledge runtime → context compiler → LLM
+```
+
+Git 继续是代码与文件变更的权威，Issue 系统继续负责工作项，项目文档继续承载设计；`AGENTS.md`、`CLAUDE.md`、`.cursor/rules`、宿主 Memory、Skills 与 MCP 工具也继续由各自宿主和原生格式维护。`fluffy-context` 不复制、改写或同步这些外部主体；它只维护任务感知的选择所需元数据、引用与按输出需要截取的有界片段，并给出来源、优先级、纳入/排除原因与 Token 分配。
+
+CLI 是 Runtime 面向用户的 console pane / frontend：它用于初始化、检视、治理、诊断与调试编译结果，而非产品认知本体。Claude、Cursor、MCP 和未来 IDE/Agent 集成同样只是可选适配器，不应成为核心 Runtime 的依赖。
+
+| 计划版本 | 核心目标 | 主要能力 | 明确边界 |
+| --- | --- | --- | --- |
+| 0.7.0 | Context Compiler 基础 | 定义版本化 `ContextSourceDescriptor`、`ContextIntent`、`ContextManifest` 与 `ContextAdapter`；将当前 Context、checkpoint、Note、journal 派生事件、已验证 Knowledge/Deadend 和受治理外部来源统一为可追溯输入；确定性解析任务场景、意图、路径与 worktree/ref 约束，按 Token Budget 选择、排序、截断并生成纳入/排除理由；为 Claude、MCP、CLI、IDE 和通用 Agent 提供 provider-neutral adapter。`ctx orient` 演进为编译结果的检视与调试视图，并保留兼容输出。 | 不自动把原始事件提炼为 Verified Knowledge；不重写、合并或同步外部规则；不做模型调用、向量/Embedding、远程注册表或 provider-specific 核心依赖。 |
+| 0.8.0 | Decision Graph | 将 Decision 升级为可治理、可追溯的一等 journal 对象，记录结果、理由、备选方案、证据、适用性与生命周期；通过 `depends-on`、`supersedes`、`contradicts`、`supported-by`、`rejected-alternative`、`implemented-by` 等边构成确定性投影图；Compiler 只注入当前任务所需的有界决策子图。 | 不自动从代码或模型输出推断决策；不自动解决冲突；不自动提升 Candidate。 |
+| 0.9.0 | Knowledge Evolution | 以受治理事件支持 Knowledge 的合并、拆分、替代、适用范围收窄/扩展、退役、归档，以及作为新记录的复活；根据 Git/path 事件、source anchor、Decision Graph 依赖、重复/冲突和适用性漂移生成确定性的 `review-needed` 信号；Compiler 优先选择新鲜、适用且已验证的认知。 | 自动机制只能提出待审查候选，不能自动验证、降级、归档或作出真实性结论；不引入远程同步、团队权限、强制模型提供方或语义向量依赖。 |
+
+### 0.6.6 Runtime 生命周期
+
+0.6.6 的目标是消除用户反复执行 `ctx runtime start` 的负担。Runtime 已成为本地后台基础设施，而不是用户或 Agent 必须理解和操作的功能。核心 Runtime 保持 Agent 无关；Claude Code、MCP、CLI、IDE Extension 和其他宿主都只能通过可选 adapter 发出统一的活动信号。
+
+已迁移项目默认启用自动启动。首次会话、Claude Hook、MCP 握手或 CLI Orient 到达时，会通过幂等的 `ensureRuntimeForSession()` 检查 v2 policy 与有效 lease，复用启动锁避免重复进程，并在严格短超时内尽力拉起 Runtime。启动失败、宿主没有对应 hook 或 Runtime 暂时不可用时，宿主工作流仍继续，保持 fail-open；后续用户或 Agent 活动可再次唤醒，而不要求手动重复启动。显式执行 `ctx runtime disable` 会持久化禁用状态，直到再次执行 `ctx runtime enable`。
+
+当前 Runtime 使用 `active` 与 inactivity stop 的轻量模型：认证 IPC、Hook、MCP、CLI 和真实 Git 状态变化会刷新活跃度；heartbeat 与无变化轮询只维护健康状态，不会伪装成用户活动。更完整的 `limited`、`idle`、`sleep`、`destroyed` 生命周期状态机，以及统一的 session、tool、file 和 explicit-end 信号，属于后续版本设计。
+
+生命周期适配器不绑定某个 Agent 的内部实现：适配器只负责归一化宿主事件，Runtime 核心不把 inactivity 超时推断当作可靠的 agent-end 事实。当前可可靠捕获的 Claude 事件仍受宿主提供的 Hook 和稳定标识限制。
+
+低开销、隐私优先的 Git/file activity summary 仍属于后续版本范围：只记录经过过滤的相对路径、计数、状态变化和摘要 metadata，不记录原始命令、stdout、diff 或文件内容；事件必须 debounce/coalesce，并作为后续 Context Compiler 的候选证据，而不是自动验证的 Knowledge。
+
+### 1.0 发布门槛
+
+1. **稳定契约**：Context Source Descriptor、Context Manifest/Compiler、Decision Graph、Knowledge Evolution、只读 MCP 与 Agent API 具有明确的版本化兼容契约。
+2. **正确性与恢复**：编译与 journal replay 可确定性复现；hash chain 验证、投影 rebuild/repair、迁移一致性、损坏回退与 Windows/macOS/Linux 支持完善。
+3. **治理与隐私**：外部来源始终保持原生权威；持久化和输出前均应用敏感信息过滤；每个注入的项目认知都可追溯、适用且具有受治理生命周期。
+4. **集成中立**：Claude、Cursor 与未来宿主均为可选适配器；核心不依赖特定模型、IDE、SaaS、网络或向量数据库。
+5. **运行质量**：延迟与存储有界，Runtime 健康状态可观测，选择与截断可解释，适配器不可用时保持 fail-open。
+6. **产品表达一致**：文档与 API 明确 `ctx` 是 Runtime 的前端；`fluffy-context` 是对上下文进行编排的 Runtime，而不是仓库规则、Memory、Skills 或 MCP 能力的替代品。
+
+上述路线图描述的是 `0.6.6` 及之后的演进方向。0.6.5 提供 Runtime 活跃度修复与 Hook 保活；0.6.6 已提供已迁移项目的无感自动启动与 fail-open 唤醒。更完整的生命周期状态机、Git/file activity summary 和被动学习仍属于后续版本范围。
 
 ## 适用场景
 
@@ -132,7 +175,7 @@ ctx migrate v1 --apply
 ctx migrate verify
 ```
 
-只有完成迁移后才可启用 Runtime：
+迁移成功后，Runtime 默认已启用自动启动；以下命令用于显式诊断、手动控制或持久化选择退出：
 
 ```bash
 ctx runtime enable
@@ -144,9 +187,9 @@ ctx runtime disable
 
 Runtime 是单项目、按需启动的本地守护进程。它只绑定 `127.0.0.1` 的动态端口，并要求存储在项目本地 `.context/v2/runtime/secret` 中的能力令牌；令牌不会显示在 CLI 状态输出或写入事件日志。启动后，Runtime 持续观察当前 worktree 的 Git 状态：初始状态会记录 `git.state.observed`，分支/ref 切换记录 `git.branch.changed`，HEAD 更新记录 `git.head.changed`。这些事件会重建 branch workspace 投影，但不会自动创建 checkpoint 或将候选信息提升为已验证共识。
 
-完成迁移并显式 `ctx runtime enable` 后，`ctx orient`、MCP `context_orient` 与 Claude Hook 会优先选择当前 worktree/ref 的 v2 workspace；它不会借用其他分支的 Context。v2 可用时，Knowledge 与 Deadend 由 journal 重放出的确定性倒排索引直接检索，默认仅返回已验证且适用的记录；无匹配 workspace、v2 状态不可用、journal 损坏、v1 尚未同步或 Runtime 已禁用时，接口会安全回退到既有 v1 选择逻辑。Runtime 停止时仍可读取已验证的 v2 状态，但运行中的 Runtime 负责持续 Git 观察和 v1 写入镜像。
+完成迁移且未显式 disable 时，`ctx orient`、MCP `context_orient` 与 Claude Hook 会在严格短超时内幂等确保 Runtime 可用，并优先选择当前 worktree/ref 的 v2 workspace；它不会借用其他分支的 Context。v2 可用时，Knowledge 与 Deadend 由 journal 重放出的确定性倒排索引直接检索，默认仅返回已验证且适用的记录；无匹配 workspace、v2 状态不可用、journal 损坏、v1 尚未同步或 Runtime 已禁用时，接口会安全回退到既有 v1 选择逻辑。Runtime 停止时仍可读取已验证的 v2 状态，但运行中的 Runtime 负责持续 Git 观察和 v1 写入镜像。
 
-Claude Hook 仅在宿主提供稳定的 session 与 event 标识时记录 `host.session.started` 或 `host.prompt.submitted`。提示只保存按 `promptIntentMaxChars` 截断并经过敏感值脱敏后的 intent，绝不保存原始提示；缺少稳定标识时不写入事件。默认 Hook 不启动守护进程；将 v2 policy 的 `allowHookStartup` 设为 `true` 后，SessionStart 才会在严格超时内尽力启动 Runtime，失败仍会 fail open。UserPromptSubmit 不会启动 Runtime。
+Claude Hook 仅在宿主提供稳定的 session 与 event 标识时记录 `host.session.started` 或 `host.prompt.submitted`。提示只保存按 `promptIntentMaxChars` 截断并经过敏感值脱敏后的 intent，绝不保存原始提示；缺少稳定标识时不写入事件。SessionStart 与 UserPromptSubmit 都会在严格短超时内尽力确保已迁移、未显式 disable 的项目 Runtime 可用；稳定标识仅影响宿主事件是否写入。启动或读取失败始终 fail open，不阻塞宿主工作流。
 
 ### `ctx checkpoint` 和 `ctx resume`
 

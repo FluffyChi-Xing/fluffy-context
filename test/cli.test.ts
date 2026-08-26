@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.6.0');
+    assert.equal(JSON.parse(result.stdout), '0.7.0');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -215,6 +215,25 @@ test('knowledge discover CLI returns deterministic JSON and validates filters', 
     const unknown = await runCli(['knowledge', 'discover', 'auth', '--unknown', '--path', root], root);
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /unknown option/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('compile CLI returns a manifest and validates compiler options', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    const noContext = await runCli(['compile', 'debug authentication', '--path', root, '--scenario', 'debugging', '--max-chars', '0'], root);
+    assert.equal(noContext.code, 0, noContext.stderr);
+    const output = JSON.parse(noContext.stdout);
+    assert.equal(output.status, 'no_context');
+    assert.equal(output.intent.query, 'debug authentication');
+    assert.equal(output.intent.scenario, 'debugging');
+    assert.equal(output.budget.usedChars, 0);
+    const invalid = await runCli(['compile', '--scenario', 'invalid', '--path', root], root);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stderr, /must be one of/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

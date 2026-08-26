@@ -6,9 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../src/integrations/claude-code.js';
 import { initProject } from '../src/runtime/init.js';
+import { atomicWriteJson } from '../src/storage/atomic-write.js';
+import { cognitionPolicyPath } from '../src/storage/layout.js';
 import { saveContext } from '../src/agent/api.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
-import { enableRuntime } from '../src/cognition/runtime.js';
+import { enableRuntime, runtimeStatus, serveRuntime, stopRuntime } from '../src/cognition/runtime.js';
 import { readJournal } from '../src/cognition/journal.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
@@ -66,6 +68,29 @@ test('Claude Code hooks inject bounded phase guidance without modifying context 
   }
 });
 
+test('Claude Code hooks keep a running runtime alive', async () => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initProject(root);
+    await saveContext(root, { title: 'Hook context', progressSummary: 'Capture host event' });
+    await importV1(root);
+    await enableRuntime(root);
+    const policy = JSON.parse(await readFile(cognitionPolicyPath(root), 'utf8'));
+    await atomicWriteJson(cognitionPolicyPath(root), { ...policy, inactivityTimeoutMs: 5_000, allowHookStartup: false });
+    runtime = await serveRuntime(root, { inactivityTimeoutMs: 5_000, heartbeatIntervalMs: 100, pollIntervalMs: 1_000 });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const result = await runCli(['hook', 'claude-code', 'user-prompt'], root, JSON.stringify({ cwd: root, session_id: 'session-keepalive', event_id: 'event-keepalive', prompt: 'continue work' }));
+    assert.equal(result.code, 0);
+    assert.equal((await runtimeStatus(root)).running, true);
+    await new Promise((resolve) => setTimeout(resolve, 4_500));
+    assert.equal((await runtimeStatus(root)).running, true);
+  } finally {
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Claude Code hooks capture redacted host events with stable identifiers', async () => {
   const root = await project();
   try {
@@ -85,8 +110,27 @@ test('Claude Code hooks capture redacted host events with stable identifiers', a
     assert.equal(captured[0].privacy.redactionCount, 1);
     assert.match(JSON.stringify(captured[0].payload), /\[REDACTED\]/);
     assert.doesNotMatch(JSON.stringify(captured[0].payload), /secret-value/);
+    await stopRuntime(root);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('Claude Code hooks start migrated runtime without stable host identifiers', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await saveContext(root, { title: 'Hook context', progressSummary: 'Start runtime' });
+    await importV1(root);
+    const result = await runCli(['hook', 'claude-code', 'session-start'], root, JSON.stringify({ cwd: root }));
+    assert.equal(result.code, 0);
+    assert.equal((await runtimeStatus(root)).running, true);
+    const events = await readJournal(root);
+    assert.equal(events.some((event) => event.type === 'host.session.started'), false);
+  } finally {
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

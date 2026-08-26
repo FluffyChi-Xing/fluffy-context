@@ -55,6 +55,7 @@ export interface CognitionEvent<T = Record<string, unknown>> {
 export interface CognitionRuntimePolicy {
   schemaVersion: 2;
   enabled: boolean;
+  autoStart: boolean;
   allowHookStartup: boolean;
   inactivityTimeoutMs: number;
   promptIntentMaxChars: number;
@@ -169,6 +170,23 @@ export interface CognitionRecordPayload<T extends Record<string, unknown> = Reco
   sourcePath?: string;
   sourceHash?: string;
   anchorProvenance?: 'snapshot' | 'live' | 'global';
+}
+
+export interface WorkspacePathChange {
+  path: string;
+  kind: 'created' | 'modified' | 'deleted' | 'renamed' | 'unknown';
+  fileType: 'file';
+  sizeBytes?: number;
+  mtimeMs?: number;
+}
+
+export interface WorkspacePathsChangedPayload {
+  schemaVersion: 1;
+  paths: string[];
+  changes: WorkspacePathChange[];
+  pathCount: number;
+  coalesced: boolean;
+  truncated: boolean;
 }
 
 export interface CognitionProjection {

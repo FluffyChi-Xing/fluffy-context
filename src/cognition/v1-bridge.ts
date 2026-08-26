@@ -2,13 +2,13 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { access, readFile, readdir } from 'node:fs/promises';
 import { readGitWorktreeState } from '../git/git-adapter.js';
-import { cognitionManifestPath, cognitionPolicyPath, cognitionV1SyncPath, contextsRoot, deadendsPath, knowledgePath, notesPath, snapshotsDirectory } from '../storage/layout.js';
+import { cognitionManifestPath, cognitionV1SyncPath, contextsRoot, deadendsPath, knowledgePath, notesPath, snapshotsDirectory } from '../storage/layout.js';
 import { readJson } from '../storage/json-store.js';
 import { atomicWriteJson } from '../storage/atomic-write.js';
 import type { ContextMetadata, Deadend, Knowledge, Note, Snapshot } from '../runtime/types.js';
 import { appendEvent } from './journal.js';
 import { rebuildProjections } from './projections.js';
-import type { CognitionRuntimePolicy } from './types.js';
+import { loadRuntimePolicy } from './policy.js';
 
 function digest(record: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex');
@@ -39,7 +39,7 @@ export async function v1Synced(projectRoot: string): Promise<boolean> {
 async function enabled(projectRoot: string): Promise<boolean> {
   try {
     await access(cognitionManifestPath(projectRoot));
-    return (await readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot))).enabled;
+    return (await loadRuntimePolicy(projectRoot)).enabled;
   } catch {
     return false;
   }

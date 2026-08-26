@@ -1,13 +1,14 @@
 import { access } from 'node:fs/promises';
 import { readGitWorktreeState } from '../git/git-adapter.js';
-import { cognitionManifestPath, cognitionPolicyPath } from '../storage/layout.js';
+import { cognitionManifestPath } from '../storage/layout.js';
 import { readJson } from '../storage/json-store.js';
 import { loadManifest } from '../runtime/init.js';
 import { readJournal } from './journal.js';
 import { projectEvents, workspaceKey } from './projections.js';
 import { buildRetrievalProjection } from './retrieval.js';
+import { loadRuntimePolicy } from './policy.js';
 import { v1Synced } from './v1-bridge.js';
-import type { CognitionEvent, CognitionManifest, CognitionRuntimePolicy, CognitionRetrievalProjection } from './types.js';
+import type { CognitionEvent, CognitionManifest, CognitionRetrievalProjection } from './types.js';
 
 export interface V2OrientationPlan {
   contextId: string;
@@ -59,7 +60,7 @@ export async function selectV2Orientation(projectRoot: string, contextId?: strin
     const [manifest, cognition, policy] = await Promise.all([
       loadManifest(projectRoot),
       readJson<CognitionManifest>(cognitionManifestPath(projectRoot)),
-      readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot)),
+      loadRuntimePolicy(projectRoot),
     ]);
     if (cognition.schemaVersion !== 2 || cognition.projectId !== manifest.projectId || !policy.enabled || !await v1Synced(projectRoot)) return null;
     const [events, current] = await Promise.all([readJournal(projectRoot), readGitWorktreeState(projectRoot)]);
@@ -93,7 +94,7 @@ export async function selectV2Orientation(projectRoot: string, contextId?: strin
 export async function v2Enabled(projectRoot: string): Promise<boolean> {
   try {
     await access(cognitionManifestPath(projectRoot));
-    return (await readJson<CognitionRuntimePolicy>(cognitionPolicyPath(projectRoot))).enabled;
+    return (await loadRuntimePolicy(projectRoot)).enabled;
   } catch {
     return false;
   }

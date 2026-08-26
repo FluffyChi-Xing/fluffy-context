@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { contextOrient } from '../agent/api.js';
+import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 
 const orientInput = z.object({
@@ -26,6 +27,7 @@ export function createMcpServer(): McpServer {
     inputSchema: orientInput,
   }, async ({ path, ...options }) => {
     try {
+      await ensureRuntimeForSession(path, { source: 'mcp', timeoutMs: 1_000 }).catch(() => undefined);
       const result = await contextOrient(path, options);
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],

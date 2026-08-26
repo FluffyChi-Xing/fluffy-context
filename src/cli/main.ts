@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { contextOrient } from '../agent/api.js';
+import { compileContext } from '../compiler/compile.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
 import { readJournal } from '../cognition/journal.js';
 import { projectEvents } from '../cognition/projections.js';
-import { disableRuntime, enableRuntime, runtimeStatus, serveRuntime, startRuntime, stopRuntime } from '../cognition/runtime.js';
+import { disableRuntime, enableRuntime, ensureRuntimeForSession, runtimeStatus, serveRuntime, startRuntime, stopRuntime } from '../cognition/runtime.js';
 import { migrationReadiness } from '../cognition/readiness.js';
 import { runClaudeCodeHook } from '../hooks/claude-code.js';
 import { readGitWorktreeState } from '../git/git-adapter.js';
@@ -110,6 +111,20 @@ Options:
   --context <id>             Context ID
   --scope <scope>            Exact consensus scope
   --max-chars <number>       Maximum display characters
+  --knowledge-limit <number> Maximum knowledge matches (default: 10)
+  --deadend-limit <number>   Maximum deadend matches (default: 10)
+  --note-limit <number>      Maximum open notes (default: 20)`,
+  compile: `usage: ctx compile [query] [options]
+
+Compile bounded, provider-neutral context with source provenance and selection explanations.
+
+Options:
+  --path <path>              Project path
+  --context <id>             Context ID
+  --scenario <scenario>      resume|implementation|debugging|verification|handoff|exploration|unknown
+  --scope <scope>            Exact consensus scope
+  --paths <paths>            Comma-separated project-relative paths
+  --max-chars <number>       Maximum compiled characters
   --knowledge-limit <number> Maximum knowledge matches (default: 10)
   --deadend-limit <number>   Maximum deadend matches (default: 10)
   --note-limit <number>      Maximum open notes (default: 20)`,
@@ -311,7 +326,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|feedback|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|feedback|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -406,10 +421,29 @@ async function run(args: string[]): Promise<void> {
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const query = positionals(args.slice(1), valueOptions);
       validatePositionals(query, 1, HELP.orient);
+      await ensureRuntimeForSession(target, { source: 'cli', timeoutMs: 1_000 }).catch(() => undefined);
       print(await contextOrient(target, {
         contextId: option(args, '--context'),
         query: query[0],
         scope: option(args, '--scope'),
+        maxChars: numericOption(args, '--max-chars', 4000),
+        knowledgeLimit: numericOption(args, '--knowledge-limit', 10),
+        deadendLimit: numericOption(args, '--deadend-limit', 10),
+        noteLimit: numericOption(args, '--note-limit', 20),
+      }));
+      return;
+    }
+    case 'compile': {
+      const valueOptions = ['--path', '--context', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit'];
+      validateOptions(args.slice(1), valueOptions, valueOptions);
+      const query = positionals(args.slice(1), valueOptions);
+      validatePositionals(query, 1, HELP.compile);
+      print(await compileContext(target, {
+        contextId: option(args, '--context'),
+        query: query[0],
+        scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
+        scope: option(args, '--scope'),
+        paths: listOption(args, '--paths'),
         maxChars: numericOption(args, '--max-chars', 4000),
         knowledgeLimit: numericOption(args, '--knowledge-limit', 10),
         deadendLimit: numericOption(args, '--deadend-limit', 10),

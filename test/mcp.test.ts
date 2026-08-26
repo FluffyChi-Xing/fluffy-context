@@ -8,6 +8,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { createMcpServer } from '../src/mcp/server.js';
 import { initProject } from '../src/runtime/init.js';
 import { saveContext } from '../src/agent/api.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
+import { runtimeStatus, stopRuntime } from '../src/cognition/runtime.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
@@ -67,6 +69,23 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
     assert.equal(orientPayload(noQuery).status, 'ready');
   } finally {
     await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
+test('MCP context_orient auto-starts a migrated project runtime and remains fail-open when stopped', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    await importV1(root);
+    const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });
+    assert.notEqual(result.isError, true);
+    assert.equal((await runtimeStatus(root)).running, true);
+    await stopRuntime(root);
+    assert.equal((await runtimeStatus(root)).running, false);
+  } finally {
+    await stopRuntime(root).catch(() => undefined);
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })]);
   }
 });
 

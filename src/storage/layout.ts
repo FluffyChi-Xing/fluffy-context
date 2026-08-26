@@ -120,6 +120,10 @@ export function cognitionRuntimeSecretPath(projectRoot: string): string {
   return path.join(cognitionRuntimeDirectory(projectRoot), 'secret');
 }
 
+export function cognitionRuntimeStartupPath(projectRoot: string): string {
+  return path.join(cognitionRuntimeDirectory(projectRoot), 'startup.json');
+}
+
 export function cognitionV1SyncPath(projectRoot: string): string {
   return path.join(cognitionRuntimeDirectory(projectRoot), 'v1-sync.json');
 }
