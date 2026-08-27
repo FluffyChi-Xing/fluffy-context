@@ -8,7 +8,7 @@ import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { discoverKnowledge, recordDeadend, verifyDeadend, verifyKnowledge, learnKnowledge } from '../src/runtime/knowledge.js';
 import { addNote } from '../src/runtime/notes.js';
-import { contextOrient, saveContext, loadContext, recordContextUse, searchContext } from '../src/agent/api.js';
+import { contextExpand, contextOrient, saveContext, loadContext, recordContextUse, searchContext } from '../src/agent/api.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { enableRuntime } from '../src/cognition/runtime.js';
 
@@ -61,6 +61,33 @@ test('Agent API completes save, load and search without exposing storage layout'
     assert.ok(searched.hits[0].summary.progressSummary.length <= 20);
     assert.equal(searched.knowledge.total, 0);
     assert.deepEqual(searched.verifiedDeadendIds, []);
+    assert.equal(await readFile(path.join(root, '.context', 'index.json'), 'utf8'), before);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('contextExpand is publicly available and read-only', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await saveContext(root, { title: 'Expand API', progressSummary: 'Keep expansion read-only' });
+    assert.equal(saved.result.status, 'saved');
+    if (saved.result.status !== 'saved') return;
+    const before = await readFile(path.join(root, '.context', 'index.json'), 'utf8');
+    const { compileContext } = await import('../src/compiler/compile.js');
+    const manifest = await compileContext(root, { contextId: saved.result.context.id, query: 'expansion', maxChars: 4000 });
+    const candidate = manifest.selected.find((item) => (item.content as { field?: unknown }).field === 'progressSummary');
+    assert.ok(candidate);
+    if (!candidate) return;
+    const result = await contextExpand(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: candidate.candidateId,
+      level: 'structured',
+      compile: { contextId: saved.result.context.id, query: 'expansion', maxChars: 4000 },
+    });
+    assert.equal(result.status, 'complete');
+    assert.equal((result.content as { value?: unknown } | null)?.value, 'Keep expansion read-only');
     assert.equal(await readFile(path.join(root, '.context', 'index.json'), 'utf8'), before);
   } finally {
     await rm(root, { recursive: true, force: true });

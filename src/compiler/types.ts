@@ -4,6 +4,7 @@ import type { Deadend, Knowledge, Note, ResumeSummary, StructuredContext } from 
 
 export type ContextScenario = 'resume' | 'implementation' | 'debugging' | 'verification' | 'handoff' | 'exploration' | 'unknown';
 export type ContextLevel = 'signal' | 'summary' | 'structured' | 'evidence';
+export type ContextExpandLevel = 'structured' | 'evidence';
 export type ContextSourceKind = 'current-context' | 'checkpoint' | 'note' | 'journal' | 'knowledge' | 'deadend';
 export type ContextCandidateSection = 'summary' | 'pending' | 'decision' | 'risk' | 'note' | 'knowledge' | 'deadend' | 'activity';
 export type ContextSignalOrigin = 'explicit' | 'deterministic';
@@ -195,9 +196,39 @@ export interface ContextCompileOptions {
   eventId?: string;
 }
 
+export interface ContextExpandInput {
+  manifestHash: string;
+  candidateId?: string;
+  itemHash?: string;
+  level: ContextExpandLevel;
+  maxChars?: number;
+  compile: ContextCompileOptions;
+}
+
+export interface ContextExpandResult {
+  status: 'complete' | 'partial';
+  projectRoot: string;
+  manifestHash: string;
+  candidateId: string;
+  itemHash: string;
+  previousLevel: ContextLevel;
+  requestedLevel: ContextExpandLevel;
+  resolvedLevel: ContextExpandLevel;
+  source: ContextSourceDescriptor;
+  content: unknown | null;
+  text: string;
+  budget: {
+    requestedChars: number;
+    usedChars: number;
+    remainingChars: number;
+    truncated: boolean;
+  };
+  provenance: ContextManifestProvenance;
+}
+
 export interface ContextManifest {
   schemaVersion: 1;
-  compilerVersion: '0.7.4';
+  compilerVersion: '0.7.6';
   rankingVersion: 'compiler-ranking-v2';
   status: 'ready' | 'no_context';
   projectRoot: string;

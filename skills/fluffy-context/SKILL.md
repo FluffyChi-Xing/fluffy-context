@@ -19,7 +19,9 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 仅需要完整详情时再运行 `ctx resume --max-chars <预算>`；它会保留既有的 `lastUsedAt` 更新语义。
 - Agent 集成从 `fluffy-context` 或 `fluffy-context/agent` 导入 `contextOrient`、`compileContext`、`saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context` 或导入内部 `dist/...` 路径。
 - `ctx compile` 的 `activity` section 只表示 Runtime 观察到的近期文件 metadata 变化；它不代表文件被读取或理解，也不替代 checkpoint、Note 或已验证 Knowledge。
-- 0.7.4 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。不要假定 MCP 已提供 `context_expand`，该工具属于后续版本。
+- 0.7.6 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。
+- 只对 selected candidate 使用 `ctx expand --manifest-hash ... --candidate-id ... --level structured|evidence`。必须带上原始 compile 参数和相同的 compile budget；Manifest 过期时应重新 compile，不要绕过 hash 校验。
+- `expand` 是无状态、只读的渐进式展开：`complete` 才提供完整 `content`，`partial` 提供有界 `text` 且 `content` 为 null。它不写入 Context/journal、不记录 feedback、不读取项目文件正文、diff、命令输出或敏感数据。Agent API 使用 `contextExpand`，MCP 使用 `context_expand`。
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。
@@ -101,7 +103,7 @@ ctx resume --path path/to/project --max-chars 2000
 
 ## MCP 与 Claude Code 集成
 
-`ctx agent serve` 提供 MCP stdio server，注册 `context_orient` 工具。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+`ctx agent serve` 提供 MCP stdio server，注册 `context_orient` 和 `context_expand` 工具。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
 
 ```bash
 ctx agent serve

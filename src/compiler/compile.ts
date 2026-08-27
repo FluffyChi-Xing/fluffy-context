@@ -339,7 +339,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
   });
   return {
     schemaVersion: 1,
-    compilerVersion: '0.7.4',
+    compilerVersion: '0.7.6',
     rankingVersion: 'compiler-ranking-v2',
     status: orientation.status,
     projectRoot: sources.anchor.projectRoot,

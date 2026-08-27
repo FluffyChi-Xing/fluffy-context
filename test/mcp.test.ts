@@ -8,6 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { createMcpServer } from '../src/mcp/server.js';
 import { initProject } from '../src/runtime/init.js';
 import { saveContext } from '../src/agent/api.js';
+import { compileContext } from '../src/compiler/compile.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { runtimeStatus, stopRuntime } from '../src/cognition/runtime.js';
 
@@ -52,7 +53,7 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
     assert.equal(saved.result.status, 'saved');
 
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name), ['context_orient']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name), ['context_orient', 'context_expand']);
 
     const ready = await client.callTool({ name: 'context_orient', arguments: { path: root, query: 'authentication' } });
     assert.notEqual(ready.isError, true);
@@ -67,6 +68,90 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
     const noQuery = await client.callTool({ name: 'context_orient', arguments: { path: root } });
     assert.notEqual(noQuery.isError, true);
     assert.equal(orientPayload(noQuery).status, 'ready');
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
+test('MCP context_expand returns structured and partial results and keeps serving after errors', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const saved = await saveContext(root, {
+      title: 'MCP expansion',
+      progressSummary: 'Keep MCP expansion bounded and read-only',
+    });
+    assert.equal(saved.result.status, 'saved');
+    if (saved.result.status !== 'saved') return;
+
+    const manifest = await compileContext(root, {
+      contextId: saved.result.context.id,
+      query: 'MCP expansion',
+      maxChars: 4000,
+    });
+    const candidate = manifest.selected.find(
+      (item) => (item.content as { field?: unknown }).field === 'progressSummary',
+    );
+    assert.ok(candidate);
+    if (!candidate) return;
+
+    const expanded = await client.callTool({
+      name: 'context_expand',
+      arguments: {
+        path: root,
+        manifestHash: manifest.identity.manifestHash,
+        candidateId: candidate.candidateId,
+        level: 'structured',
+        compile: {
+          contextId: saved.result.context.id,
+          query: 'MCP expansion',
+          maxChars: 4000,
+        },
+      },
+    });
+    assert.notEqual(expanded.isError, true);
+    assert.equal((expanded.structuredContent as { status: string }).status, 'complete');
+    assert.equal((JSON.parse(textContent(expanded)) as { status: string }).status, 'complete');
+
+    const partial = await client.callTool({
+      name: 'context_expand',
+      arguments: {
+        path: root,
+        manifestHash: manifest.identity.manifestHash,
+        itemHash: candidate.itemHash,
+        level: 'evidence',
+        maxChars: 5,
+        compile: {
+          contextId: saved.result.context.id,
+          query: 'MCP expansion',
+          maxChars: 4000,
+        },
+      },
+    });
+    assert.notEqual(partial.isError, true);
+    assert.equal((partial.structuredContent as { status: string; content: unknown }).status, 'partial');
+    assert.equal((partial.structuredContent as { content: unknown }).content, null);
+
+    const invalid = await client.callTool({
+      name: 'context_expand',
+      arguments: {
+        path: root,
+        manifestHash: 'stale',
+        candidateId: candidate.candidateId,
+        level: 'structured',
+        compile: {
+          contextId: saved.result.context.id,
+          query: 'MCP expansion',
+          maxChars: 4000,
+        },
+      },
+    });
+    assert.equal(invalid.isError, true);
+    assert.match(textContent(invalid), /manifest hash mismatch/);
+
+    const orient = await client.callTool({ name: 'context_orient', arguments: { path: root } });
+    assert.notEqual(orient.isError, true);
   } finally {
     await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
   }
@@ -121,7 +206,7 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
     await initProject(root);
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name), ['context_orient']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name), ['context_orient', 'context_expand']);
     const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });
     assert.notEqual(result.isError, true);
     assert.equal(orientPayload(result).status, 'no_context');

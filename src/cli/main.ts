@@ -2,6 +2,7 @@
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { contextOrient } from '../agent/api.js';
 import { compileContext } from '../compiler/compile.js';
+import { contextExpand } from '../agent/api.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
 import { readJournal, verifyJournal } from '../cognition/journal.js';
@@ -17,6 +18,7 @@ import { initProject } from '../runtime/init.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionKnowledge, transitionDeadend } from '../runtime/knowledge.js';
 import { addNote, listActivity, listNotes } from '../runtime/notes.js';
 import type { ActivityQuery, CheckpointInput, DeadendInput, KnowledgeInput, NoteInput, NoteKind, NoteStatus, NoteActor } from '../runtime/types.js';
+import type { ContextExpandLevel } from '../compiler/types.js';
 import { VERSION } from '../version.js';
 
 function option(args: string[], name: string): string | undefined {
@@ -126,6 +128,27 @@ Options:
   --scope <scope>            Exact consensus scope
   --paths <paths>            Comma-separated project-relative paths
   --max-chars <number>       Maximum compiled characters
+  --knowledge-limit <number> Maximum knowledge matches (default: 10)
+  --deadend-limit <number>   Maximum deadend matches (default: 10)
+  --note-limit <number>      Maximum open notes (default: 20)
+  --activity-limit <number>  Maximum recent activity groups (default: 20)`,
+  expand: `usage: ctx expand [options]
+
+Expand one selected compiler candidate without writing project state.
+
+Options:
+  --path <path>              Project path
+  --manifest-hash <hash>     Manifest identity hash from ctx compile
+  --candidate-id <id>        Selected candidate ID
+  --item-hash <hash>         Selected item hash
+  --level <level>            structured|evidence
+  --max-chars <number>       Maximum expanded characters
+  --compile-max-chars <number> Original compile budget (default: 4000)
+  --context <id>             Context ID
+  --query <text>             Original compile query
+  --scenario <scenario>      resume|implementation|debugging|verification|handoff|exploration|unknown
+  --scope <scope>            Exact consensus scope
+  --paths <paths>            Comma-separated project-relative paths
   --knowledge-limit <number> Maximum knowledge matches (default: 10)
   --deadend-limit <number>   Maximum deadend matches (default: 10)
   --note-limit <number>      Maximum open notes (default: 20)
@@ -340,7 +363,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|expand|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -464,6 +487,37 @@ async function run(args: string[]): Promise<void> {
         deadendLimit: numericOption(args, '--deadend-limit', 10),
         noteLimit: numericOption(args, '--note-limit', 20),
         activityLimit: numericOption(args, '--activity-limit', 20),
+      }));
+      return;
+    }
+    case 'expand': {
+      const valueOptions = ['--path', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
+      validateOptions(args.slice(1), valueOptions, valueOptions);
+      validatePositionals(positionals(args.slice(1), valueOptions), 0, HELP.expand);
+      const level = enumOption(args, '--level', ['structured', 'evidence'] as const);
+      if (!level) throw new Error('--level is required');
+      const manifestHash = option(args, '--manifest-hash');
+      if (!manifestHash) throw new Error('--manifest-hash is required');
+      const compileMaxChars = numericOption(args, '--compile-max-chars', 4000);
+      await ensureRuntimeForSession(target, { source: 'cli', timeoutMs: 1_000 }).catch(() => undefined);
+      print(await contextExpand(target, {
+        manifestHash,
+        candidateId: option(args, '--candidate-id'),
+        itemHash: option(args, '--item-hash'),
+        level: level as ContextExpandLevel,
+        maxChars: option(args, '--max-chars') === undefined ? undefined : numericOption(args, '--max-chars', 0),
+        compile: {
+          contextId: option(args, '--context'),
+          query: option(args, '--query'),
+          scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
+          scope: option(args, '--scope'),
+          paths: listOption(args, '--paths'),
+          maxChars: compileMaxChars,
+          knowledgeLimit: numericOption(args, '--knowledge-limit', 10),
+          deadendLimit: numericOption(args, '--deadend-limit', 10),
+          noteLimit: numericOption(args, '--note-limit', 20),
+          activityLimit: numericOption(args, '--activity-limit', 20),
+        },
       }));
       return;
     }

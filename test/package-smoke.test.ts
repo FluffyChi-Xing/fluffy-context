@@ -62,7 +62,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     const cli = path.join(packageRoot, 'dist', 'src', 'cli', 'main.js');
     const version = await run(process.execPath, [cli, '--version'], consumer);
     assert.equal(version.code, 0, version.stderr);
-    assert.equal(JSON.parse(version.stdout), '0.7.4');
+    assert.equal(JSON.parse(version.stdout), '0.7.6');
 
     for (const args of [
       [cli, 'orient', '--help'],
@@ -76,13 +76,13 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
 
     const imports = await run(
       process.execPath,
-      ['--input-type=module', '-e', "import { compileContext, contextOrient, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextOrient as agentOrient } from 'fluffy-context/agent'; if (typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || contextOrient !== agentOrient || compileContext !== agentCompile) process.exit(1);"],
+      ['--input-type=module', '-e', "import { compileContext, contextExpand, contextOrient, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient } from 'fluffy-context/agent'; if (typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand) process.exit(1);"],
       consumer,
     );
     assert.equal(imports.code, 0, imports.stderr);
 
     const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    assert.equal(manifest.version, '0.7.4');
+    assert.equal(manifest.version, '0.7.6');
     assert.equal(await readdir(path.join(packageRoot, 'skills', 'fluffy-context')).then((files) => files.includes('SKILL.md')), true);
   } finally {
     await rm(consumer, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

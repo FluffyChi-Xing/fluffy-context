@@ -2,11 +2,13 @@
 
 本地优先、Agent 无关的 Context 与 Knowledge Runtime，帮助 AI 编程 Agent 保存任务状态、恢复工作上下文、复用已验证共识，并生成有界且可追溯的上下文输入。
 
-**当前版本：0.7.4**
+**当前版本：0.7.6**
 
 ```text
-checkpoint → orient → compile → Agent continues
+checkpoint → orient → compile → expand → feedback → Agent continues
 ```
+
+`compile` 先返回有界的 summary 候选；Agent 只对需要的候选调用 `expand` 获取 structured 或 evidence 层。`feedback` 仍必须由调用方显式记录。
 
 `fluffy-context` 保存的是任务认知，不是项目代码备份。Git 仍是代码和文件变更的权威；Issue 系统、项目文档、`CLAUDE.md`、`AGENTS.md`、Skills 和 MCP 仍由各自系统维护。
 
@@ -19,7 +21,7 @@ checkpoint → orient → compile → Agent continues
 - `ctx compile`：生成带预算、来源和排除原因的 provider-neutral Context Manifest。
 - `ctx learn` / `ctx deadend`：记录可复用结论和失败方案，之后显式验证再用于普通检索。
 
-## 0.7.4 当前能力与边界
+## 0.7.6 当前能力与边界
 
 | 能力 | 当前支持 |
 | --- | --- |
@@ -30,15 +32,16 @@ checkpoint → orient → compile → Agent continues
 | 文件活动 | 可选记录经过过滤的文件 metadata，并编译为 `activity` section |
 | Runtime | 本地 v2 Runtime、Git 观察、可选文件观察、自动唤醒和 fail-open 集成 |
 | 治理 | Knowledge/Deadend 的 candidate、verify、deprecate/obsolete、reject |
-| 集成 | Claude Code Hook、Claude Code 配置集成、MCP `context_orient`、TypeScript Agent API |
+| 集成 | Claude Code Hook、Claude Code 配置集成、MCP `context_orient`/`context_expand`、TypeScript Agent API |
 
-以下能力**不属于 0.7.4**：
+以下能力**不属于 0.7.6**：
 
-- 没有 `context_expand`，Compiler 的 `level` 和 `expandable` 目前是稳定契约字段，不代表已有按需展开工具。
 - 没有 `ctx clean` 或 `ctx report`。
 - 不自动创建 checkpoint、Note、Knowledge 或 Deadend。
 - 不自动把 Candidate 提升为 Verified。
 - 不提供模型总结、Embedding/向量检索、远程同步、多人协作或 Context merge。
+
+0.7.6 已支持 `context_expand`，用于按需取得已选候选的 `structured` 或 `evidence` 层；它是无状态、只读操作，不读取项目文件内容，也不自动记录 feedback。
 
 ## 快速开始
 
@@ -177,7 +180,7 @@ Manifest 主要包含：
 - `identity`：Manifest hash、选中 item hash 和 estimated token；
 - `text`：最终有界文本。
 
-0.7.4 的候选项提供：
+0.7.6 的候选项提供：
 
 ```text
 level: signal | summary | structured | evidence
@@ -188,6 +191,18 @@ expandable
 
 当前实际生成的候选项默认是 `summary` 层。`itemHash`、`manifestHash` 和 estimated token 可用于缓存、去重、审计和结果校验；token 是按字符估算的 provider-neutral 数值，不是真实 Provider 计费结果。
 
+### `ctx expand`
+
+`expand` 只接受本次 `compile` 返回的 selected candidate，并重新使用原始编译参数校验 `manifestHash`。调用方至少提供 `--candidate-id` 或 `--item-hash`，并选择 `--level structured|evidence`：
+
+```bash
+ctx compile "修复支付回调" --max-chars 4000 > manifest.json
+ctx expand --manifest-hash <manifestHash> --candidate-id <candidateId> \
+  --level structured --compile-max-chars 4000 --query "修复支付回调"
+```
+
+`--compile-max-chars` 必须与原始 compile 的预算一致；`--max-chars` 是独立的展开输出预算。展开返回 `complete` 时包含完整 structured content，超过预算则返回有界文本、`content: null` 和 `status: partial`。它不缓存 Manifest、不写入 Context/journal/projection、不执行 usage feedback，也不读取文件正文、diff、命令或 stdout/stderr。
+
 Compiler 具有以下边界：
 
 - 相同输入得到确定性的排序、截断和 hash；
@@ -195,7 +210,7 @@ Compiler 具有以下边界：
 - 不调用模型；
 - 不写入 Context 或 journal；
 - 普通查询默认只纳入适用且已验证的 Knowledge 和 Deadend；
-- 0.7.4 没有 `context_expand` CLI、Agent API 或 MCP 工具。
+- `context_expand` 只读取已选候选的安全 metadata，不读取任意项目文件内容。
 
 ## Knowledge、Deadend 和 Note
 
@@ -408,10 +423,11 @@ ctx integrate claude install --apply
 ctx agent serve
 ```
 
-0.7.4 当前只暴露一个工具：
+0.7.6 当前暴露两个工具：
 
 ```text
 context_orient
+context_expand
 ```
 
 支持的输入字段：
@@ -433,7 +449,7 @@ noteLimit
 - `no_context`：项目已初始化但没有可恢复 Context，这是成功结果；
 - 输入验证或调用错误：返回单次工具错误，server 继续运行。
 
-MCP 的 stdin/stdout 属于协议通道，不能混入日志或交互文本。当前没有 `context_expand`，也没有其他 `context_*` 工具。
+MCP 的 stdin/stdout 属于协议通道，不能混入日志或交互文本。`context_expand` 与 CLI/Agent API 使用相同的无状态 Manifest hash 校验和 partial 预算语义。
 
 ## TypeScript Agent API
 
@@ -443,6 +459,7 @@ MCP 的 stdin/stdout 属于协议通道，不能混入日志或交互文本。�
 import {
   contextOrient,
   compileContext,
+  contextExpand,
   saveContext,
   loadContext,
   searchContext,
@@ -464,6 +481,7 @@ const manifest = await compileContext(process.cwd(), {
 ```text
 contextOrient
 compileContext
+contextExpand
 saveContext
 loadContext
 searchContext
@@ -584,15 +602,15 @@ npm pack --dry-run --json
 
 ## 未来方向
 
-以下方向属于后续版本，不是 0.7.4 的当前能力：
+以下方向属于后续版本，不是 0.7.6 的当前能力：
 
 | 方向 | 目标 |
 | --- | --- |
-| Context expansion | 通过 Manifest hash 和 item ID 按需取得更高层级内容 |
+| Context expansion | 在现有 `context_expand` 基础上继续完善更丰富的分层内容 |
 | Decision Graph | 将决策变成可治理、可追溯的一等对象 |
 | Knowledge Evolution | 支持知识合并、替代、范围演化和 review-needed 信号 |
 | Journal maintenance | 提供安全的清理、归档和长期运行维护能力 |
-| Usage reporting | 统计估算 token、编译、展开、检索和反馈覆盖情况 |
+| Usage reporting | 统计估算 token、编译、展开、检索和反馈覆盖情况（`ctx report`） |
 | 外部协作 | 远程同步、多人协作和团队权限 |
 
 这些方向不会改变当前的边界：Git、项目文档和宿主规则继续由各自系统负责；Candidate 仍需要显式治理；模型调用和远程服务不是核心 Runtime 的隐式依赖。

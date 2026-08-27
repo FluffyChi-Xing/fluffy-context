@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { compileContext } from '../src/compiler/compile.js';
+import { expandContext } from '../src/compiler/expand.js';
 import { canonicalJson, estimateTokens, validateManifestIdentity } from '../src/compiler/identity.js';
 import { FilesystemObserver, type WatchCallback } from '../src/cognition/filesystem-observer.js';
 import { projectEvents } from '../src/cognition/projections.js';
@@ -88,6 +89,87 @@ test('Compiler emits a deterministic bounded manifest with governed sources', as
   }
 });
 
+test('Compiler expands selected candidates by identity with bounded structured and evidence output', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, {
+      title: 'Expand authentication context',
+      progressSummary: 'Inspect the complete authentication workflow details',
+      pendingTasks: ['Add expansion coverage'],
+    });
+    assert.equal(saved.status, 'saved');
+    if (saved.status !== 'saved') return;
+    const note = await addNote(root, 'The complete workflow needs review', { contextId: saved.context.id, relatedFiles: ['src/auth.ts'] });
+    const manifest = await compileContext(root, { contextId: saved.context.id, query: 'authentication', maxChars: 45 });
+    const progress = manifest.selected.find((candidate) => (candidate.content as { field?: unknown }).field === 'progressSummary');
+    assert.ok(progress);
+    if (!progress) return;
+    assert.equal(progress.truncated, true);
+    const expanded = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      itemHash: progress.itemHash,
+      level: 'structured',
+      compile: { contextId: saved.context.id, query: 'authentication', maxChars: 45 },
+    });
+    assert.equal(expanded.status, 'complete');
+    assert.equal((expanded.content as { value?: unknown } | null)?.value, 'Inspect the complete authentication workflow details');
+    assert.equal(expanded.text, 'progressSummary: Inspect the complete authentication workflow details');
+
+    const empty = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: progress.candidateId,
+      level: 'structured',
+      maxChars: 0,
+      compile: { contextId: saved.context.id, query: 'authentication', maxChars: 45 },
+    });
+    assert.equal(empty.status, 'partial');
+    assert.equal(empty.text, '');
+    assert.equal(empty.content, null);
+    assert.equal(empty.budget.truncated, true);
+
+    const evidence = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: progress.candidateId,
+      level: 'evidence',
+      maxChars: 10,
+      compile: { contextId: saved.context.id, query: 'authentication', maxChars: 45 },
+    });
+    assert.equal(evidence.status, 'partial');
+    assert.equal(evidence.content, null);
+    assert.equal(evidence.budget.truncated, true);
+    assert.equal(evidence.text.length, 10);
+
+    const noteManifest = await compileContext(root, { contextId: saved.context.id, query: 'authentication', maxChars: 4000 });
+    const noteCandidate = noteManifest.selected.find((candidate) => candidate.source.entityId === note.noteId);
+    assert.ok(noteCandidate);
+    if (!noteCandidate) return;
+    const byHash = await expandContext(root, {
+      manifestHash: noteManifest.identity.manifestHash,
+      itemHash: noteCandidate.itemHash,
+      level: 'evidence',
+      compile: { contextId: saved.context.id, query: 'authentication', maxChars: 4000 },
+    });
+    assert.equal(byHash.status, 'complete');
+    assert.match(byHash.text, /relatedFiles/);
+    await assert.rejects(() => expandContext(root, {
+      manifestHash: noteManifest.identity.manifestHash,
+      candidateId: progress.candidateId,
+      itemHash: noteCandidate.itemHash,
+      level: 'structured',
+      compile: { contextId: saved.context.id, query: 'authentication', maxChars: 4000 },
+    }), /selectors do not match/);
+    await assert.rejects(() => expandContext(root, {
+      manifestHash: 'stale',
+      candidateId: progress.candidateId,
+      level: 'structured',
+      compile: { contextId: saved.context.id, query: 'authentication', maxChars: 45 },
+    }), /manifest hash mismatch/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Compiler includes recent exact-workspace filesystem activity without contents', async () => {
   const root = await project();
   try {
@@ -146,6 +228,20 @@ test('Compiler includes recent exact-workspace filesystem activity without conte
     assert.deepEqual(limited.sections.activity.map((item) => item.content.paths), [['src/newest.ts']]);
     assert.deepEqual(limited, await compileContext(root, { contextId: saved.context.id, query: 'activity', activityLimit: 1, maxChars: 4000 }));
 
+    const activityCandidate = manifest.selected.find((item) => item.source.entityId === 'activity-newest');
+    assert.ok(activityCandidate);
+    if (!activityCandidate) return;
+    const expandedActivity = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: activityCandidate.candidateId,
+      level: 'evidence',
+      compile: { contextId: saved.context.id, query: 'activity', activityLimit: 5, maxChars: 4000 },
+    });
+    assert.equal(expandedActivity.status, 'complete');
+    assert.deepEqual((expandedActivity.content as { paths: string[] }).paths, ['src/newest.ts']);
+    assert.equal(expandedActivity.text.includes('src/newest.ts'), true);
+    assert.equal(expandedActivity.text.includes('activity-main'), false);
+
     const otherBranch = {
       schemaVersion: 2 as const,
       type: 'workspace.paths.changed' as const,
@@ -173,16 +269,81 @@ test('Compiler keeps activity empty in v1 fallback mode', async () => {
   const root = await project();
   try {
     await initProject(root);
-    const saved = await checkpoint(root, { title: 'v1 fallback activity test' });
+    const saved = await checkpoint(root, {
+      title: 'v1 fallback activity test',
+      progressSummary: 'Keep v1 fallback expansion readable',
+    });
     const manifest = await compileContext(root, {
       contextId: saved.context.id,
-      query: 'activity',
+      query: 'v1 fallback activity test',
       activityLimit: 10,
       maxChars: 4000,
     });
     assert.equal(manifest.mode, 'v1-fallback');
     assert.deepEqual(manifest.sections.activity, []);
     assert.equal(manifest.provenance.journalRead, false);
+    const title = manifest.selected.find((item) => (item.content as { field?: unknown }).field === 'title');
+    assert.ok(title);
+    if (!title) return;
+    const expanded = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: title.candidateId,
+      level: 'structured',
+      compile: { contextId: saved.context.id, query: 'v1 fallback activity test', activityLimit: 10, maxChars: 4000 },
+    });
+    assert.equal(expanded.status, 'complete');
+    assert.equal((expanded.content as { value?: unknown }).value, 'v1 fallback activity test');
+    assert.equal(expanded.provenance.journalRead, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Compiler expands verified knowledge and deadend evidence without reading evidence paths', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { title: 'Governed expansion', progressSummary: 'Review verified callback constraints' });
+    assert.equal(saved.status, 'saved');
+    const knowledge = await learnKnowledge(root, 'Callbacks require signature validation', {
+      sourceContextId: saved.context.id,
+      sourceSnapshotId: saved.snapshot.snapshotId,
+      evidence: ['src/callback.ts', 'regression test'],
+    });
+    await verifyKnowledge(root, knowledge.knowledgeId);
+    const deadend = await recordDeadend(root, 'Skip callback signature validation', 'Regression test fails', {
+      sourceContextId: saved.context.id,
+      sourceSnapshotId: saved.snapshot.snapshotId,
+      evidence: ['regression test'],
+    });
+    await verifyDeadend(root, deadend.deadendId);
+
+    const manifest = await compileContext(root, { contextId: saved.context.id, query: 'callback signature', maxChars: 4000 });
+    const knowledgeCandidate = manifest.selected.find((item) => item.source.entityId === knowledge.knowledgeId);
+    const deadendCandidate = manifest.selected.find((item) => item.source.entityId === deadend.deadendId);
+    assert.ok(knowledgeCandidate);
+    assert.ok(deadendCandidate);
+    if (!knowledgeCandidate || !deadendCandidate) return;
+
+    const knowledgeExpanded = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      itemHash: knowledgeCandidate.itemHash,
+      level: 'evidence',
+      compile: { contextId: saved.context.id, query: 'callback signature', maxChars: 4000 },
+    });
+    assert.equal(knowledgeExpanded.status, 'complete');
+    assert.deepEqual((knowledgeExpanded.content as { supportingEvidence?: string[] }).supportingEvidence, ['src/callback.ts', 'regression test']);
+    assert.equal(knowledgeExpanded.text.includes('src/callback.ts'), true);
+
+    const deadendExpanded = await expandContext(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: deadendCandidate.candidateId,
+      level: 'evidence',
+      compile: { contextId: saved.context.id, query: 'callback signature', maxChars: 4000 },
+    });
+    assert.equal(deadendExpanded.status, 'complete');
+    assert.deepEqual((deadendExpanded.content as { observedEvidence?: string[] }).observedEvidence, ['regression test']);
+    assert.equal(deadendExpanded.text.includes('regression test'), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

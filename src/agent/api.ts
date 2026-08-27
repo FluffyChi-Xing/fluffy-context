@@ -8,6 +8,7 @@ import { selectV2Orientation } from '../cognition/orient.js';
 import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
+import { expandContext } from '../compiler/expand.js';
 import type {
   AgentLoadOptions,
   AgentLoadResult,
@@ -24,6 +25,7 @@ import type {
   StructuredContext,
 } from '../runtime/types.js';
 import type { ContextOrientOptions, ContextOrientResult, ContextUseInput } from './types.js';
+import type { ContextExpandInput, ContextExpandResult } from '../compiler/types.js';
 
 function normalized(value: string): string {
   return value.trim().toLocaleLowerCase();
@@ -159,6 +161,11 @@ function matchedContext(context: ContextMetadata, content: StructuredContext, qu
 export async function saveContext(startPath: string | undefined, input: CheckpointInput, options: { minSaveIntervalMs?: number } = {}): Promise<AgentSaveResult> {
   const projectRoot = await resolveProjectRoot(startPath);
   return { projectRoot, result: await checkpoint(projectRoot, input, options) };
+}
+
+export async function contextExpand(startPath: string | undefined, input: ContextExpandInput): Promise<ContextExpandResult> {
+  const projectRoot = await resolveProjectRoot(startPath);
+  return expandContext(projectRoot, input);
 }
 
 export async function loadContext(startPath: string | undefined, options: AgentLoadOptions = {}): Promise<AgentLoadResult> {

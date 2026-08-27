@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.7.4');
+    assert.equal(JSON.parse(result.stdout), '0.7.6');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -38,7 +38,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'journal'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -240,6 +240,29 @@ test('compile CLI returns a manifest and validates compiler options', async () =
     const invalid = await runCli(['compile', '--scenario', 'invalid', '--path', root], root);
     assert.notEqual(invalid.code, 0);
     assert.match(invalid.stderr, /must be one of/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('expand CLI resolves a selected candidate and validates stale identity', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    const checkpoint = await runCli(['checkpoint', '--path', root, '--title', 'CLI expand', '--progress', 'Keep CLI expansion bounded'], root);
+    assert.equal(checkpoint.code, 0, checkpoint.stderr);
+    const contextId = JSON.parse(checkpoint.stdout).context.id as string;
+    const compiled = await runCli(['compile', 'CLI expansion', '--path', root, '--context', contextId, '--max-chars', '4000'], root);
+    assert.equal(compiled.code, 0, compiled.stderr);
+    const manifest = JSON.parse(compiled.stdout);
+    const candidate = manifest.selected.find((item: { content: { field?: string } }) => item.content.field === 'progressSummary');
+    assert.ok(candidate);
+    const expanded = await runCli(['expand', '--path', root, '--manifest-hash', manifest.identity.manifestHash, '--candidate-id', candidate.candidateId, '--level', 'structured', '--compile-max-chars', '4000', '--context', contextId, '--query', 'CLI expansion'], root);
+    assert.equal(expanded.code, 0, expanded.stderr);
+    assert.equal(JSON.parse(expanded.stdout).status, 'complete');
+    const stale = await runCli(['expand', '--path', root, '--manifest-hash', 'stale', '--candidate-id', candidate.candidateId, '--level', 'structured', '--compile-max-chars', '4000', '--context', contextId, '--query', 'CLI expansion'], root);
+    assert.notEqual(stale.code, 0);
+    assert.match(stale.stderr, /manifest hash mismatch/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
