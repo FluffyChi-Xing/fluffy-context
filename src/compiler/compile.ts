@@ -1,4 +1,5 @@
 import { filterPaths } from '../capture/context-filter.js';
+import { contentHash, estimateTokens, rebuildManifestHash } from './identity.js';
 import { queryTerms } from '../cognition/retrieval.js';
 import { listDeadends, listKnowledge } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
@@ -114,8 +115,9 @@ function makeCandidate<T>(
   discriminator: string,
 ): ContextCandidate<T> {
   const hit = matched(text, terms);
+  const candidateId = `${section}:${source.sourceId}:${matchedFields.join('.')}:${discriminator}`;
   return {
-    candidateId: `${section}:${source.sourceId}:${matchedFields.join('.')}:${discriminator}`,
+    candidateId,
     section,
     source,
     content,
@@ -128,6 +130,10 @@ function makeCandidate<T>(
     selectedChars: 0,
     selected: false,
     truncated: false,
+    level: 'summary',
+    itemHash: contentHash({ candidateId, source, content, text }),
+    tokenEstimate: estimateTokens(text),
+    expandable: true,
   };
 }
 
@@ -260,7 +266,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const intent = intentFor(sources, options, normalizedPaths);
   const orientation = sources.orientation;
   const maxChars = intent.budget.total;
-  const notes = orientation.status === 'ready' ? (await listNotes(sources.anchor.projectRoot, { contextId: orientation.context.id, openOnly: true, limit: Number.MAX_SAFE_INTEGER, maxChars: Number.MAX_SAFE_INTEGER })).filter((note) => !orientation || orientation.notes.some((selected) => selected.noteId === note.noteId)) : [];
+  const notes = orientation.status === 'ready' ? (await listNotes(sources.anchor.projectRoot, { contextId: orientation.context.id, openOnly: true, limit: options.noteLimit ?? 50, maxChars: Number.MAX_SAFE_INTEGER })).filter((note) => orientation.notes.some((selected) => selected.noteId === note.noteId)) : [];
   const knowledge = orientation.status === 'ready' && intent.query ? await listKnowledge(sources.anchor.projectRoot, true) : [];
   const deadends = orientation.status === 'ready' && intent.query ? await listDeadends(sources.anchor.projectRoot, true) : [];
   const activities = await extractActivity(sources.anchor.projectRoot, sources.events, sources.anchor, sources.workspace, options.activityLimit ?? 20);
@@ -319,9 +325,21 @@ export async function compileContext(startPath?: string, options: ContextCompile
     deadends: selected.filter((item) => item.section === 'deadend'),
     activity: selected.filter((item) => item.section === 'activity') as ContextCandidate<ContextActivityRecord>[],
   };
+  const tokenEstimate = estimateTokens(manifestText(selected));
+  const selectedItemHashes = selected.map((item) => item.itemHash);
+  const manifestHash = rebuildManifestHash({
+    status: orientation.status,
+    projectRoot: sources.anchor.projectRoot,
+    mode: orientation.explanation.mode,
+    anchor: sources.anchor,
+    intent,
+    selected,
+    budget: { requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats },
+    truncation,
+  });
   return {
     schemaVersion: 1,
-    compilerVersion: '0.7.2',
+    compilerVersion: '0.7.4',
     rankingVersion: 'compiler-ranking-v2',
     status: orientation.status,
     projectRoot: sources.anchor.projectRoot,
@@ -334,6 +352,11 @@ export async function compileContext(startPath?: string, options: ContextCompile
     sections,
     selected,
     excluded,
+    identity: {
+      manifestHash,
+      selectedItemHashes,
+      tokenEstimate: { input: tokenEstimate, output: tokenEstimate, unit: 'estimated-tokens', method: 'chars-div-four' },
+    },
     budget: { requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats },
     truncation,
     provenance: {

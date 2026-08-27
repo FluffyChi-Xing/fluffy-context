@@ -280,6 +280,16 @@ export async function checkpoint(startPath: string | undefined, input: Checkpoin
 
     const content = await contextFromInput(projectRoot, input, previous);
     const patch = diffContext(previous, content);
+    const hasContent = content.progressSummary.length > 0
+      || content.lastError !== null
+      || content.completed.length > 0
+      || content.pendingTasks.length > 0
+      || content.decisions.length > 0
+      || content.risks.length > 0
+      || content.relatedFiles.length > 0;
+    if (!hasContent && !previousSnapshot) {
+      return { status: 'no_change', context, snapshot: null };
+    }
     if (previousSnapshot && Object.keys(patch).length === 0) return { status: 'no_change', context, snapshot: previousSnapshot };
 
     const minSaveIntervalMs = options.minSaveIntervalMs ?? 10_000;

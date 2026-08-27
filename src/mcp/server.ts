@@ -23,7 +23,7 @@ export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'fluffy-context', version: VERSION });
   server.registerTool('context_orient', {
     title: 'Orient context',
-    description: 'Load bounded, read-only task context with verified consensus and open notes.',
+    description: 'Load bounded, read-only task context with verified consensus and open notes. Compiler manifests expose deterministic levels, hashes, and estimated tokens through the Agent API and CLI.',
     inputSchema: orientInput,
   }, async ({ path, ...options }) => {
     try {

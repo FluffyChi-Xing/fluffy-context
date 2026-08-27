@@ -139,17 +139,13 @@ export async function loadCompilerSources(startPath: string | undefined, options
 }
 
 export function latestHostIntent(events: CognitionEvent[], anchor: ContextAnchor): { value: string; eventId: string } | null {
-  return [...events].reverse().find((event) => {
-    if (event.type !== 'host.prompt.submitted') return false;
-    if (event.git.worktreeId !== null && event.git.worktreeId !== anchor.worktreeId) return false;
-    if (event.git.ref !== null && event.git.ref !== anchor.ref) return false;
-    const payload = event.payload as Record<string, unknown>;
+  const event = [...events].reverse().find((candidate) => {
+    if (candidate.type !== 'host.prompt.submitted') return false;
+    if (candidate.git.worktreeId !== null && candidate.git.worktreeId !== anchor.worktreeId) return false;
+    if (candidate.git.ref !== null && candidate.git.ref !== anchor.ref) return false;
+    const payload = candidate.payload as Record<string, unknown>;
     return typeof payload.intent === 'string' && payload.intent.trim().length > 0;
-  })?.payload
-    ? (() => {
-      const event = [...events].reverse().find((item) => item.type === 'host.prompt.submitted' && item.git.worktreeId === anchor.worktreeId && item.git.ref === anchor.ref && typeof (item.payload as Record<string, unknown>).intent === 'string');
-      if (!event) return null;
-      return { value: (event.payload as Record<string, unknown>).intent as string, eventId: event.eventId };
-    })()
-    : null;
+  });
+  if (!event) return null;
+  return { value: (event.payload as Record<string, unknown>).intent as string, eventId: event.eventId };
 }

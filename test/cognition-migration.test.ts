@@ -20,7 +20,7 @@ test('migration quarantines invalid v1 data without changing its source', async 
   try {
     await initProject(root);
     const saved = await checkpoint(root, { title: 'Invalid', progressSummary: 'Invalid snapshot fixture' });
-    const filePath = snapshotPath(root, saved.context.id, saved.snapshot.snapshotId);
+    const filePath = snapshotPath(root, saved.context.id, saved.snapshot!.snapshotId);
     await writeFile(filePath, '{', 'utf8');
     const result = await importV1(root);
     assert.equal(result.applied, false);
@@ -49,15 +49,29 @@ test('journal ignores only an incomplete final record and rejects damaged durabl
   }
 });
 
+test('journal rejects empty semantic payloads but preserves lifecycle events', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await assert.rejects(() => appendEvent(root, { type: 'host.prompt.submitted', idempotencyKey: 'empty-prompt', payload: {} }), /intent must not be empty/);
+    await assert.rejects(() => appendEvent(root, { type: 'workspace.paths.changed', idempotencyKey: 'empty-activity', payload: {} }), /contain changes/);
+    const lifecycle = await appendEvent(root, { type: 'runtime.started', idempotencyKey: 'runtime-start', payload: {} });
+    assert.equal(lifecycle.appended, true);
+    assert.equal((await readJournal(root)).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('v1 import journals immutable provenance, rebuilds projections, and is idempotent', async () => {
   const root = await project();
   try {
     await initProject(root);
     const saved = await checkpoint(root, { title: 'Claims', progressSummary: 'Mapped claim states' });
-    await addNote(root, 'Verify claim retry policy', { contextId: saved.context.id, snapshotId: saved.snapshot.snapshotId });
-    const knowledge = await learnKnowledge(root, 'Claims are retried with a backoff', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot.snapshotId });
+    await addNote(root, 'Verify claim retry policy', { contextId: saved.context.id, snapshotId: saved.snapshot!.snapshotId });
+    const knowledge = await learnKnowledge(root, 'Claims are retried with a backoff', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot!.snapshotId });
     await verifyKnowledge(root, knowledge.knowledgeId);
-    const deadend = await recordDeadend(root, 'Retry without idempotency keys', 'Creates duplicate claims', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot.snapshotId });
+    const deadend = await recordDeadend(root, 'Retry without idempotency keys', 'Creates duplicate claims', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot!.snapshotId });
     await verifyDeadend(root, deadend.deadendId);
     const before = await readFile(contextMetadataPath(root, saved.context.id), 'utf8');
 

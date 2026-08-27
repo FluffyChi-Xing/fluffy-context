@@ -19,6 +19,7 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 仅需要完整详情时再运行 `ctx resume --max-chars <预算>`；它会保留既有的 `lastUsedAt` 更新语义。
 - Agent 集成从 `fluffy-context` 或 `fluffy-context/agent` 导入 `contextOrient`、`compileContext`、`saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context` 或导入内部 `dist/...` 路径。
 - `ctx compile` 的 `activity` section 只表示 Runtime 观察到的近期文件 metadata 变化；它不代表文件被读取或理解，也不替代 checkpoint、Note 或已验证 Knowledge。
+- 0.7.4 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。不要假定 MCP 已提供 `context_expand`，该工具属于后续版本。
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。

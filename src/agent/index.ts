@@ -18,6 +18,7 @@ export type {
   ContextSearchResult,
 } from '../runtime/types.js';
 export { compileContext } from '../compiler/compile.js';
+export { canonicalJson, contentHash, estimateTokens, rebuildManifestHash, validateManifestIdentity } from '../compiler/identity.js';
 export type {
   ContextActivityRecord,
   ContextAnchor,
@@ -30,6 +31,7 @@ export type {
   ContextExclusionReason,
   ContextIntent,
   ContextIntentSignal,
+  ContextLevel,
   ContextManifest,
   ContextProvenance,
   ContextScenario,

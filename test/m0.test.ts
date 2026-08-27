@@ -35,17 +35,29 @@ test('checkpoint creates baseline, patch and no-op snapshots', async () => {
     await initProject(root);
     const baseline = await checkpoint(root, { title: 'Order refactor', progressSummary: 'Started', pendingTasks: ['Write tests'] });
     assert.equal(baseline.status, 'saved');
-    assert.equal(baseline.snapshot.mode, 'baseline');
+    assert.equal(baseline.snapshot!.mode, 'baseline');
 
     const patch = await checkpoint(root, { contextId: baseline.context.id, title: 'Order refactor', progressSummary: 'Started', pendingTasks: ['Run tests'] }, { minSaveIntervalMs: 0 });
     assert.equal(patch.status, 'saved');
     assert.equal(patch.snapshot.mode, 'patch');
-    assert.equal(patch.snapshot.parentSnapshotId, baseline.snapshot.snapshotId);
+    assert.equal(patch.snapshot.parentSnapshotId, baseline.snapshot!.snapshotId);
 
     const noChange = await checkpoint(root, { contextId: baseline.context.id, title: 'Order refactor', progressSummary: 'Started', pendingTasks: ['Run tests'] }, { minSaveIntervalMs: 0 });
     assert.equal(noChange.status, 'no_change');
     const snapshots = await readdir(path.join(root, '.context', 'contexts', baseline.context.id, 'snaps'));
     assert.equal(snapshots.length, 2);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('empty checkpoint does not create a snapshot', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const result = await checkpoint(root, { title: 'Only metadata' });
+    assert.equal(result.status, 'no_change');
+    assert.equal(result.snapshot, null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -250,9 +262,9 @@ test('checkpoint normalizes blank values and explicit empty lists', async () => 
       completed: [' done ', ' ', 'next'],
       pendingTasks: [' pending '],
     });
-    assert.equal(baseline.snapshot.content?.progressSummary, 'Started');
-    assert.equal(baseline.snapshot.content?.lastError, 'failure');
-    assert.deepEqual(baseline.snapshot.content?.completed, ['done', 'next']);
+    assert.equal(baseline.snapshot!.content?.progressSummary, 'Started');
+    assert.equal(baseline.snapshot!.content?.lastError, 'failure');
+    assert.deepEqual(baseline.snapshot!.content?.completed, ['done', 'next']);
 
     const cleared = await checkpoint(root, {
       contextId: baseline.context.id,
@@ -290,7 +302,7 @@ test('doctor validates snapshot chain without rewriting files', async () => {
   try {
     await initProject(root);
     const saved = await checkpoint(root, { progressSummary: 'Valid' });
-    const snapshotPath = path.join(root, '.context', 'contexts', saved.context.id, 'snaps', `${saved.snapshot.snapshotId}.json`);
+    const snapshotPath = path.join(root, '.context', 'contexts', saved.context.id, 'snaps', `${saved.snapshot!.snapshotId}.json`);
     const before = await readFile(snapshotPath, 'utf8');
     const snapshot = JSON.parse(before) as { contentHash: string };
     snapshot.contentHash = 'corrupt';
@@ -308,7 +320,10 @@ test('notes support low-friction recording, filtering and checkpoint absorption'
   const root = await project();
   try {
     await initProject(root);
-    const saved = await checkpoint(root, { title: 'Note flow' });
+    const saved = await checkpoint(root, {
+      title: 'Note flow',
+      progressSummary: 'Record and absorb notes',
+    });
     const first = await addNote(root, '  Third-party credential is missing  ', { contextId: saved.context.id, kind: 'problem' });
     await addNote(root, 'Keep the raw request body for signature validation', { contextId: saved.context.id, kind: 'decision', status: 'resolved' });
     assert.equal((await listNotes(root, { contextId: saved.context.id })).length, 2);
@@ -351,7 +366,7 @@ test('checkpoint preserves structured paths without reading ignored files', asyn
     await initProject(root);
     await writeFile(path.join(root, '.contextignored'), 'private/\n', 'utf8');
     const saved = await checkpoint(root, { title: 'Filtering', progressSummary: 'Only structured input is saved', relatedFiles: ['private/secret.txt', 'src/order.ts', '../outside.txt', 'C:/secret.txt', '.env'] });
-    assert.deepEqual(saved.snapshot.content?.relatedFiles, ['src/order.ts']);
+    assert.deepEqual(saved.snapshot!.content?.relatedFiles, ['src/order.ts']);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

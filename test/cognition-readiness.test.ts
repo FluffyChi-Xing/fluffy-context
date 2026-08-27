@@ -32,9 +32,9 @@ test('migration readiness validates v1 authorities without writing v2 data', asy
   try {
     await initProject(root);
     const saved = await checkpoint(root, { title: 'Payments', progressSummary: 'Mapped payment states' });
-    await addNote(root, 'Verify callback retries', { contextId: saved.context.id, snapshotId: saved.snapshot.snapshotId });
-    await learnKnowledge(root, 'Payment callbacks are idempotent', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot.snapshotId });
-    await recordDeadend(root, 'Use a shared callback state singleton', 'It leaks state between requests', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot.snapshotId });
+    await addNote(root, 'Verify callback retries', { contextId: saved.context.id, snapshotId: saved.snapshot!.snapshotId });
+    await learnKnowledge(root, 'Payment callbacks are idempotent', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot!.snapshotId });
+    await recordDeadend(root, 'Use a shared callback state singleton', 'It leaks state between requests', { sourceContextId: saved.context.id, sourceSnapshotId: saved.snapshot!.snapshotId });
     const contextBefore = await readFile(path.join(root, '.context', 'contexts', saved.context.id, 'context.json'), 'utf8');
 
     const readiness = await migrationReadiness(root);

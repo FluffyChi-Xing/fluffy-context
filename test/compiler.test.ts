@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { compileContext } from '../src/compiler/compile.js';
+import { canonicalJson, estimateTokens, validateManifestIdentity } from '../src/compiler/identity.js';
 import { FilesystemObserver, type WatchCallback } from '../src/cognition/filesystem-observer.js';
 import { projectEvents } from '../src/cognition/projections.js';
 import { appendEvent } from '../src/cognition/journal.js';
@@ -35,6 +36,12 @@ function event(type: CognitionEvent['type'], payload: CognitionEvent['payload'],
     hash: eventId,
   };
 }
+
+test('Compiler identity is canonical, bounded, and verifiable', async () => {
+  assert.equal(canonicalJson({ b: 2, a: { d: 4, c: 3 }, omitted: undefined }), '{"a":{"c":3,"d":4},"b":2}');
+  assert.equal(estimateTokens('12345'), 2);
+  assert.equal(estimateTokens(''), 0);
+});
 
 test('Compiler emits a deterministic bounded manifest with governed sources', async () => {
   const root = await project();
@@ -68,6 +75,9 @@ test('Compiler emits a deterministic bounded manifest with governed sources', as
     assert.ok(first.excluded.every((item) => item.reason !== 'v2_unavailable'));
     assert.ok(first.budget.usedChars <= 1000);
     assert.ok(first.text.length <= 1000);
+    assert.equal(first.identity.tokenEstimate.input, estimateTokens(first.text));
+    assert.equal(validateManifestIdentity(first), true);
+    assert.ok(first.selected.every((item) => item.level === 'summary' && item.expandable));
 
     const empty = await compileContext(root, { contextId: saved.context.id, maxChars: 0 });
     assert.equal(empty.budget.usedChars, 0);
@@ -82,7 +92,10 @@ test('Compiler includes recent exact-workspace filesystem activity without conte
   const root = await project();
   try {
     await initProject(root);
-    const saved = await checkpoint(root, { title: 'Activity compiler test' });
+    const saved = await checkpoint(root, {
+      title: 'Activity compiler test',
+      progressSummary: 'Track recent activity',
+    });
     await importV1(root);
     await appendEvent(root, {
       eventId: 'activity-main',
@@ -217,6 +230,16 @@ test('FilesystemObserver records only real allowed file metadata changes', async
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('note lifecycle events leave the latest projected state and open observations', () => {
+  const recorded = event('note.recorded', { record: { noteId: 'note-1', contextId: 'ctx-1', message: 'needs review', status: 'open', absorbedBySnapshotId: null } }, 'note-recorded');
+  const resolved = event('note.resolved', { record: { noteId: 'note-1', contextId: 'ctx-1', message: 'needs review', status: 'resolved', absorbedBySnapshotId: null } }, 'note-resolved');
+  const absorbed = event('note.absorbed', { record: { noteId: 'note-2', contextId: 'ctx-1', message: 'absorbed', status: 'open', absorbedBySnapshotId: 'snap-1' } }, 'note-absorbed');
+  const projection = projectEvents([recorded, resolved, absorbed]);
+  assert.equal(projection.notes['note-1'].record.status, 'resolved');
+  assert.equal(projection.notes['note-2'].record.absorbedBySnapshotId, 'snap-1');
+  assert.deepEqual(Object.values(projection.workspaces)[0].openObservationEventIds, []);
 });
 
 test('workspace path events update bounded pathFocus and ignore unsafe paths', () => {

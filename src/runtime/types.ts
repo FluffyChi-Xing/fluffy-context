@@ -334,5 +334,5 @@ export interface ContextSearchResult {
 
 export type CheckpointResult =
   | { status: 'saved'; context: ContextMetadata; snapshot: Snapshot }
-  | { status: 'no_change'; context: ContextMetadata; snapshot: Snapshot }
+  | { status: 'no_change'; context: ContextMetadata; snapshot: Snapshot | null }
   | { status: 'rate_limited'; context: ContextMetadata; snapshot: Snapshot; retryAt: string };

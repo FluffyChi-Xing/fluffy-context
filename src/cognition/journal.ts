@@ -75,6 +75,21 @@ function validIsoDate(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
+function validatePayloadBoundary(input: AppendEventInput): void {
+  const payload = input.payload as Record<string, unknown>;
+  if (input.type === 'host.prompt.submitted' && (typeof payload.intent !== 'string' || payload.intent.trim().length === 0)) {
+    throw new Error('host prompt intent must not be empty');
+  }
+  if (['note.recorded', 'note.resolved', 'note.absorbed'].includes(input.type)) {
+    const record = payload.record;
+    if (!isRecord(record) || typeof record.message !== 'string' || record.message.trim().length === 0) throw new Error('note message must not be empty');
+  }
+  if (input.type === 'workspace.paths.changed') {
+    const changes = payload.changes;
+    if (!Array.isArray(changes) || changes.length === 0) throw new Error('workspace activity must contain changes');
+  }
+}
+
 function validateEventShape(event: unknown, projectId: string, file: string, line: number): asserts event is CognitionEvent {
   if (!isRecord(event)
     || event.schemaVersion !== 2
@@ -158,6 +173,7 @@ export async function verifyJournal(startPath?: string): Promise<CognitionEvent[
 }
 
 export async function appendEvent<T>(startPath: string | undefined, input: AppendEventInput<T>): Promise<{ event: CognitionEvent<T>; appended: boolean }> {
+  validatePayloadBoundary(input as AppendEventInput);
   const projectRoot = await resolveProjectRoot(startPath);
   return withLock(`${locksDirectory(projectRoot)}/cognition-journal.lock`, async () => {
     await recoverPartialTail(projectRoot);

@@ -3,6 +3,7 @@ import type { ContextOrientResult } from '../agent/types.js';
 import type { Deadend, Knowledge, Note, ResumeSummary, StructuredContext } from '../runtime/types.js';
 
 export type ContextScenario = 'resume' | 'implementation' | 'debugging' | 'verification' | 'handoff' | 'exploration' | 'unknown';
+export type ContextLevel = 'signal' | 'summary' | 'structured' | 'evidence';
 export type ContextSourceKind = 'current-context' | 'checkpoint' | 'note' | 'journal' | 'knowledge' | 'deadend';
 export type ContextCandidateSection = 'summary' | 'pending' | 'decision' | 'risk' | 'note' | 'knowledge' | 'deadend' | 'activity';
 export type ContextSignalOrigin = 'explicit' | 'deterministic';
@@ -45,6 +46,13 @@ export interface ContextBudget {
   total: number;
   reservedForRenderer: number;
   sections?: Partial<Record<ContextCandidateSection, number>>;
+}
+
+export interface ContextTokenEstimate {
+  input: number;
+  output: number;
+  unit: 'estimated-tokens';
+  method: 'chars-div-four';
 }
 
 export interface ContextSourceApplicability {
@@ -107,6 +115,10 @@ export interface ContextCandidate<T = unknown> {
   selectedChars: number;
   selected: boolean;
   truncated: boolean;
+  level: ContextLevel;
+  itemHash: string;
+  tokenEstimate: number;
+  expandable: boolean;
 }
 
 export type ContextExclusionReason =
@@ -160,6 +172,12 @@ export interface ContextManifestProvenance {
   fallbackReason: string | null;
 }
 
+export interface ContextManifestIdentity {
+  manifestHash: string;
+  selectedItemHashes: string[];
+  tokenEstimate: ContextTokenEstimate;
+}
+
 export interface ContextCompileOptions {
   contextId?: string;
   query?: string;
@@ -179,7 +197,7 @@ export interface ContextCompileOptions {
 
 export interface ContextManifest {
   schemaVersion: 1;
-  compilerVersion: '0.7.2';
+  compilerVersion: '0.7.4';
   rankingVersion: 'compiler-ranking-v2';
   status: 'ready' | 'no_context';
   projectRoot: string;
@@ -201,6 +219,7 @@ export interface ContextManifest {
   };
   selected: ContextCandidate[];
   excluded: ContextExclusion[];
+  identity: ContextManifestIdentity;
   budget: ContextBudgetReport;
   truncation: ContextTruncation;
   provenance: ContextManifestProvenance;
