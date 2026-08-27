@@ -160,7 +160,7 @@ Start an MCP stdio server for Agent integrations.
 Run "ctx agent serve --help" for details.`,
   'agent serve': `usage: ctx agent serve
 
-Start an MCP stdio server exposing the context_orient tool.
+Start an MCP stdio server exposing context_orient, context_expand, context_compile, context_resume, context_note_list, context_note_add, and context_checkpoint tools.
 
 The server owns standard input/output; do not use it interactively.`,
   hook: `usage: ctx hook claude-code session-start|user-prompt

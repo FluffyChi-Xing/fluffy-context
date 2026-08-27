@@ -48,6 +48,8 @@ test('each command has focused help without creating runtime files', async () =>
     const agentServe = await runCli(['agent', 'serve', '--help'], root);
     assert.equal(agentServe.code, 0);
     assert.match(agentServe.stdout, /agent serve/);
+    assert.match(agentServe.stdout, /context_compile/);
+    assert.match(agentServe.stdout, /context_checkpoint/);
     const hook = await runCli(['hook', 'claude-code', '--help'], root);
     assert.equal(hook.code, 0);
     assert.match(hook.stdout, /hook claude-code/);

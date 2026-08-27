@@ -423,33 +423,40 @@ ctx integrate claude install --apply
 ctx agent serve
 ```
 
-0.7.6 当前暴露两个工具：
+0.7.6 当前暴露以下工具：
 
 ```text
-context_orient
-context_expand
+context_orient       只读、有界地获取任务上下文
+context_expand       只读地展开 selected compiler candidate
+context_compile      只读地生成确定性 Manifest
+context_resume       恢复 Context（可能更新 lastUsedAt）
+context_note_list    只读地列出 Note
+context_note_add     显式新增 Note
+context_checkpoint   显式保存 Context/Snapshot
 ```
 
-支持的输入字段：
+输入字段与 CLI/Agent API 对齐：
 
-```text
-path
-contextId
-query
-scope
-maxChars
-knowledgeLimit
-deadendLimit
-noteLimit
-```
+- `context_orient`：`path`、`contextId`、`query`、`scope`、`maxChars` 和各 source limit；
+- `context_compile`：编译选项及 `scenario`、`paths`、`activityLimit`、`trigger` 等字段；
+- `context_expand`：`manifestHash`、`candidateId` 或 `itemHash`、`level`、独立 `maxChars` 和原始 `compile` 参数；
+- `context_resume`：`contextId`、`maxChars`、`includeDetails`、`query`、`scope`；
+- `context_note_list`：`contextId`、`openOnly`、`limit`、`maxChars`；
+- `context_note_add`：必填 `message`，以及 Note 的 `kind`、`actor`、关联 Context/Snapshot、`relatedFiles` 和 `status`；
+- `context_checkpoint`：Context 输入字段、`absorbNotes` 和可选的 `lastError`。
 
-结果语义与 CLI/Agent API 的 `contextOrient` 一致：
+成功调用同时返回 JSON `content` 和 `structuredContent`。结果分别对应 CLI/Agent API 的 Manifest、load result、Note 列表、单个 Note 或 checkpoint result。Checkpoint 保留 `saved`、`no_change` 和 `rate_limited` 状态，MCP 不自动重试，也不暴露绕过限流的参数。
 
-- `ready`：找到可恢复的 Context；
-- `no_context`：项目已初始化但没有可恢复 Context，这是成功结果；
-- 输入验证或调用错误：返回单次工具错误，server 继续运行。
+读写边界如下：
 
-MCP 的 stdin/stdout 属于协议通道，不能混入日志或交互文本。`context_expand` 与 CLI/Agent API 使用相同的无状态 Manifest hash 校验和 partial 预算语义。
+- `context_orient`、`context_expand`、`context_compile` 和 `context_note_list` 是只读操作；
+- `context_resume` 使用现有 `loadContext` 语义，可能更新 `lastUsedAt`，但不会创建 Snapshot；
+- `context_note_add` 会写入 Note，但不会创建 Snapshot；
+- `context_checkpoint` 会创建或更新 Snapshot、Context metadata 和 index，并可显式吸收 Note；
+- 任何工具都不会自动创建 Knowledge、Deadend、feedback 或重复 checkpoint；
+- Knowledge/Deadend 的记录和治理暂不提供独立 MCP 工具，继续使用 CLI/Agent API。
+
+MCP 的 stdin/stdout 属于协议通道，不能混入日志或交互文本。调用错误（包括输入验证、缺失 Context、空 Note message 和 stale Manifest hash）返回单次工具错误，server 继续运行。`context_expand` 与 CLI/Agent API 使用相同的无状态 Manifest hash 校验和 partial 预算语义。
 
 ## TypeScript Agent API
 

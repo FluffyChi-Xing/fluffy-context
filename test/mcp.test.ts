@@ -53,7 +53,15 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
     assert.equal(saved.result.status, 'saved');
 
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name), ['context_orient', 'context_expand']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'context_orient',
+      'context_expand',
+      'context_compile',
+      'context_resume',
+      'context_note_list',
+      'context_note_add',
+      'context_checkpoint',
+    ]);
 
     const ready = await client.callTool({ name: 'context_orient', arguments: { path: root, query: 'authentication' } });
     assert.notEqual(ready.isError, true);
@@ -157,6 +165,81 @@ test('MCP context_expand returns structured and partial results and keeps servin
   }
 });
 
+test('MCP compile, resume, notes, and checkpoint preserve their read and write contracts', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const checkpoint = await client.callTool({
+      name: 'context_checkpoint',
+      arguments: { path: root, title: 'MCP lifecycle', progressSummary: 'Save context through MCP' },
+    });
+    assert.notEqual(checkpoint.isError, true);
+    const saved = checkpoint.structuredContent as { projectRoot: string; result: { status: string; context: { id: string }; snapshot: { snapshotId: string } } };
+    assert.equal(saved.projectRoot, root);
+    assert.equal(saved.result.status, 'saved');
+
+    const compiled = await client.callTool({
+      name: 'context_compile',
+      arguments: { path: root, contextId: saved.result.context.id, query: 'lifecycle', maxChars: 4000 },
+    });
+    assert.notEqual(compiled.isError, true);
+    const manifest = compiled.structuredContent as { status: string; identity: { manifestHash: string } };
+    assert.equal(manifest.status, 'ready');
+    assert.ok(manifest.identity.manifestHash);
+    assert.deepEqual(JSON.parse(textContent(compiled)), manifest);
+
+    const resumed = await client.callTool({
+      name: 'context_resume',
+      arguments: { path: root, contextId: saved.result.context.id, includeDetails: true, maxChars: 4000 },
+    });
+    assert.notEqual(resumed.isError, true);
+    const loaded = resumed.structuredContent as { snapshot: { snapshotId: string }; details?: { progressSummary: string } };
+    assert.equal(loaded.snapshot.snapshotId, saved.result.snapshot.snapshotId);
+    assert.equal(loaded.details?.progressSummary, 'Save context through MCP');
+
+    const added = await client.callTool({
+      name: 'context_note_add',
+      arguments: {
+        path: root,
+        message: 'Capture one explicit observation',
+        kind: 'observation',
+        actor: 'agent',
+        contextId: saved.result.context.id,
+        relatedFiles: ['src/mcp/server.ts', '../unsafe.ts'],
+      },
+    });
+    assert.notEqual(added.isError, true);
+    const note = added.structuredContent as { contextId: string; relatedFiles: string[] };
+    assert.equal(note.contextId, saved.result.context.id);
+    assert.deepEqual(note.relatedFiles, ['src/mcp/server.ts']);
+
+    const notes = await client.callTool({
+      name: 'context_note_list',
+      arguments: { path: root, contextId: saved.result.context.id, openOnly: true, limit: 1, maxChars: 4000 },
+    });
+    assert.notEqual(notes.isError, true);
+    assert.equal((notes.structuredContent as { notes: Array<{ message: string }> }).notes[0].message, 'Capture one explicit observation');
+
+    const unchanged = await client.callTool({
+      name: 'context_checkpoint',
+      arguments: { path: root, contextId: saved.result.context.id },
+    });
+    assert.notEqual(unchanged.isError, true);
+    assert.equal((unchanged.structuredContent as { result: { status: string } }).result.status, 'no_change');
+
+    const invalid = await client.callTool({ name: 'context_note_add', arguments: { path: root, message: '   ' } });
+    assert.equal(invalid.isError, true);
+    assert.match(textContent(invalid), /note message must not be empty/);
+    assert.notEqual((await client.callTool({ name: 'context_orient', arguments: { path: root } })).isError, true);
+
+    const invalidSchema = await client.callTool({ name: 'context_compile', arguments: { path: root, maxChars: -1 } });
+    assert.equal(invalidSchema.isError, true);
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
 test('MCP context_orient auto-starts a migrated project runtime and remains fail-open when stopped', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
@@ -206,7 +289,15 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
     await initProject(root);
     await client.connect(transport);
     const tools = await client.listTools();
-    assert.deepEqual(tools.tools.map((tool) => tool.name), ['context_orient', 'context_expand']);
+    assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'context_orient',
+      'context_expand',
+      'context_compile',
+      'context_resume',
+      'context_note_list',
+      'context_note_add',
+      'context_checkpoint',
+    ]);
     const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });
     assert.notEqual(result.isError, true);
     assert.equal(orientPayload(result).status, 'no_context');

@@ -103,7 +103,9 @@ ctx resume --path path/to/project --max-chars 2000
 
 ## MCP 与 Claude Code 集成
 
-`ctx agent serve` 提供 MCP stdio server，注册 `context_orient` 和 `context_expand` 工具。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+`ctx agent serve` 提供 MCP stdio server，注册以下工具：`context_orient`、`context_expand`、`context_compile`、`context_resume`、`context_note_list`、`context_note_add` 和 `context_checkpoint`。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+
+读取工作流通常是 `context_orient → context_compile → context_expand`。`context_compile` 与 `context_expand` 继续保持有界、确定性和不读取文件正文的边界；`context_resume` 复用 `loadContext`，可能更新 `lastUsedAt`。`context_note_list` 是只读的，`context_note_add` 和 `context_checkpoint` 是显式写入操作，分别新增 Note 或保存 Snapshot；它们不会自动记录 feedback、Knowledge、Deadend 或重复 checkpoint。Knowledge/Deadend 的完整记录和治理仍使用 CLI/Agent API。
 
 ```bash
 ctx agent serve
@@ -339,7 +341,8 @@ ctx learn "订单取消后不能再次进入支付中状态"
 [ ] .contextignored 排除敏感和越界路径
 [ ] Knowledge candidate → verified
 [ ] Deadend candidate → verified
-[ ] MCP context_orient 的 no_context 和单次错误不会终止 server
+[ ] MCP context_orient/context_expand/context_compile/context_resume/context_note_list/context_note_add/context_checkpoint 可调用，且单次错误不会终止 server
+[ ] MCP 只读工具不写入 Context；Note add 和 checkpoint 仅在显式调用时写入
 [ ] Claude 集成预览不写文件，--apply 幂等且拒绝冲突
 [ ] Hook 失败时 fail open，且不会自动 checkpoint
 [ ] npm pack 的安装包可运行 ctx 并导入 contextOrient
