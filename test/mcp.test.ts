@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Client, InMemoryTransport, type CallToolResult } from '@modelcontextprotocol/client';
@@ -60,6 +60,7 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'context_resume',
       'context_note_list',
       'context_note_add',
+      'context_usage_report',
       'context_checkpoint',
     ]);
 
@@ -81,7 +82,34 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
   }
 });
 
-test('MCP context_expand returns structured and partial results and keeps serving after errors', async () => {
+
+test('MCP context_usage_report returns structured read-only metrics', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const before = await readdir(path.join(root, '.context'));
+    const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
+    let beforeJournal = '';
+    try { beforeJournal = await readFile(journalPath, 'utf8'); } catch { beforeJournal = ''; }
+    const report = await client.callTool({
+      name: 'context_usage_report',
+      arguments: { path: root, days: 7, granularity: 'day', baselineTokens: 100, baselineSource: 'manual' },
+    });
+    assert.notEqual(report.isError, true);
+    const structured = report.structuredContent as { schemaVersion: number; payback: { baselineTokens: number; baselineSource: string } };
+    assert.equal(structured.schemaVersion, 1);
+    assert.equal(structured.payback.baselineTokens, 100);
+    assert.equal(structured.payback.baselineSource, 'manual');
+    assert.deepEqual(JSON.parse(textContent(report)), structured);
+    assert.deepEqual(await readdir(path.join(root, '.context')), before);
+    assert.equal(await readFile(journalPath, 'utf8').catch(() => ''), beforeJournal);
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
+test('MCP context expansion preserves bounded read and write contracts', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
   try {
@@ -296,6 +324,7 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
       'context_resume',
       'context_note_list',
       'context_note_add',
+      'context_usage_report',
       'context_checkpoint',
     ]);
     const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });

@@ -1,6 +1,6 @@
 export const COGNITION_LAYOUT_VERSION = 'event-journal-v2' as const;
 
-export type CognitionEventSource = 'cli' | 'claude-hook' | 'mcp' | 'git-observer' | 'fs-observer' | 'migration';
+export type CognitionEventSource = 'cli' | 'claude-hook' | 'mcp' | 'agent' | 'git-observer' | 'fs-observer' | 'migration';
 export type CognitionEventType =
   | 'runtime.enabled'
   | 'runtime.started'
@@ -25,6 +25,7 @@ export type CognitionEventType =
   | 'deadend.obsoleted'
   | 'deadend.rejected'
   | 'record.used'
+  | 'usage.operation.completed'
   | 'projection.advanced'
   | 'projection.failed';
 
@@ -93,6 +94,21 @@ export interface CognitionUseFeedback {
   entity: 'knowledge' | 'deadend';
   entityId: string;
   outcome: 'used';
+}
+
+export interface UsageOperationCompletedPayload {
+  operation: 'orient' | 'compile' | 'expand' | 'resume';
+  interface: 'cli' | 'mcp' | 'agent' | 'hook';
+  success: boolean;
+  durationMs: number;
+  inputChars: number;
+  outputChars: number;
+  inputBytes: number;
+  outputBytes: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedMethod: 'chars-div-four';
+  errorClass?: string;
 }
 
 export interface CognitionRetrievalEntry {

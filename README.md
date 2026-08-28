@@ -2,7 +2,7 @@
 
 本地优先、Agent 无关的 Context 与 Knowledge Runtime，帮助 AI 编程 Agent 保存任务状态、恢复工作上下文、复用已验证共识，并生成有界且可追溯的上下文输入。
 
-**当前版本：0.7.6**
+**当前版本：0.7.7**
 
 ```text
 checkpoint → orient → compile → expand → feedback → Agent continues
@@ -21,7 +21,7 @@ checkpoint → orient → compile → expand → feedback → Agent continues
 - `ctx compile`：生成带预算、来源和排除原因的 provider-neutral Context Manifest。
 - `ctx learn` / `ctx deadend`：记录可复用结论和失败方案，之后显式验证再用于普通检索。
 
-## 0.7.6 当前能力与边界
+## 0.7.7 当前能力与边界
 
 | 能力 | 当前支持 |
 | --- | --- |
@@ -32,16 +32,17 @@ checkpoint → orient → compile → expand → feedback → Agent continues
 | 文件活动 | 可选记录经过过滤的文件 metadata，并编译为 `activity` section |
 | Runtime | 本地 v2 Runtime、Git 观察、可选文件观察、自动唤醒和 fail-open 集成 |
 | 治理 | Knowledge/Deadend 的 candidate、verify、deprecate/obsolete、reject |
-| 集成 | Claude Code Hook、Claude Code 配置集成、MCP `context_orient`/`context_expand`、TypeScript Agent API |
+| 集成 | Claude Code Hook、Claude Code 配置集成、MCP `context_orient`/`context_expand`/`context_usage_report`、TypeScript Agent API |
+| 观测 | `ctx usage report`：只读统计资产、显式复用、操作趋势和 estimated token 投入 |
 
-以下能力**不属于 0.7.6**：
+以下能力**不属于 0.7.7**：
 
-- 没有 `ctx clean` 或 `ctx report`。
+- 没有 `ctx clean`；`ctx usage report` 是当前支持的只读观测命令。
 - 不自动创建 checkpoint、Note、Knowledge 或 Deadend。
 - 不自动把 Candidate 提升为 Verified。
 - 不提供模型总结、Embedding/向量检索、远程同步、多人协作或 Context merge。
 
-0.7.6 已支持 `context_expand`，用于按需取得已选候选的 `structured` 或 `evidence` 层；它是无状态、只读操作，不读取项目文件内容，也不自动记录 feedback。
+0.7.7 已支持 `context_expand`，用于按需取得已选候选的 `structured` 或 `evidence` 层；它是无状态、只读操作，不读取项目文件内容，也不自动记录 feedback。
 
 ## 快速开始
 
@@ -180,7 +181,7 @@ Manifest 主要包含：
 - `identity`：Manifest hash、选中 item hash 和 estimated token；
 - `text`：最终有界文本。
 
-0.7.6 的候选项提供：
+0.7.7 的候选项提供：
 
 ```text
 level: signal | summary | structured | evidence
@@ -211,6 +212,23 @@ Compiler 具有以下边界：
 - 不写入 Context 或 journal；
 - 普通查询默认只纳入适用且已验证的 Knowledge 和 Deadend；
 - `context_expand` 只读取已选候选的安全 metadata，不读取任意项目文件内容。
+
+### `ctx usage report`
+
+`usage report` 适合每周或每月复盘，不需要为每条 prompt 调用。它是只读的，基于 v1 文件和 v2 journal 派生统计，不创建事件、不修改 Context、Snapshot、Note 或 projection：
+
+```bash
+ctx usage report --days 30
+ctx usage report --month 2026-08 --granularity week
+ctx usage report --since 2026-08-01T00:00:00.000Z \
+  --until 2026-09-01T00:00:00.000Z \
+  --baseline-tokens 12000 --baseline-source manual
+ctx usage report --format ascii
+```
+
+默认输出稳定 JSON；`--format ascii` 仅输出终端仪表盘。报告展示资产总量和窗口增量、verified Knowledge/Deadend、显式 `record.used` reuse、orient/compile/expand/resume 操作统计、趋势以及上下文输出投入。
+
+报告中的 `chars / 4` 是 `estimated` token，不是真实 Provider token；Provider token 和计费金额当前为 `unavailable`。没有显式 `--baseline-tokens` 时，不会虚构 estimated savings、ROI 或 payback；查询命中、候选选择和编译纳入也不等于 reuse，只有显式 `record.used` 事件才计入复用。报告不替代 `ctx doctor`、`ctx journal verify` 或 Knowledge/Deadend 的人工治理。
 
 ## Knowledge、Deadend 和 Note
 
@@ -423,7 +441,7 @@ ctx integrate claude install --apply
 ctx agent serve
 ```
 
-0.7.6 当前暴露以下工具：
+0.7.7 当前暴露以下工具：
 
 ```text
 context_orient       只读、有界地获取任务上下文
@@ -609,7 +627,7 @@ npm pack --dry-run --json
 
 ## 未来方向
 
-以下方向属于后续版本，不是 0.7.6 的当前能力：
+以下方向属于后续版本，不是 0.7.7 的当前能力：
 
 | 方向 | 目标 |
 | --- | --- |

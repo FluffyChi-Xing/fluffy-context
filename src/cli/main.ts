@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
-import { contextOrient } from '../agent/api.js';
-import { compileContext } from '../compiler/compile.js';
-import { contextExpand } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, loadContext } from '../agent/api.js';
+import { formatUsageReport } from '../cognition/usage-report.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
 import { readJournal, verifyJournal } from '../cognition/journal.js';
@@ -81,6 +80,34 @@ Initialize the local .context runtime layout. Re-running init is safe.
 
 Options:
   --path <path>  Project path`,
+  usage: `usage: ctx usage report [options]
+
+Show read-only context asset, reuse, token investment, and operation metrics.
+
+Options:
+  --path <path>                  Project path
+  --since <ISO>                  Window start
+  --until <ISO>                  Window end
+  --days <number>                Rolling window length (default: 30)
+  --month <YYYY-MM>              Calendar month window
+  --granularity <value>          day|week|month
+  --format <value>               json|ascii (default: json)
+  --baseline-tokens <number>    Explicit comparison token count
+  --baseline-source <value>      manual|recorded-control`,
+  'usage report': `usage: ctx usage report [options]
+
+Show read-only context asset, reuse, token investment, and operation metrics.
+
+Options:
+  --path <path>                  Project path
+  --since <ISO>                  Window start
+  --until <ISO>                  Window end
+  --days <number>                Rolling window length (default: 30)
+  --month <YYYY-MM>              Calendar month window
+  --granularity <value>          day|week|month
+  --format <value>               json|ascii (default: json)
+  --baseline-tokens <number>    Explicit comparison token count
+  --baseline-source <value>      manual|recorded-control`,
   checkpoint: `usage: ctx checkpoint [options]
 
 Save structured work state as a baseline or incremental snapshot.
@@ -160,7 +187,7 @@ Start an MCP stdio server for Agent integrations.
 Run "ctx agent serve --help" for details.`,
   'agent serve': `usage: ctx agent serve
 
-Start an MCP stdio server exposing context_orient, context_expand, context_compile, context_resume, context_note_list, context_note_add, and context_checkpoint tools.
+Start an MCP stdio server exposing context_orient, context_expand, context_compile, context_resume, context_note_list, context_note_add, context_usage_report, and context_checkpoint tools.
 
 The server owns standard input/output; do not use it interactively.`,
   hook: `usage: ctx hook claude-code session-start|user-prompt
@@ -363,7 +390,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|expand|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -394,7 +421,7 @@ function printHelp(args: string[]): boolean {
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
     || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]))
-    || (command === 'filesystem' && ['enable', 'disable', 'status'].includes(args[1]));
+    || (command === 'usage' && args[1] === 'report');
   const key = nested ? `${command} ${args[1]}` : command;
   const nestedKey = key === 'integrate claude' && (args[2] === 'inspect' || args[2] === 'install') ? `${key} ${args[2]}` : key;
   const help = HELP[nestedKey];
@@ -452,7 +479,7 @@ async function run(args: string[]): Promise<void> {
     case 'resume':
       validateOptions(args.slice(1), ['--path', '--context', '--max-chars'], ['--path', '--context', '--max-chars']);
       validatePositionals(positionals(args.slice(1), ['--path', '--context', '--max-chars']), 0, HELP.resume);
-      print(await resume(target, option(args, '--context'), numericOption(args, '--max-chars', 4000)));
+      print(await loadContext(target, { contextId: option(args, '--context'), maxChars: numericOption(args, '--max-chars', 4000) }, 'cli'));
       return;
     case 'orient': {
       const valueOptions = ['--path', '--context', '--scope', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit'];
@@ -468,7 +495,7 @@ async function run(args: string[]): Promise<void> {
         knowledgeLimit: numericOption(args, '--knowledge-limit', 10),
         deadendLimit: numericOption(args, '--deadend-limit', 10),
         noteLimit: numericOption(args, '--note-limit', 20),
-      }));
+      }, 'cli'));
       return;
     }
     case 'compile': {
@@ -476,7 +503,7 @@ async function run(args: string[]): Promise<void> {
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const query = positionals(args.slice(1), valueOptions);
       validatePositionals(query, 1, HELP.compile);
-      print(await compileContext(target, {
+      print(await contextCompile(target, {
         contextId: option(args, '--context'),
         query: query[0],
         scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
@@ -487,7 +514,7 @@ async function run(args: string[]): Promise<void> {
         deadendLimit: numericOption(args, '--deadend-limit', 10),
         noteLimit: numericOption(args, '--note-limit', 20),
         activityLimit: numericOption(args, '--activity-limit', 20),
-      }));
+      }, 'cli'));
       return;
     }
     case 'expand': {
@@ -519,6 +546,24 @@ async function run(args: string[]): Promise<void> {
           activityLimit: numericOption(args, '--activity-limit', 20),
         },
       }));
+      return;
+    }
+    case 'usage': {
+      if (args[1] !== 'report') throw new Error(HELP.usage);
+      const valueOptions = ['--path', '--since', '--until', '--days', '--month', '--granularity', '--format', '--baseline-tokens', '--baseline-source'];
+      validateOptions(args.slice(2), valueOptions, valueOptions);
+      validatePositionals(positionals(args.slice(2), valueOptions), 0, HELP['usage report']);
+      const report = await contextUsageReport(target, {
+        since: option(args, '--since'),
+        until: option(args, '--until'),
+        days: option(args, '--days') === undefined ? undefined : numericOption(args, '--days', 30),
+        month: option(args, '--month'),
+        granularity: enumOption(args, '--granularity', ['day', 'week', 'month'] as const),
+        baselineTokens: option(args, '--baseline-tokens') === undefined ? undefined : numericOption(args, '--baseline-tokens', 0),
+        baselineSource: enumOption(args, '--baseline-source', ['manual', 'recorded-control'] as const),
+      });
+      if (enumOption(args, '--format', ['json', 'ascii'] as const) === 'ascii') process.stdout.write(formatUsageReport(report));
+      else print(report);
       return;
     }
     case 'agent':

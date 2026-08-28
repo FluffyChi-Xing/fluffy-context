@@ -1,8 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { compileContext } from '../compiler/compile.js';
 import { addNote, listNotes } from '../runtime/notes.js';
-import { contextExpand, contextOrient, loadContext, saveContext } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, loadContext, saveContext } from '../agent/api.js';
 import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 
@@ -94,6 +93,17 @@ const checkpointInput = z.object({
   relatedFiles: z.array(z.string()).optional(),
 });
 
+const usageReportInput = z.object({
+  path: z.string().optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  days: z.int().nonnegative().optional(),
+  month: z.string().optional(),
+  granularity: z.enum(['day', 'week', 'month']).optional(),
+  baselineTokens: z.number().nonnegative().optional(),
+  baselineSource: z.enum(['manual', 'recorded-control']).optional(),
+});
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -121,7 +131,7 @@ export function createMcpServer(): McpServer {
   }, async ({ path, ...options }) => {
     try {
       await ensureRuntimeForSession(path, { source: 'mcp', timeoutMs: 1_000 }).catch(() => undefined);
-      return successResponse(await contextOrient(path, options));
+      return successResponse(await contextOrient(path, options, 'mcp'));
     } catch (error) {
       return failureResponse('context_orient', error);
     }
@@ -133,7 +143,7 @@ export function createMcpServer(): McpServer {
   }, async ({ path, ...input }) => {
     try {
       await ensureRuntimeForSession(path, { source: 'mcp', timeoutMs: 1_000 }).catch(() => undefined);
-      return successResponse(await contextExpand(path, input));
+      return successResponse(await contextExpand(path, input, 'mcp'));
     } catch (error) {
       return failureResponse('context_expand', error);
     }
@@ -145,7 +155,7 @@ export function createMcpServer(): McpServer {
   }, async ({ path, ...options }) => {
     try {
       await ensureRuntimeForSession(path, { source: 'mcp', timeoutMs: 1_000 }).catch(() => undefined);
-      return successResponse(await compileContext(path, options));
+      return successResponse(await contextCompile(path, options, 'mcp'));
     } catch (error) {
       return failureResponse('context_compile', error);
     }
@@ -157,7 +167,7 @@ export function createMcpServer(): McpServer {
   }, async ({ path, ...options }) => {
     try {
       await ensureRuntimeForSession(path, { source: 'mcp', timeoutMs: 1_000 }).catch(() => undefined);
-      return successResponse(await loadContext(path, options));
+      return successResponse(await loadContext(path, options, 'mcp'));
     } catch (error) {
       return failureResponse('context_resume', error);
     }
@@ -184,6 +194,17 @@ export function createMcpServer(): McpServer {
       return successResponse(await addNote(path, message, input));
     } catch (error) {
       return failureResponse('context_note_add', error);
+    }
+  });
+  server.registerTool('context_usage_report', {
+    title: 'Context usage report',
+    description: 'Build a read-only report of context assets, explicit reuse, estimated token investment, and operation metrics.',
+    inputSchema: usageReportInput,
+  }, async ({ path, ...options }) => {
+    try {
+      return successResponse(await contextUsageReport(path, options));
+    } catch (error) {
+      return failureResponse('context_usage_report', error);
     }
   });
   server.registerTool('context_checkpoint', {

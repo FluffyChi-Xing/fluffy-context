@@ -28,7 +28,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.7.6');
+    assert.equal(JSON.parse(result.stdout), '0.7.7');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -38,7 +38,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'journal'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -94,7 +94,46 @@ test('each command has focused help without creating runtime files', async () =>
   }
 });
 
-test('v1 migration CLI applies only on explicit confirmation and verifies the import', async () => {
+
+test('usage report supports JSON and ASCII output without writing a report event', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
+    let beforeJournal = '';
+    try { beforeJournal = await readFile(journalPath, 'utf8'); } catch { beforeJournal = ''; }
+    const json = await runCli(['usage', 'report', '--path', root, '--days', '7', '--baseline-tokens', '100'], root);
+    assert.equal(json.code, 0, json.stderr);
+    assert.equal(await readFile(journalPath, 'utf8').catch(() => ''), beforeJournal);
+    const report = JSON.parse(json.stdout) as {
+      schemaVersion: number;
+      payback: {
+        baselineTokens: number;
+        status: string;
+        estimatedSavings: { value: number | null; quality: string };
+        estimatedROI: number | null;
+      };
+      investment: { providerTokens: { quality: string } };
+    };
+    assert.equal(report.schemaVersion, 1);
+    assert.equal(report.payback.baselineTokens, 100);
+    assert.equal(report.investment.providerTokens.quality, 'unavailable');
+    assert.equal(report.payback.status, 'not_reached');
+    assert.equal(report.payback.estimatedSavings.quality, 'estimated');
+    assert.equal(report.payback.estimatedSavings.value, 100);
+    assert.equal(report.payback.estimatedROI, null);
+    assert.deepEqual(JSON.parse(json.stdout), report);
+    const ascii = await runCli(['usage', 'report', '--path', root, '--format', 'ascii'], root);
+    assert.equal(ascii.code, 0, ascii.stderr);
+    assert.match(ascii.stdout, /fluffy-context usage report/);
+    const invalid = await runCli(['usage', 'report', '--path', root, '--granularity', 'year'], root);
+    assert.notEqual(invalid.code, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('v1 migration CLI previews, applies, and verifies migrations', async () => {
   const root = await project();
   try {
     const initialized = await runCli(['init', '--path', root], root);

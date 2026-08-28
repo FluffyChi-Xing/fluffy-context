@@ -13,9 +13,10 @@ const eventTypes: ReadonlySet<string> = new Set([
   'context.checkpoint.imported', 'context.state.recorded', 'note.recorded', 'note.resolved', 'note.absorbed',
   'knowledge.proposed', 'knowledge.verified', 'knowledge.deprecated', 'knowledge.rejected',
   'deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected', 'record.used',
+  'usage.operation.completed',
   'projection.advanced', 'projection.failed',
 ]);
-const sourceKinds: ReadonlySet<string> = new Set(['cli', 'claude-hook', 'mcp', 'git-observer', 'fs-observer', 'migration']);
+const sourceKinds: ReadonlySet<string> = new Set(['cli', 'claude-hook', 'mcp', 'agent', 'git-observer', 'fs-observer', 'migration']);
 
 const segmentName = '00000001.ndjson';
 
@@ -83,6 +84,13 @@ function validatePayloadBoundary(input: AppendEventInput): void {
   if (['note.recorded', 'note.resolved', 'note.absorbed'].includes(input.type)) {
     const record = payload.record;
     if (!isRecord(record) || typeof record.message !== 'string' || record.message.trim().length === 0) throw new Error('note message must not be empty');
+  }
+  if (input.type === 'usage.operation.completed') {
+    const requiredNumbers = ['durationMs', 'inputChars', 'outputChars', 'inputBytes', 'outputBytes', 'estimatedInputTokens', 'estimatedOutputTokens'];
+    if (payload.operation !== 'orient' && payload.operation !== 'compile' && payload.operation !== 'expand' && payload.operation !== 'resume') throw new Error('invalid usage operation');
+    if (payload.interface !== 'cli' && payload.interface !== 'mcp' && payload.interface !== 'agent' && payload.interface !== 'hook') throw new Error('invalid usage interface');
+    if (typeof payload.success !== 'boolean' || payload.estimatedMethod !== 'chars-div-four' || requiredNumbers.some((key) => typeof payload[key] !== 'number' || !Number.isFinite(payload[key]) || payload[key] < 0)) throw new Error('invalid usage telemetry payload');
+    if (!payload.success && typeof payload.errorClass !== 'string') throw new Error('usage errors require an error class');
   }
   if (input.type === 'workspace.paths.changed') {
     const changes = payload.changes;

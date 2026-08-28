@@ -19,7 +19,7 @@ export function estimateTokens(value: string): number {
 export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | 'projectRoot' | 'mode' | 'anchor' | 'intent' | 'selected' | 'budget' | 'truncation'>): string {
   return contentHash({
     schemaVersion: 1,
-    compilerVersion: '0.7.6',
+    compilerVersion: '0.7.7',
     rankingVersion: 'compiler-ranking-v2',
     status: manifest.status,
     projectRoot: manifest.projectRoot,

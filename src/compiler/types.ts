@@ -228,7 +228,7 @@ export interface ContextExpandResult {
 
 export interface ContextManifest {
   schemaVersion: 1;
-  compilerVersion: '0.7.6';
+  compilerVersion: '0.7.7';
   rankingVersion: 'compiler-ranking-v2';
   status: 'ready' | 'no_context';
   projectRoot: string;

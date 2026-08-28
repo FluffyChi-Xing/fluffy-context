@@ -143,4 +143,5 @@ docs/todos
 .contextignored
 .mcp.json
 .claude/
+.codex/
 

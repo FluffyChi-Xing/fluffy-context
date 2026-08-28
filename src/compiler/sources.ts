@@ -122,7 +122,7 @@ export async function loadCompilerSources(startPath: string | undefined, options
     knowledgeLimit: options.knowledgeLimit ?? 10,
     deadendLimit: options.deadendLimit ?? 10,
     noteLimit: options.noteLimit ?? 20,
-  });
+  }, null);
   const projectRoot = orientation.projectRoot;
   const git = await readGitWorktreeState(projectRoot);
   let events: CognitionEvent[] = [];

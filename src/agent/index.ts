@@ -17,6 +17,7 @@ export type {
   ContextSearchOptions,
   ContextSearchResult,
 } from '../runtime/types.js';
+export { contextCompile } from './api.js';
 export { compileContext } from '../compiler/compile.js';
 export { canonicalJson, contentHash, estimateTokens, rebuildManifestHash, validateManifestIdentity } from '../compiler/identity.js';
 export type {

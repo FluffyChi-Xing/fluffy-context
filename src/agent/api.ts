@@ -9,6 +9,9 @@ import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import { expandContext } from '../compiler/expand.js';
+import { compileContext } from '../compiler/compile.js';
+import { withUsageTelemetry, type UsageInterface } from '../cognition/usage.js';
+import { buildUsageReport, type UsageReport, type UsageReportOptions } from '../cognition/usage-report.js';
 import type {
   AgentLoadOptions,
   AgentLoadResult,
@@ -25,7 +28,7 @@ import type {
   StructuredContext,
 } from '../runtime/types.js';
 import type { ContextOrientOptions, ContextOrientResult, ContextUseInput } from './types.js';
-import type { ContextExpandInput, ContextExpandResult } from '../compiler/types.js';
+import type { ContextExpandInput, ContextExpandResult, ContextCompileOptions, ContextManifest } from '../compiler/types.js';
 
 function normalized(value: string): string {
   return value.trim().toLocaleLowerCase();
@@ -163,31 +166,37 @@ export async function saveContext(startPath: string | undefined, input: Checkpoi
   return { projectRoot, result: await checkpoint(projectRoot, input, options) };
 }
 
-export async function contextExpand(startPath: string | undefined, input: ContextExpandInput): Promise<ContextExpandResult> {
-  const projectRoot = await resolveProjectRoot(startPath);
-  return expandContext(projectRoot, input);
+export async function contextExpand(startPath: string | undefined, input: ContextExpandInput, interfaceName: UsageInterface = 'agent'): Promise<ContextExpandResult> {
+  return withUsageTelemetry(startPath, 'expand', 'agent', input, () => resolveProjectRoot(startPath).then((projectRoot) => expandContext(projectRoot, input)), interfaceName);
 }
 
-export async function loadContext(startPath: string | undefined, options: AgentLoadOptions = {}): Promise<AgentLoadResult> {
-  const projectRoot = await resolveProjectRoot(startPath);
-  const result = await resume(projectRoot, options.contextId, options.maxChars ?? 4000);
-  const knowledge = options.query === undefined ? null : await discoverKnowledge(projectRoot, options.query, { scope: options.scope, maxChars: options.maxChars ?? 4000 });
-  const verifiedDeadends = await listDeadends(projectRoot);
-  return {
-    projectRoot,
-    context: result.context,
-    snapshot: result.snapshot,
-    resumeSummary: result.resumeSummary,
-    ...(options.includeDetails ? { details: result.details } : {}),
-    knowledge,
-    verifiedDeadendIds: verifiedDeadends.map((item) => item.deadendId),
-  };
+export async function contextCompile(startPath: string | undefined, options: ContextCompileOptions = {}, interfaceName: UsageInterface = 'agent'): Promise<ContextManifest> {
+  return withUsageTelemetry(startPath, 'compile', 'agent', options, () => compileContext(startPath, options), interfaceName);
 }
 
-export async function contextOrient(startPath: string | undefined, options: ContextOrientOptions = {}): Promise<ContextOrientResult> {
-  const projectRoot = await resolveProjectRoot(startPath);
-  const query = options.query === undefined ? null : options.query.trim();
-  if (query === '') throw new Error('context orient query must not be empty');
+export async function loadContext(startPath: string | undefined, options: AgentLoadOptions = {}, interfaceName: UsageInterface = 'agent'): Promise<AgentLoadResult> {
+  return withUsageTelemetry(startPath, 'resume', 'agent', options, async () => {
+    const projectRoot = await resolveProjectRoot(startPath);
+    const result = await resume(projectRoot, options.contextId, options.maxChars ?? 4000);
+    const knowledge = options.query === undefined ? null : await discoverKnowledge(projectRoot, options.query, { scope: options.scope, maxChars: options.maxChars ?? 4000 });
+    const verifiedDeadends = await listDeadends(projectRoot);
+    return {
+      projectRoot,
+      context: result.context,
+      snapshot: result.snapshot,
+      resumeSummary: result.resumeSummary,
+      ...(options.includeDetails ? { details: result.details } : {}),
+      knowledge,
+      verifiedDeadendIds: verifiedDeadends.map((item) => item.deadendId),
+    };
+  }, interfaceName);
+}
+
+export async function contextOrient(startPath: string | undefined, options: ContextOrientOptions = {}, interfaceName: UsageInterface | null = 'agent'): Promise<ContextOrientResult> {
+  const action: () => Promise<ContextOrientResult> = async () => {
+    const projectRoot = await resolveProjectRoot(startPath);
+    const query = options.query === undefined ? null : options.query.trim();
+    if (query === '') throw new Error('context orient query must not be empty');
 
   let loaded;
   try {
@@ -312,6 +321,14 @@ export async function contextOrient(startPath: string | undefined, options: Cont
       },
     },
   };
+  };
+  return interfaceName === null
+    ? action()
+    : withUsageTelemetry(startPath, 'orient', 'agent', options, action, interfaceName);
+}
+
+export async function contextUsageReport(startPath: string | undefined, options: UsageReportOptions = {}): Promise<UsageReport> {
+  return buildUsageReport(startPath, options);
 }
 
 export async function recordContextUse(startPath: string | undefined, input: ContextUseInput): Promise<{ recorded: boolean; eventId: string }> {

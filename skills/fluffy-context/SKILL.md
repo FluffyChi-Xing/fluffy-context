@@ -19,12 +19,16 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 仅需要完整详情时再运行 `ctx resume --max-chars <预算>`；它会保留既有的 `lastUsedAt` 更新语义。
 - Agent 集成从 `fluffy-context` 或 `fluffy-context/agent` 导入 `contextOrient`、`compileContext`、`saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context` 或导入内部 `dist/...` 路径。
 - `ctx compile` 的 `activity` section 只表示 Runtime 观察到的近期文件 metadata 变化；它不代表文件被读取或理解，也不替代 checkpoint、Note 或已验证 Knowledge。
-- 0.7.6 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。
+- 0.7.7 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。
 - 只对 selected candidate 使用 `ctx expand --manifest-hash ... --candidate-id ... --level structured|evidence`。必须带上原始 compile 参数和相同的 compile budget；Manifest 过期时应重新 compile，不要绕过 hash 校验。
 - `expand` 是无状态、只读的渐进式展开：`complete` 才提供完整 `content`，`partial` 提供有界 `text` 且 `content` 为 null。它不写入 Context/journal、不记录 feedback、不读取项目文件正文、diff、命令输出或敏感数据。Agent API 使用 `contextExpand`，MCP 使用 `context_expand`。
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。
+- 每周或每月复盘时使用 `ctx usage report`，不要为每条 prompt 运行；它只读 journal 和 v1 数据，不创建事件或修改项目状态。
+- Report 中的 `chars / 4` 是明确标注的 estimated token，不是真实 Provider token；Provider token 和计费金额当前 unavailable。
+- 只有显式 `record.used` 才算 Knowledge/Deadend reuse；compile 命中或 orient 返回不等于复用。
+- 没有显式 baseline 时，report 不生成 savings、ROI 或 payback 数字；report 不能替代 `doctor`、`journal verify` 或人工治理。
 
 ## 快速工作流
 
@@ -45,6 +49,21 @@ ctx learn ... / ctx deadend ... → 显式 verify
 ```
 
 `ctx orient` 不带查询时也有效，用于恢复当前任务和 open Note。带查询时只发现已验证的 Knowledge 与 Deadend；不要以候选项驱动普通实现。
+
+### Usage report
+
+在阶段性复盘、周报或月报时运行只读观测报告：
+
+```bash
+ctx usage report --days 30
+ctx usage report --month 2026-08 --granularity week
+ctx usage report --since 2026-08-01T00:00:00.000Z --until 2026-09-01T00:00:00.000Z --baseline-tokens 12000 --baseline-source manual
+ctx usage report --format ascii
+```
+
+JSON 是默认输出；`--format ascii` 仅用于终端展示。报告分别统计 v1 文件资产和 v2 journal 事件，展示 Knowledge、Deadend、Note、Context、Snapshot、显式 reuse、操作趋势与 estimated token 投入。`record.used` 是唯一的 reuse 信号，候选项命中、compile 选择和普通检索都不算复用。
+
+`--baseline-tokens` 必须是显式对照输入。未提供 baseline 时 savings、ROI 和 payback 为 `null` 或 `no_baseline`；字符换算不代表 Provider 真实 token，也不提供默认单价。报告失败时应使用 `ctx doctor` 与 `ctx journal verify` 进一步诊断，而不是把 report 当作数据修复工具。
 
 ### 初始化
 
@@ -103,7 +122,7 @@ ctx resume --path path/to/project --max-chars 2000
 
 ## MCP 与 Claude Code 集成
 
-`ctx agent serve` 提供 MCP stdio server，注册以下工具：`context_orient`、`context_expand`、`context_compile`、`context_resume`、`context_note_list`、`context_note_add` 和 `context_checkpoint`。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+`ctx agent serve` 提供 MCP stdio server，注册以下工具：`context_orient`、`context_expand`、`context_compile`、`context_resume`、`context_note_list`、`context_note_add`、`context_usage_report` 和 `context_checkpoint`。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
 
 读取工作流通常是 `context_orient → context_compile → context_expand`。`context_compile` 与 `context_expand` 继续保持有界、确定性和不读取文件正文的边界；`context_resume` 复用 `loadContext`，可能更新 `lastUsedAt`。`context_note_list` 是只读的，`context_note_add` 和 `context_checkpoint` 是显式写入操作，分别新增 Note 或保存 Snapshot；它们不会自动记录 feedback、Knowledge、Deadend 或重复 checkpoint。Knowledge/Deadend 的完整记录和治理仍使用 CLI/Agent API。
 
@@ -341,7 +360,8 @@ ctx learn "订单取消后不能再次进入支付中状态"
 [ ] .contextignored 排除敏感和越界路径
 [ ] Knowledge candidate → verified
 [ ] Deadend candidate → verified
-[ ] MCP context_orient/context_expand/context_compile/context_resume/context_note_list/context_note_add/context_checkpoint 可调用，且单次错误不会终止 server
+[ ] MCP context_orient/context_expand/context_compile/context_resume/context_note_list/context_note_add/context_usage_report/context_checkpoint 可调用，且单次错误不会终止 server
+[ ] ctx usage report 的 JSON/ASCII 输出、baseline 边界和只读性符合预期
 [ ] MCP 只读工具不写入 Context；Note add 和 checkpoint 仅在显式调用时写入
 [ ] Claude 集成预览不写文件，--apply 幂等且拒绝冲突
 [ ] Hook 失败时 fail open，且不会自动 checkpoint
