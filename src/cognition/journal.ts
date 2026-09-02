@@ -12,7 +12,10 @@ const eventTypes: ReadonlySet<string> = new Set([
   'git.state.observed', 'git.branch.changed', 'git.head.changed', 'workspace.paths.changed',
   'context.checkpoint.imported', 'context.state.recorded', 'note.recorded', 'note.resolved', 'note.absorbed',
   'knowledge.proposed', 'knowledge.verified', 'knowledge.deprecated', 'knowledge.rejected',
-  'deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected', 'record.used',
+  'deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected',
+  'experience.recorded',
+  'evolution.proposed', 'evolution.candidate.accepted', 'evolution.verified', 'evolution.published', 'evolution.rejected', 'evolution.deprecated', 'evolution.superseded',
+  'skill.invoked', 'skill.outcome.recorded', 'record.used',
   'usage.operation.completed',
   'projection.advanced', 'projection.failed',
 ]);
@@ -76,6 +79,44 @@ function validIsoDate(value: unknown): value is string {
   return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }
 
+function validEvolutionId(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || value.trim().length === 0) throw new Error(`${label} must not be empty`);
+}
+
+function validNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validLineage(value: unknown): boolean {
+  return isRecord(value)
+    && (value.entity === 'knowledge' || value.entity === 'deadend' || value.entity === 'skill' || value.entity === 'compiler-recipe' || value.entity === 'experience' || value.entity === 'proposal')
+    && typeof value.entityId === 'string' && value.entityId.trim().length > 0
+    && (value.relation === 'supports' || value.relation === 'contradicts' || value.relation === 'supersedes' || value.relation === 'used_for');
+}
+
+function validEvolutionEvidence(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.eventId === 'string' && value.eventId.trim().length > 0
+    && (value.relation === 'derived_from' || value.relation === 'supports' || value.relation === 'contradicts' || value.relation === 'validated_by');
+}
+
+function validApplicability(value: unknown): boolean {
+  return isRecord(value)
+    && value.project === true
+    && (value.branchMode === 'global' || value.branchMode === 'exact' || value.branchMode === 'ancestor-of-source' || value.branchMode === 'descendant-of-source')
+    && (value.branches === undefined || Array.isArray(value.branches) && value.branches.every((item) => typeof item === 'string' && item.trim().length > 0))
+    && (value.paths === undefined || Array.isArray(value.paths) && value.paths.every((item) => typeof item === 'string' && item.trim().length > 0))
+    && (value.sourceCommit === undefined || typeof value.sourceCommit === 'string' || value.sourceCommit === null)
+    && (value.dependencyConstraints === undefined || Array.isArray(value.dependencyConstraints) && value.dependencyConstraints.every((item) => typeof item === 'string' && item.trim().length > 0));
+}
+
+function validEvolutionTransition(from: unknown, to: unknown): boolean {
+  if ((from !== 'candidate' && from !== 'verified' && from !== 'published' && from !== 'rejected' && from !== 'deprecated' && from !== 'superseded' && from !== 'obsolete') || (to !== 'verified' && to !== 'published' && to !== 'rejected' && to !== 'deprecated' && to !== 'superseded' && to !== 'obsolete')) return false;
+  return (from === 'candidate' && (to === 'verified' || to === 'rejected' || to === 'deprecated'))
+    || (from === 'verified' && (to === 'published' || to === 'deprecated' || to === 'superseded' || to === 'obsolete'))
+    || (from === 'published' && (to === 'deprecated' || to === 'superseded' || to === 'obsolete'));
+}
+
 function validatePayloadBoundary(input: AppendEventInput): void {
   const payload = input.payload as Record<string, unknown>;
   if (input.type === 'host.prompt.submitted' && (typeof payload.intent !== 'string' || payload.intent.trim().length === 0)) {
@@ -95,6 +136,39 @@ function validatePayloadBoundary(input: AppendEventInput): void {
   if (input.type === 'workspace.paths.changed') {
     const changes = payload.changes;
     if (!Array.isArray(changes) || changes.length === 0) throw new Error('workspace activity must contain changes');
+  }
+  if (input.type === 'experience.recorded') {
+    const experience = payload.record;
+    if (!isRecord(experience)) throw new Error('experience record is required');
+    validEvolutionId(experience.experienceId, 'experience id');
+    if (experience.schemaVersion !== 1 || !Array.isArray(experience.sourceEventIds) || experience.sourceEventIds.length === 0 || !experience.sourceEventIds.every((value) => typeof value === 'string' && value.trim().length > 0) || !Array.isArray(experience.sourceContextIds) || !experience.sourceContextIds.every((value) => typeof value === 'string') || !Array.isArray(experience.sourceSnapshotIds) || !experience.sourceSnapshotIds.every((value) => typeof value === 'string') || !Array.isArray(experience.paths) || !experience.paths.every((value) => typeof value === 'string') || !validGitAnchor(experience.git) || !isRecord(experience.privacy) || (experience.privacy.classification !== 'metadata' && experience.privacy.classification !== 'redacted-text') || !validNonNegativeInteger(experience.privacy.redactionCount) || !isRecord(experience.extractor) || typeof experience.extractor.id !== 'string' || experience.extractor.id.trim().length === 0 || typeof experience.extractor.version !== 'string' || experience.extractor.version.trim().length === 0 || typeof experience.contentHash !== 'string' || experience.contentHash.trim().length === 0 || typeof experience.summary !== 'string' || experience.summary.trim().length === 0 || !validIsoDate(experience.createdAt)) throw new Error('invalid experience record');
+  }
+  if (input.type === 'evolution.proposed') {
+    const proposal = payload.record;
+    if (!isRecord(proposal)) throw new Error('evolution proposal record is required');
+    validEvolutionId(proposal.proposalId, 'proposal id');
+    if (proposal.schemaVersion !== 1 || (proposal.targetKind !== 'knowledge' && proposal.targetKind !== 'deadend' && proposal.targetKind !== 'skill' && proposal.targetKind !== 'compiler-recipe') || typeof proposal.targetId !== 'string' || proposal.targetId.trim().length === 0 || proposal.status !== 'candidate' || !Array.isArray(proposal.sourceExperienceIds) || proposal.sourceExperienceIds.length === 0 || !proposal.sourceExperienceIds.every((value) => typeof value === 'string' && value.trim().length > 0) || !Array.isArray(proposal.evidence) || proposal.evidence.length === 0 || !proposal.evidence.every(validEvolutionEvidence) || !Array.isArray(proposal.lineage) || !proposal.lineage.every(validLineage) || !validApplicability(proposal.applicability) || typeof proposal.contentHash !== 'string' || proposal.contentHash.trim().length === 0 || typeof proposal.summary !== 'string' || proposal.summary.trim().length === 0 || !isRecord(proposal.extractor) || typeof proposal.extractor.id !== 'string' || proposal.extractor.id.trim().length === 0 || typeof proposal.extractor.version !== 'string' || proposal.extractor.version.trim().length === 0 || !validIsoDate(proposal.createdAt)) throw new Error('invalid evolution proposal record');
+  }
+  if (input.type === 'evolution.candidate.accepted') {
+    const artifact = payload.record;
+    if (!isRecord(artifact) || typeof artifact.artifactId !== 'string' || artifact.artifactId.trim().length === 0 || artifact.schemaVersion !== 1 || typeof artifact.proposalId !== 'string' || artifact.proposalId.trim().length === 0 || (artifact.kind !== 'skill' && artifact.kind !== 'compiler-recipe') || artifact.status !== 'candidate' || !validApplicability(artifact.applicability) || typeof artifact.contentHash !== 'string' || artifact.contentHash.trim().length === 0 || !Array.isArray(artifact.lineage) || !artifact.lineage.every(validLineage) || typeof artifact.rationale !== 'string' || artifact.rationale.trim().length === 0 || !validIsoDate(artifact.createdAt)) throw new Error('invalid evolution candidate artifact');
+  }
+  if (['evolution.verified', 'evolution.published', 'evolution.rejected', 'evolution.deprecated', 'evolution.superseded'].includes(input.type)) {
+    const transition = payload.transition;
+    if (!isRecord(transition) || (transition.entity !== 'knowledge' && transition.entity !== 'deadend' && transition.entity !== 'skill' && transition.entity !== 'compiler-recipe' && transition.entity !== 'proposal') || typeof transition.entityId !== 'string' || transition.entityId.trim().length === 0 || !validEvolutionTransition(transition.from, transition.to) || typeof transition.reason !== 'string' || transition.reason.trim().length === 0 || (transition.supersedes !== undefined && !validLineage(transition.supersedes))) throw new Error('invalid evolution lifecycle transition');
+    if ((input.type === 'evolution.verified' && transition.to !== 'verified') || (input.type === 'evolution.published' && transition.to !== 'published') || (input.type === 'evolution.rejected' && transition.to !== 'rejected') || (input.type === 'evolution.deprecated' && transition.to !== 'deprecated') || (input.type === 'evolution.superseded' && (transition.to !== 'superseded' || !validLineage(transition.supersedes)))) throw new Error('evolution lifecycle event does not match transition');
+  }
+  if (input.type === 'skill.invoked') {
+    const invocation = payload.record;
+    if (!isRecord(invocation)) throw new Error('skill invocation record is required');
+    validEvolutionId(invocation.invocationId, 'invocation id');
+    if (typeof invocation.skillId !== 'string' || invocation.skillId.trim().length === 0 || typeof invocation.callerEventId !== 'string' || invocation.callerEventId.trim().length === 0 || typeof invocation.inputHash !== 'string' || invocation.inputHash.trim().length === 0 || !validIsoDate(invocation.occurredAt)) throw new Error('invalid skill invocation record');
+  }
+  if (input.type === 'skill.outcome.recorded') {
+    const outcome = payload.record;
+    if (!isRecord(outcome)) throw new Error('skill outcome record is required');
+    validEvolutionId(outcome.outcomeId, 'outcome id');
+    if (typeof outcome.invocationId !== 'string' || outcome.invocationId.trim().length === 0 || typeof outcome.callerEventId !== 'string' || outcome.callerEventId.trim().length === 0 || (outcome.outcome !== 'success' && outcome.outcome !== 'failure' && outcome.outcome !== 'partial' && outcome.outcome !== 'irrelevant' && outcome.outcome !== 'unknown') || typeof outcome.summary !== 'string' || outcome.summary.trim().length === 0 || !validIsoDate(outcome.occurredAt)) throw new Error('invalid skill outcome record');
   }
 }
 

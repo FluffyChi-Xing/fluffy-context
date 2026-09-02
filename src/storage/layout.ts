@@ -96,6 +96,14 @@ export function cognitionNotesProjectionPath(projectRoot: string): string {
   return path.join(cognitionProjectionsDirectory(projectRoot), 'notes.json');
 }
 
+export function cognitionExperiencesProjectionPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'experiences.json');
+}
+
+export function cognitionProposalsProjectionPath(projectRoot: string): string {
+  return path.join(cognitionProjectionsDirectory(projectRoot), 'proposals.json');
+}
+
 export function cognitionRetrievalProjectionPath(projectRoot: string): string {
   return path.join(cognitionProjectionsDirectory(projectRoot), 'retrieval.json');
 }

@@ -24,6 +24,16 @@ export type CognitionEventType =
   | 'deadend.verified'
   | 'deadend.obsoleted'
   | 'deadend.rejected'
+  | 'experience.recorded'
+  | 'evolution.proposed'
+  | 'evolution.candidate.accepted'
+  | 'evolution.verified'
+  | 'evolution.published'
+  | 'evolution.rejected'
+  | 'evolution.deprecated'
+  | 'evolution.superseded'
+  | 'skill.invoked'
+  | 'skill.outcome.recorded'
   | 'record.used'
   | 'usage.operation.completed'
   | 'projection.advanced'
@@ -87,6 +97,154 @@ export interface CognitionLifecycleTransition {
   from: 'candidate' | 'verified';
   to: 'verified' | 'deprecated' | 'rejected' | 'obsolete';
   reason?: string;
+}
+
+export type EvolutionArtifactKind = 'knowledge' | 'deadend' | 'skill' | 'compiler-recipe';
+export type EvolutionArtifactStatus = 'candidate' | 'verified' | 'published' | 'rejected' | 'deprecated' | 'superseded' | 'obsolete';
+export type EvolutionLineageRelation = 'derived_from' | 'supports' | 'contradicts' | 'supersedes' | 'validated_by' | 'used_for';
+
+export interface EvolutionEvidenceReference {
+  eventId: string;
+  relation: Extract<EvolutionLineageRelation, 'derived_from' | 'supports' | 'contradicts' | 'validated_by'>;
+}
+
+export interface EvolutionLineageReference {
+  entity: EvolutionArtifactKind | 'experience' | 'proposal';
+  entityId: string;
+  relation: Extract<EvolutionLineageRelation, 'supports' | 'contradicts' | 'supersedes' | 'used_for'>;
+}
+
+export interface Experience {
+  experienceId: string;
+  schemaVersion: 1;
+  sourceEventIds: string[];
+  sourceContextIds: string[];
+  sourceSnapshotIds: string[];
+  paths: string[];
+  git: CognitionGitAnchor;
+  privacy: { classification: 'metadata' | 'redacted-text'; redactionCount: number };
+  extractor: { id: string; version: string };
+  contentHash: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface EvolutionProposal {
+  proposalId: string;
+  schemaVersion: 1;
+  targetKind: EvolutionArtifactKind;
+  targetId: string;
+  status: 'candidate';
+  sourceExperienceIds: string[];
+  evidence: EvolutionEvidenceReference[];
+  lineage: EvolutionLineageReference[];
+  applicability: Applicability;
+  contentHash: string;
+  summary: string;
+  extractor: { id: string; version: string };
+  createdAt: string;
+}
+
+export interface EvolutionCandidateArtifact {
+  artifactId: string;
+  schemaVersion: 1;
+  proposalId: string;
+  kind: Extract<EvolutionArtifactKind, 'skill' | 'compiler-recipe'>;
+  status: 'candidate';
+  applicability: Applicability;
+  contentHash: string;
+  lineage: EvolutionLineageReference[];
+  rationale: string;
+  createdAt: string;
+}
+
+export interface EvolutionProposalLifecycleEntry {
+  eventId: string;
+  occurredAt: string;
+  from: EvolutionArtifactStatus;
+  to: EvolutionArtifactStatus;
+  reason: string;
+  supersedes?: EvolutionLineageReference;
+}
+
+export interface EvolutionProposalState {
+  proposal: EvolutionProposal;
+  status: EvolutionArtifactStatus;
+  lifecycle: EvolutionProposalLifecycleEntry[];
+  acceptedArtifact: EvolutionCandidateArtifact | null;
+}
+
+export interface Skill {
+  skillId: string;
+  schemaVersion: 1;
+  title: string;
+  procedure: string[];
+  applicability: Applicability;
+  status: EvolutionArtifactStatus;
+  contentHash: string;
+  lineage: EvolutionLineageReference[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CompilerRecipe {
+  recipeId: string;
+  schemaVersion: 1;
+  title: string;
+  applicability: Applicability;
+  scenario?: string;
+  queryTerms?: string[];
+  preferredSources?: Array<'context' | 'knowledge' | 'deadend' | 'note'>;
+  preferredSections?: string[];
+  sectionBudgets?: Record<string, number>;
+  graph?: { enabled: boolean; maxDepth: 0 | 1 | 2; maxFanOut: number };
+  status: EvolutionArtifactStatus;
+  contentHash: string;
+  lineage: EvolutionLineageReference[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EvolutionLifecycleTransition {
+  entity: EvolutionArtifactKind | 'proposal';
+  entityId: string;
+  from: EvolutionArtifactStatus;
+  to: EvolutionArtifactStatus;
+  reason: string;
+  supersedes?: EvolutionLineageReference;
+}
+
+export interface SkillInvocation {
+  invocationId: string;
+  skillId: string;
+  callerEventId: string;
+  inputHash: string;
+  occurredAt: string;
+}
+
+export interface SkillOutcome {
+  outcomeId: string;
+  invocationId: string;
+  callerEventId: string;
+  outcome: 'success' | 'failure' | 'partial' | 'irrelevant' | 'unknown';
+  summary: string;
+  occurredAt: string;
+}
+
+export interface EvidenceGraphNode {
+  nodeId: string;
+  kind: 'context' | 'snapshot' | 'experience' | 'proposal' | 'knowledge' | 'deadend' | 'skill' | 'recipe' | 'path' | 'test' | 'commit' | 'branch-worktree';
+}
+
+export interface EvidenceGraphEdge {
+  edgeId: string;
+  from: string;
+  to: string;
+  type: 'derived_from' | 'supports' | 'contradicts' | 'supersedes' | 'used_for' | 'observed_in' | 'changed_in' | 'co_changed_with' | 'tests';
+  sourceEventIds: string[];
+  derivationVersion: string;
+  occurredAt: string;
+  confidence?: number;
 }
 
 export interface CognitionUseFeedback {
@@ -211,6 +369,8 @@ export interface CognitionProjection {
   notes: Record<string, CognitionRecordPayload>;
   knowledge: Record<string, CognitionRecordPayload>;
   deadends: Record<string, CognitionRecordPayload>;
+  experiences: Record<string, Experience>;
+  proposals: Record<string, EvolutionProposalState>;
   workspaces: Record<string, BranchWorkspace>;
 }
 

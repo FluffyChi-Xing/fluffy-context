@@ -63,6 +63,40 @@ test('journal rejects empty semantic payloads but preserves lifecycle events', a
   }
 });
 
+test('journal validates bounded evolution contracts and preserves idempotency', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const now = '2026-09-02T00:00:00.000Z';
+    const anchor = { worktreeId: null, branch: 'master', ref: 'refs/heads/master', head: 'abc123' };
+    const experience = {
+      experienceId: 'exp-1', schemaVersion: 1, sourceEventIds: ['evt-source'], sourceContextIds: [], sourceSnapshotIds: [], paths: ['src/cognition/journal.ts'], git: anchor,
+      privacy: { classification: 'metadata', redactionCount: 0 }, extractor: { id: 'deterministic-maintainer', version: '1' }, contentHash: 'hash-exp-1', summary: 'Validated journal boundaries', createdAt: now,
+    };
+    await assert.rejects(() => appendEvent(root, { type: 'experience.recorded', idempotencyKey: 'invalid-experience', payload: { record: { ...experience, sourceEventIds: [] } } }), /invalid experience record/);
+    await appendEvent(root, { type: 'experience.recorded', idempotencyKey: 'experience-1', payload: { record: experience } });
+
+    const proposal = {
+      proposalId: 'proposal-1', schemaVersion: 1, targetKind: 'skill', targetId: 'skill-1', status: 'candidate', sourceExperienceIds: ['exp-1'],
+      evidence: [{ eventId: 'evt-source', relation: 'derived_from' }], lineage: [], applicability: { project: true, branchMode: 'global' }, contentHash: 'hash-proposal-1', summary: 'Review a journal validation procedure', extractor: { id: 'deterministic-maintainer', version: '1' }, createdAt: now,
+    };
+    await assert.rejects(() => appendEvent(root, { type: 'evolution.proposed', idempotencyKey: 'invalid-proposal', payload: { record: { ...proposal, evidence: [] } } }), /invalid evolution proposal record/);
+    await appendEvent(root, { type: 'evolution.proposed', idempotencyKey: 'proposal-1', payload: { record: proposal } });
+    await assert.rejects(() => appendEvent(root, { type: 'evolution.published', idempotencyKey: 'invalid-transition', payload: { transition: { entity: 'skill', entityId: 'skill-1', from: 'candidate', to: 'published', reason: 'skip review' } } }), /invalid evolution lifecycle transition/);
+    await appendEvent(root, { type: 'evolution.verified', idempotencyKey: 'skill-verified', payload: { transition: { entity: 'skill', entityId: 'skill-1', from: 'candidate', to: 'verified', reason: 'reviewed evidence' } } });
+    await appendEvent(root, { type: 'skill.invoked', idempotencyKey: 'invocation-1', payload: { record: { invocationId: 'invoke-1', skillId: 'skill-1', callerEventId: 'evt-source', inputHash: 'input-hash', occurredAt: now } } });
+    await assert.rejects(() => appendEvent(root, { type: 'skill.outcome.recorded', idempotencyKey: 'invalid-outcome', payload: { record: { outcomeId: 'outcome-1', invocationId: 'invoke-1', callerEventId: 'evt-source', outcome: 'success', summary: '', occurredAt: now } } }), /invalid skill outcome record/);
+    await appendEvent(root, { type: 'skill.outcome.recorded', idempotencyKey: 'outcome-1', payload: { record: { outcomeId: 'outcome-1', invocationId: 'invoke-1', callerEventId: 'evt-source', outcome: 'success', summary: 'Completed review', occurredAt: now } } });
+    assert.equal((await readJournal(root)).length, 5);
+
+    const duplicate = await appendEvent(root, { type: 'experience.recorded', idempotencyKey: 'experience-1', payload: { record: experience } });
+    assert.equal(duplicate.appended, false);
+    await assert.rejects(() => appendEvent(root, { type: 'experience.recorded', idempotencyKey: 'experience-1', payload: { record: { ...experience, summary: 'Different meaning' } } }), /idempotency key conflict/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('v1 import journals immutable provenance, rebuilds projections, and is idempotent', async () => {
   const root = await project();
   try {
