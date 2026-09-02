@@ -343,6 +343,8 @@ test('MCP compile, resume, notes, and checkpoint preserve their read and write c
 
     const invalidSchema = await client.callTool({ name: 'context_compile', arguments: { path: root, maxChars: -1 } });
     assert.equal(invalidSchema.isError, true);
+    const invalidGraph = await client.callTool({ name: 'context_compile', arguments: { path: root, graphHops: 3 } });
+    assert.equal(invalidGraph.isError, true);
   } finally {
     await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
   }

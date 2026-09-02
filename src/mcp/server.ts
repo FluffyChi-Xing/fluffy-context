@@ -25,6 +25,7 @@ const noteStatus = z.enum(['open', 'resolved']);
 const compileOptions = z.object({
   contextId: z.string().optional(),
   recipeId: z.string().optional(),
+  graphHops: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
   query: z.string().optional(),
   scenario: scenario.optional(),
   scope: z.string().optional(),

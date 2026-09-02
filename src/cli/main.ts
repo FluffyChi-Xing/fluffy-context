@@ -73,6 +73,13 @@ function enumOption<T extends string>(args: string[], name: string, values: read
   return value as T;
 }
 
+function graphHopsOption(args: string[]): 0 | 1 | 2 | undefined {
+  const value = option(args, '--graph-hops');
+  if (value === undefined) return undefined;
+  if (value !== '0' && value !== '1' && value !== '2') throw new Error('--graph-hops must be one of: 0, 1, 2');
+  return Number(value) as 0 | 1 | 2;
+}
+
 const recipeBudgets = (value: string | undefined): Record<string, number> | undefined => value === undefined ? undefined : Object.fromEntries(value.split(',').map((item) => { const [section, budget] = item.split('=', 2); const parsed = Number(budget); if (!section || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 100_000) throw new Error('--budgets must be section=non-negative-integer up to 100000'); return [section, parsed]; }));
 
 const HELP: Record<string, string> = {
@@ -154,6 +161,7 @@ Options:
   --path <path>              Project path
   --context <id>             Context ID
   --recipe-id <id>           Explicit verified or published Recipe
+  --graph-hops <0|1|2>       Optional bounded evidence-graph traversal
   --scenario <scenario>      resume|implementation|debugging|verification|handoff|exploration|unknown
   --scope <scope>            Exact consensus scope
   --paths <paths>            Comma-separated project-relative paths
@@ -176,6 +184,7 @@ Options:
   --compile-max-chars <number> Original compile budget (default: 4000)
   --context <id>             Context ID
   --recipe-id <id>           Explicit verified or published Recipe
+  --graph-hops <0|1|2>       Optional bounded evidence-graph traversal
   --query <text>             Original compile query
   --scenario <scenario>      resume|implementation|debugging|verification|handoff|exploration|unknown
   --scope <scope>            Exact consensus scope
@@ -535,13 +544,14 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'compile': {
-      const valueOptions = ['--path', '--context', '--recipe-id', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
+      const valueOptions = ['--path', '--context', '--recipe-id', '--graph-hops', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const query = positionals(args.slice(1), valueOptions);
       validatePositionals(query, 1, HELP.compile);
       print(await contextCompile(target, {
         contextId: option(args, '--context'),
         recipeId: option(args, '--recipe-id'),
+        graphHops: graphHopsOption(args),
         query: query[0],
         scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
         scope: option(args, '--scope'),
@@ -555,7 +565,7 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'expand': {
-      const valueOptions = ['--path', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--recipe-id', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
+      const valueOptions = ['--path', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--recipe-id', '--graph-hops', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       validatePositionals(positionals(args.slice(1), valueOptions), 0, HELP.expand);
       const level = enumOption(args, '--level', ['structured', 'evidence'] as const);
@@ -573,6 +583,7 @@ async function run(args: string[]): Promise<void> {
         compile: {
           contextId: option(args, '--context'),
           recipeId: option(args, '--recipe-id'),
+          graphHops: graphHopsOption(args),
           query: option(args, '--query'),
           scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
           scope: option(args, '--scope'),

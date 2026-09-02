@@ -7,6 +7,7 @@ import {
   cognitionContextsProjectionPath,
   cognitionDeadendsProjectionPath,
   cognitionExperiencesProjectionPath,
+  cognitionEvidenceGraphProjectionPath,
   cognitionKnowledgeProjectionPath,
   cognitionNotesProjectionPath,
   cognitionProjectionCursorPath,
@@ -17,6 +18,7 @@ import {
 } from '../storage/layout.js';
 import { readJournal } from './journal.js';
 import { buildRetrievalProjection } from './retrieval.js';
+import { buildEvidenceGraph } from './evidence-graph.js';
 import type { BranchWorkspace, CognitionEvent, CognitionGitAnchor, CognitionProjection, CognitionRecordPayload, CompilerRecipe, CompilerRecipeLifecycleEntry, EvolutionCandidateArtifact, EvolutionLifecycleTransition, EvolutionProposal, EvolutionProposalState, Experience, ProjectionCursor, Skill, SkillInvocation, SkillLifecycleEntry, SkillOutcome, WorkspacePathsChangedPayload } from './types.js';
 
 export function workspaceKey(anchor: Pick<CognitionGitAnchor, 'worktreeId' | 'branch' | 'ref'>): string {
@@ -132,7 +134,7 @@ function latestOpenObservationIds(events: CognitionEvent[], notes: Record<string
 }
 
 export function projectEvents(events: CognitionEvent[]): CognitionProjection {
-  const projection: CognitionProjection = { schemaVersion: 2, contexts: {}, notes: {}, knowledge: {}, deadends: {}, experiences: {}, proposals: {}, skills: {}, recipes: {}, workspaces: {} };
+  const projection: CognitionProjection = { schemaVersion: 2, contexts: {}, notes: {}, knowledge: {}, deadends: {}, experiences: {}, proposals: {}, skills: {}, recipes: {}, evidenceGraph: { schemaVersion: 1, derivationVersion: 'evidence-graph-v1', nodes: [], edges: [] }, workspaces: {} };
   const openObservationIds = latestOpenObservationIds(events, projection.notes);
   for (const event of events) {
     const key = workspaceKey(event.git);
@@ -229,6 +231,7 @@ export function projectEvents(events: CognitionEvent[]): CognitionProjection {
     }
     projection.workspaces[key] = workspace;
   }
+  projection.evidenceGraph = buildEvidenceGraph(events);
   return projection;
 }
 
@@ -265,6 +268,7 @@ export async function rebuildProjections(projectRoot: string): Promise<{ project
     atomicWriteJson(cognitionProposalsProjectionPath(projectRoot), projection.proposals),
     atomicWriteJson(cognitionSkillsProjectionPath(projectRoot), projection.skills),
     atomicWriteJson(cognitionRecipesProjectionPath(projectRoot), projection.recipes),
+    atomicWriteJson(cognitionEvidenceGraphProjectionPath(projectRoot), projection.evidenceGraph),
     atomicWriteJson(cognitionRetrievalProjectionPath(projectRoot), retrieval),
     ...Object.values(projection.workspaces).map((workspace) => atomicWriteJson(`${cognitionBranchesDirectory(projectRoot)}/${workspace.workspaceKey}.json`, workspace)),
   ]);

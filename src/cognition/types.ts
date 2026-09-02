@@ -281,6 +281,13 @@ export interface EvidenceGraphEdge {
   confidence?: number;
 }
 
+export interface EvidenceGraphProjection {
+  schemaVersion: 1;
+  derivationVersion: 'evidence-graph-v1';
+  nodes: EvidenceGraphNode[];
+  edges: EvidenceGraphEdge[];
+}
+
 export interface CognitionUseFeedback {
   feedbackId: string;
   entity: 'knowledge' | 'deadend';
@@ -407,6 +414,7 @@ export interface CognitionProjection {
   proposals: Record<string, EvolutionProposalState>;
   skills: Record<string, SkillState>;
   recipes: Record<string, CompilerRecipeState>;
+  evidenceGraph: EvidenceGraphProjection;
   workspaces: Record<string, BranchWorkspace>;
 }
 

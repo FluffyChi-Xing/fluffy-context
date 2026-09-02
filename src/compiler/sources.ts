@@ -2,7 +2,7 @@ import { readGitWorktreeState } from '../git/git-adapter.js';
 import { contextOrient } from '../agent/api.js';
 import { readJournal } from '../cognition/journal.js';
 import { projectEvents, workspaceKey } from '../cognition/projections.js';
-import type { BranchWorkspace, CognitionEvent, CompilerRecipeState } from '../cognition/types.js';
+import type { BranchWorkspace, CognitionEvent, CompilerRecipeState, EvidenceGraphProjection } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
 import type { ContextAnchor, ContextProvenance, ContextSourceDescriptor, ContextSourceApplicability } from './types.js';
 import type { ContextCompileOptions } from './types.js';
@@ -13,6 +13,7 @@ export interface CompilerSources {
   events: CognitionEvent[];
   workspace: BranchWorkspace | null;
   recipe: CompilerRecipeState | null;
+  evidenceGraph: EvidenceGraphProjection | null;
   fallbackReason: string | null;
 }
 
@@ -141,7 +142,8 @@ export async function loadCompilerSources(startPath: string | undefined, options
   const recipe = recipeId ? projection?.recipes[recipeId] ?? null : null;
   if (recipeId && !recipe) throw new Error(`compiler recipe not found: ${recipeId}`);
   if (recipe && !['verified', 'published'].includes(recipe.status)) throw new Error(`compiler recipe is not active: ${recipe.recipe.recipeId}`);
-  return { orientation, anchor, events, workspace, recipe, fallbackReason };
+  const evidenceGraph = options.graphHops !== undefined ? projection?.evidenceGraph ?? null : null;
+  return { orientation, anchor, events, workspace, recipe, evidenceGraph, fallbackReason };
 }
 
 export function latestHostIntent(events: CognitionEvent[], anchor: ContextAnchor): { value: string; eventId: string } | null {

@@ -188,9 +188,20 @@ export interface ContextRecipeParticipation {
   sectionBudgets: Partial<Record<ContextCandidateSection, number>>;
 }
 
+export interface ContextGraphParticipation {
+  derivationVersion: 'evidence-graph-v1';
+  projectionHash: string | null;
+  hops: 0 | 1 | 2;
+  seedNodeIds: string[];
+  selectedNodeIds: string[];
+  selectedEdgeIds: string[];
+  fallbackReason: string | null;
+}
+
 export interface ContextCompileOptions {
   contextId?: string;
   recipeId?: string;
+  graphHops?: 0 | 1 | 2;
   query?: string;
   scenario?: ContextScenario;
   scope?: string;
@@ -265,6 +276,7 @@ export interface ContextManifest {
   truncation: ContextTruncation;
   provenance: ContextManifestProvenance;
   recipe?: ContextRecipeParticipation;
+  graph?: ContextGraphParticipation;
   text: string;
 }
 

@@ -5,6 +5,7 @@ import { listDeadends, listKnowledge } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import type { Deadend, Knowledge, Note } from '../runtime/types.js';
 import { extractActivity } from './activity.js';
+import { graphOrdering } from './graph.js';
 import { latestHostIntent, loadCompilerSources, sourceDescriptor, type CompilerSources } from './sources.js';
 import type { ContextActivityRecord } from './types.js';
 import type {
@@ -322,6 +323,19 @@ export async function compileContext(startPath?: string, options: ContextCompile
     if (!check.ok) excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: check.reason ?? 'query_no_match' });
     return check.ok;
   }).sort(sortWithRecipe(recipe));
+  const graph = options.graphHops === undefined ? undefined : graphOrdering(sources.evidenceGraph, options.graphHops, sources.anchor, eligible);
+  if (graph) {
+    eligible.sort((left, right) => {
+      if (recipe) {
+        const sourceOrder = sourcePreference(left, recipe) - sourcePreference(right, recipe);
+        if (sourceOrder) return sourceOrder;
+        const sectionOrder = sectionPreference(left, recipe) - sectionPreference(right, recipe);
+        if (sectionOrder) return sectionOrder;
+      }
+      return (graph.distanceFor(left) ?? Number.MAX_SAFE_INTEGER) - (graph.distanceFor(right) ?? Number.MAX_SAFE_INTEGER)
+        || sortCandidates(left, right);
+    });
+  }
   const selected: ContextCandidate[] = [];
   const truncation = emptyTruncation();
   const sectionStats: ContextManifest['budget']['sections'] = {};
@@ -384,6 +398,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     budget: { requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats },
     truncation,
     ...(recipe ? { recipe } : {}),
+    ...(graph ? { graph: graph.participation } : {}),
   });
   return {
     schemaVersion: 1,
@@ -415,6 +430,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
       fallbackReason: sources.fallbackReason,
     },
     ...(recipe ? { recipe } : {}),
+    ...(graph ? { graph: graph.participation } : {}),
     text: manifestText(selected),
   };
 }

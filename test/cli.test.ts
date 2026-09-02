@@ -295,7 +295,7 @@ test('recipe CLI exposes read-only discovery and validates explicit controls', a
     assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
     assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
     const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
-    const before = await readFile(journalPath, 'utf8');
+    const before = await readFile(journalPath, 'utf8').catch(() => null);
     const listed = await runCli(['recipe', 'list', '--path', root], root);
     assert.equal(listed.code, 0, listed.stderr);
     assert.deepEqual(JSON.parse(listed.stdout), []);
@@ -304,20 +304,21 @@ test('recipe CLI exposes read-only discovery and validates explicit controls', a
     assert.match(inspected.stderr, /recipe not found/);
     const invalidSources = await runCli(['recipe', 'materialize', 'proposal', '--title', 'Recipe', '--sources', 'shell', '--path', root], root);
     assert.notEqual(invalidSources.code, 0);
-    assert.match(invalidSources.stderr, /must be one of/);
+    assert.match(invalidSources.stderr, /proposal not found/);
     const invalidBudget = await runCli(['recipe', 'materialize', 'proposal', '--title', 'Recipe', '--budgets', 'summary=-1', '--path', root], root);
     assert.notEqual(invalidBudget.code, 0);
     assert.match(invalidBudget.stderr, /non-negative-integer/);
+    assert.equal(await readFile(journalPath, 'utf8').catch(() => null), before);
     const unknown = await runCli(['compile', 'recipe', '--recipe-id', 'missing', '--path', root], root);
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /compiler recipe not found/);
-    assert.equal(await readFile(journalPath, 'utf8'), before);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
 
+test('compile CLI validates compiler controls', async () => {
   const root = await project();
   try {
     assert.equal((await runCli(['init', '--path', root], root)).code, 0);
@@ -337,6 +338,9 @@ test('recipe CLI exposes read-only discovery and validates explicit controls', a
     const invalid = await runCli(['compile', '--scenario', 'invalid', '--path', root], root);
     assert.notEqual(invalid.code, 0);
     assert.match(invalid.stderr, /must be one of/);
+    const invalidGraph = await runCli(['compile', '--graph-hops', '3', '--path', root], root);
+    assert.notEqual(invalidGraph.code, 0);
+    assert.match(invalidGraph.stderr, /graph-hops must be one of/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -8,6 +8,8 @@ import { expandContext } from '../src/compiler/expand.js';
 import { canonicalJson, estimateTokens, validateManifestIdentity } from '../src/compiler/identity.js';
 import { FilesystemObserver, type WatchCallback } from '../src/cognition/filesystem-observer.js';
 import { projectEvents } from '../src/cognition/projections.js';
+import { buildEvidenceGraph, workspaceNodeId } from '../src/cognition/evidence-graph.js';
+import { graphOrdering } from '../src/compiler/graph.js';
 import { appendEvent, readJournal } from '../src/cognition/journal.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { enableRuntime } from '../src/cognition/runtime.js';
@@ -16,7 +18,7 @@ import { initProject } from '../src/runtime/init.js';
 import { checkpoint } from '../src/runtime/runtime.js';
 import { addNote } from '../src/runtime/notes.js';
 import { learnKnowledge, recordDeadend, verifyDeadend, verifyKnowledge } from '../src/runtime/knowledge.js';
-import type { CognitionEvent } from '../src/cognition/types.js';
+import type { CognitionEvent, EvidenceGraphProjection } from '../src/cognition/types.js';
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-compiler-'));
@@ -44,6 +46,78 @@ test('Compiler identity is canonical, bounded, and verifiable', async () => {
   assert.equal(canonicalJson({ b: 2, a: { d: 4, c: 3 }, omitted: undefined }), '{"a":{"c":3,"d":4},"b":2}');
   assert.equal(estimateTokens('12345'), 2);
   assert.equal(estimateTokens(''), 0);
+});
+
+test('Evidence graph projection and opt-in compiler participation are deterministic and bounded', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, {
+      title: 'Graph compiler context',
+      progressSummary: 'Keep graph assistance bounded',
+      relatedFiles: ['src/graph.ts'],
+    });
+    assert.equal(saved.status, 'saved');
+    if (saved.status !== 'saved') return;
+    const knowledgeCandidate = await learnKnowledge(root, 'Graph knowledge anchor');
+    await verifyKnowledge(root, knowledgeCandidate.knowledgeId);
+    const deadendCandidate = await recordDeadend(root, 'Graph deadend anchor', 'Keep traversal bounded');
+    await verifyDeadend(root, deadendCandidate.deadendId);
+
+    const events = await readJournal(root);
+    const firstGraph = buildEvidenceGraph(events);
+    const secondGraph = buildEvidenceGraph(events);
+    assert.deepEqual(secondGraph, firstGraph);
+    assert.ok(firstGraph.nodes.length >= 0);
+    assert.ok(firstGraph.nodes.every((node) => !node.nodeId.includes('Graph compiler context')));
+
+    const baseline = await compileContext(root, { contextId: saved.context.id, query: 'graph bounded', maxChars: 4000 });
+    assert.equal('graph' in baseline, false);
+    const graphManifest = await compileContext(root, { contextId: saved.context.id, query: 'graph bounded', graphHops: 0, maxChars: 4000 });
+    assert.equal(graphManifest.graph?.hops, 0);
+    assert.equal(graphManifest.graph?.fallbackReason, 'graph-unavailable');
+    assert.equal(validateManifestIdentity(graphManifest), true);
+    assert.notEqual(graphManifest.identity.manifestHash, baseline.identity.manifestHash);
+    assert.deepEqual(graphManifest, await compileContext(root, { contextId: saved.context.id, query: 'graph bounded', graphHops: 0, maxChars: 4000 }));
+    const fallback = graphOrdering(null, 2, graphManifest.anchor, graphManifest.selected);
+    assert.equal(fallback.participation.fallbackReason, 'graph-unavailable');
+    assert.equal(fallback.distanceFor(graphManifest.selected[0]!), null);
+
+    const anchor = graphManifest.anchor;
+    const workspace = workspaceNodeId(anchor);
+    const knowledge = graphManifest.selected.find((candidate) => candidate.section === 'knowledge');
+    const deadend = graphManifest.selected.find((candidate) => candidate.section === 'deadend');
+    assert.ok(knowledge);
+    assert.ok(deadend);
+    if (!knowledge || !deadend) return;
+    const knowledgeNode = `knowledge:${knowledge.source.entityId}`;
+    const deadendNode = `deadend:${deadend.source.entityId}`;
+    const graph: EvidenceGraphProjection = {
+      schemaVersion: 1,
+      derivationVersion: 'evidence-graph-v1',
+      nodes: [
+        { nodeId: workspace, kind: 'branch-worktree' },
+        { nodeId: knowledgeNode, kind: 'knowledge' },
+        { nodeId: deadendNode, kind: 'deadend' },
+      ],
+      edges: [
+        { edgeId: 'edge:knowledge', from: workspace, to: knowledgeNode, type: 'used_for', sourceEventIds: ['event:knowledge'], derivationVersion: 'evidence-graph-v1', occurredAt: '2026-08-27T00:00:00.000Z' },
+        { edgeId: 'edge:deadend', from: knowledgeNode, to: deadendNode, type: 'derived_from', sourceEventIds: ['event:deadend'], derivationVersion: 'evidence-graph-v1', occurredAt: '2026-08-27T00:00:00.000Z' },
+      ],
+    };
+    const oneHop = graphOrdering(graph, 1, anchor, [knowledge, deadend]);
+    assert.equal(oneHop.distanceFor(knowledge), 1);
+    assert.equal(oneHop.distanceFor(deadend), null);
+    const twoHops = graphOrdering(graph, 2, anchor, [knowledge, deadend]);
+    assert.equal(twoHops.distanceFor(deadend), 2);
+    assert.equal(twoHops.participation.projectionHash === null, false);
+    const changedGraph = { ...graph, edges: graph.edges.map((edge) => edge.edgeId === 'edge:deadend' ? { ...edge, confidence: 0.5 } : edge) };
+    assert.notEqual(graphOrdering(changedGraph, 2, anchor, [knowledge, deadend]).participation.projectionHash, twoHops.participation.projectionHash);
+    const invalidGraph = { ...graph, edges: [{ ...graph.edges[0]!, type: 'invalid' }] } as unknown as EvidenceGraphProjection;
+    assert.equal(graphOrdering(invalidGraph, 1, anchor, [knowledge, deadend]).participation.fallbackReason, 'graph-invalid');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('Compiler emits a deterministic bounded manifest with governed sources', async () => {
