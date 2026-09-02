@@ -19,7 +19,10 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 仅需要完整详情时再运行 `ctx resume --max-chars <预算>`；它会保留既有的 `lastUsedAt` 更新语义。
 - Agent 集成从 `fluffy-context` 或 `fluffy-context/agent` 导入 `contextOrient`、`compileContext`、`saveContext`、`loadContext` 和 `searchContext`，不应直接读写 `.context` 或导入内部 `dist/...` 路径。
 - `ctx compile` 的 `activity` section 只表示 Runtime 观察到的近期文件 metadata 变化；它不代表文件被读取或理解，也不替代 checkpoint、Note 或已验证 Knowledge。
-- 0.7.7 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。
+- 只有显式传入已验证或已发布的 `--recipe-id <recipe-id>` 时，Recipe 才能影响一次编译；未指定时保持默认编译。Recipe 是受限声明式数据，不能执行命令、读取文件或替换核心排序。
+- 仅在需要时使用 `--graph-hops 0|1|2`；图只对已经词法命中的合规候选进行有界排序，图不可用时接受明确 fallback 并保持词法结果。
+- `ctx expand` 必须重传原始 `recipeId`、`graphHops` 和 compile budget；身份过期、Recipe 状态/内容/适用性变化时重新 compile，不要绕过 hash 校验。
+- 0.8.0 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。
 - 只对 selected candidate 使用 `ctx expand --manifest-hash ... --candidate-id ... --level structured|evidence`。必须带上原始 compile 参数和相同的 compile budget；Manifest 过期时应重新 compile，不要绕过 hash 校验。
 - `expand` 是无状态、只读的渐进式展开：`complete` 才提供完整 `content`，`partial` 提供有界 `text` 且 `content` 为 null。它不写入 Context/journal、不记录 feedback、不读取项目文件正文、diff、命令输出或敏感数据。Agent API 使用 `contextExpand`，MCP 使用 `context_expand`。
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
@@ -120,11 +123,33 @@ ctx resume --path path/to/project --max-chars 2000
 
 遇到 `rate_limited` 时不要循环重试；完成更多阶段性工作后，在 `retryAt` 之后再保存。
 
-## MCP 与 Claude Code 集成
+### Evolution、Skill 与 Recipe
 
-`ctx agent serve` 提供 MCP stdio server，注册以下工具：`context_orient`、`context_expand`、`context_compile`、`context_resume`、`context_note_list`、`context_note_add`、`context_usage_report` 和 `context_checkpoint`。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+Evolution 必须显式发起，并且只基于已授权的 journal、Git/workspace metadata 与 `record.used` 信号：
 
-读取工作流通常是 `context_orient → context_compile → context_expand`。`context_compile` 与 `context_expand` 继续保持有界、确定性和不读取文件正文的边界；`context_resume` 复用 `loadContext`，可能更新 `lastUsedAt`。`context_note_list` 是只读的，`context_note_add` 和 `context_checkpoint` 是显式写入操作，分别新增 Note 或保存 Snapshot；它们不会自动记录 feedback、Knowledge、Deadend 或重复 checkpoint。Knowledge/Deadend 的完整记录和治理仍使用 CLI/Agent API。
+```text
+Experience metadata → Evolution Proposal → accept → materialize → governed lifecycle
+```
+
+```bash
+ctx evolution propose --recent-limit 32 --target-kind skill
+ctx evolution list
+ctx evolution inspect <proposal-id>
+ctx evolution accept <proposal-id> --rationale "人工审查"
+ctx evolution verify <proposal-id> --rationale "确认可物化"
+ctx evolution supersede <proposal-id> --rationale "由新提案替换" --supersedes proposal:<predecessor-id>
+```
+
+- 不自动运行 `evolution propose`；它不读取项目源文件、原始 prompt、Note/Snapshot 内容，不创建 checkpoint，也不自动接受、验证、发布、物化或调用。
+- 接受 Proposal 仅创建候选工件。Skill/Recipe 仍需要显式物化和人工治理；候选从不进入默认 orient/compile/retrieval。
+- Skill 和 Recipe 都追加式经历 `candidate → verified → published → deprecated|superseded`；修改时用带 `supersedes` 谱系的新记录，不删除或覆盖旧记录。
+- 仅 `published` Skill 可以记录 invocation。调用只存输入 hash 与 caller event ID；每个 invocation 仅能写入一个 `success|failure|partial|irrelevant|unknown` 终态 outcome。不要执行 procedure 文本，也不要把原始输入写入 Note、journal 或命令参数。
+- 只有已物化、verified/published 且适用的 Recipe 可以作为 `--recipe-id` 参与 compile；不存在、候选、终态或不适用 Recipe 必须修正治理/选择，而非静默降级。
+
+
+`ctx agent serve` 提供 MCP stdio server，注册 23 个工具：`context_orient`、`context_expand`、`context_compile`、`context_resume`、`context_note_list`、`context_note_add`、`context_usage_report`、`recipe_list`、`recipe_inspect`、`recipe_materialize`、`recipe_transition`、`skill_list`、`skill_inspect`、`skill_materialize`、`skill_transition`、`skill_record_invocation`、`skill_record_outcome`、`evolution_propose`、`evolution_list`、`evolution_inspect`、`evolution_accept`、`evolution_transition` 和 `context_checkpoint`。标准输入和输出都是 MCP 协议，不能输出提示、日志或交互文本；调用错误是单次工具错误，不应让 server 退出。
+
+读取工作流通常是 `context_orient → context_compile → context_expand`。`context_compile` 与 `context_expand` 保持有界、确定性且不读取文件正文，且可显式传递 `recipeId` 和 `graphHops: 0|1|2`；`context_resume` 复用 `loadContext`，可能更新 `lastUsedAt`。`context_note_list`、usage、Evolution/Skill/Recipe 的 list/inspect 是逻辑只读操作。`context_note_add`、`context_checkpoint`、Evolution 的 propose/accept/transition，以及 Skill/Recipe 的 materialize/transition/invocation/outcome 都是显式写入；不会自动执行 Skill/Recipe 或自动推进生命周期。
 
 ```bash
 ctx agent serve
@@ -360,7 +385,10 @@ ctx learn "订单取消后不能再次进入支付中状态"
 [ ] .contextignored 排除敏感和越界路径
 [ ] Knowledge candidate → verified
 [ ] Deadend candidate → verified
-[ ] MCP context_orient/context_expand/context_compile/context_resume/context_note_list/context_note_add/context_usage_report/context_checkpoint 可调用，且单次错误不会终止 server
+[ ] Skill/Recipe candidate → verified → published 的显式治理，以及 supersedes 谱系
+[ ] 只调用 published Skill，且 invocation 不保存原始输入、每次仅一个 outcome
+[ ] MCP 23 个工具可调用，read-only 工具不逻辑创建认知记录，单次错误不会终止 server
+[ ] 显式 Recipe 与 graphHops 编译/展开保持 Manifest identity 校验和 lexical fallback
 [ ] ctx usage report 的 JSON/ASCII 输出、baseline 边界和只读性符合预期
 [ ] MCP 只读工具不写入 Context；Note add 和 checkpoint 仅在显式调用时写入
 [ ] Claude 集成预览不写文件，--apply 幂等且拒绝冲突

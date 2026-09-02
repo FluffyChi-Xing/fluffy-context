@@ -62,7 +62,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     const cli = path.join(packageRoot, 'dist', 'src', 'cli', 'main.js');
     const version = await run(process.execPath, [cli, '--version'], consumer);
     assert.equal(version.code, 0, version.stderr);
-    assert.equal(JSON.parse(version.stdout), '0.7.7');
+    assert.equal(JSON.parse(version.stdout), '0.8.0');
 
     for (const args of [
       [cli, 'orient', '--help'],
@@ -76,13 +76,13 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
 
     const imports = await run(
       process.execPath,
-      ['--input-type=module', '-e', "import { compileContext, contextExpand, contextOrient, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient } from 'fluffy-context/agent'; if (typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand) process.exit(1);"],
+      ['--input-type=module', '-e', "import { VERSION } from 'fluffy-context/version'; import { compileContext, contextExpand, contextOrient, proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient, proposeContextEvolution as agentPropose, listContextEvolutionProposals as agentList, inspectContextEvolutionProposal as agentInspect, acceptContextEvolutionCandidate as agentAccept, transitionContextEvolutionProposal as agentTransition } from 'fluffy-context/agent'; if (VERSION !== '0.8.0' || typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || [proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal].some((value) => typeof value !== 'function') || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand || proposeContextEvolution !== agentPropose || listContextEvolutionProposals !== agentList || inspectContextEvolutionProposal !== agentInspect || acceptContextEvolutionCandidate !== agentAccept || transitionContextEvolutionProposal !== agentTransition) process.exit(1);"],
       consumer,
     );
     assert.equal(imports.code, 0, imports.stderr);
 
     const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    assert.equal(manifest.version, '0.7.7');
+    assert.equal(manifest.version, '0.8.0');
     assert.equal(await readdir(path.join(packageRoot, 'skills', 'fluffy-context')).then((files) => files.includes('SKILL.md')), true);
   } finally {
     await rm(consumer, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });

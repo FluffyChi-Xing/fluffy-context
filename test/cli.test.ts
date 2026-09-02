@@ -4,6 +4,7 @@ import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { appendEvent, readJournal } from '../src/cognition/journal.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
@@ -28,7 +29,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.7.7');
+    assert.equal(JSON.parse(result.stdout), '0.8.0');
     assert.equal(result.stderr, '');
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -38,7 +39,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'recipe', 'journal'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'recipe', 'evolution', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -71,6 +72,11 @@ test('each command has focused help without creating runtime files', async () =>
     const recipe = await runCli(['recipe', 'verify', '--help'], root);
     assert.equal(recipe.code, 0);
     assert.match(recipe.stdout, /recipe verify/);
+    for (const action of ['propose', 'list', 'inspect', 'accept', 'verify', 'reject', 'deprecate', 'supersede']) {
+      const evolution = await runCli(['evolution', action, '--help'], root);
+      assert.equal(evolution.code, 0, action);
+      assert.match(evolution.stdout, new RegExp(`evolution ${action}`), action);
+    }
     const verify = await runCli(['knowledge', 'verify', '--help'], root);
     assert.equal(verify.code, 0);
     assert.match(verify.stdout, /knowledge verify/);
@@ -288,6 +294,45 @@ test('skill CLI exposes help and validates unavailable Skill operations', async 
 });
 
 
+test('evolution CLI creates explicit proposals and validates governance input', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
+    await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'cli-evolution-context', payload: { record: { snapshot: { contextId: 'ctx-1', snapshotId: 'snap-1' } } } });
+    await appendEvent(root, { type: 'git.state.observed', idempotencyKey: 'cli-evolution-git', payload: {} });
+    await appendEvent(root, { type: 'record.used', idempotencyKey: 'cli-evolution-used', payload: { feedbackId: 'cli-evolution-feedback', entity: 'knowledge', entityId: 'knowledge-1', outcome: 'used' } });
+    const eventIds = (await readJournal(root))
+      .filter((event) => event.type === 'context.state.recorded' || event.type === 'git.state.observed' || event.type === 'record.used')
+      .map((event) => event.eventId)
+      .join(',');
+    const proposed = await runCli(['evolution', 'propose', '--events', eventIds, '--target-kind', 'skill', '--path', root], root);
+    assert.equal(proposed.code, 0, proposed.stderr);
+    const proposalId = JSON.parse(proposed.stdout).proposalId as string;
+    const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
+    const beforeReads = await readFile(journalPath, 'utf8');
+    const listed = await runCli(['evolution', 'list', '--path', root], root);
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.equal(JSON.parse(listed.stdout).length, 1);
+    const inspected = await runCli(['evolution', 'inspect', proposalId, '--path', root], root);
+    assert.equal(inspected.code, 0, inspected.stderr);
+    assert.equal(JSON.parse(inspected.stdout).status, 'candidate');
+    assert.equal(await readFile(journalPath, 'utf8'), beforeReads);
+    assert.equal((await runCli(['evolution', 'accept', proposalId, '--rationale', 'Reviewed CLI evidence.', '--path', root], root)).code, 0);
+    const verified = await runCli(['evolution', 'verify', proposalId, '--rationale', 'Verified CLI proposal.', '--path', root], root);
+    assert.equal(verified.code, 0, verified.stderr);
+    const noRationale = await runCli(['evolution', 'reject', proposalId, '--path', root], root);
+    assert.notEqual(noRationale.code, 0);
+    assert.match(noRationale.stderr, /--rationale is required/);
+    const invalidSupersedes = await runCli(['evolution', 'supersede', proposalId, '--rationale', 'Replace it.', '--supersedes', 'bad', '--path', root], root);
+    assert.notEqual(invalidSupersedes.code, 0);
+    assert.match(invalidSupersedes.stderr, /supersedes must be/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('recipe CLI exposes read-only discovery and validates explicit controls', async () => {
   const root = await project();
   try {
@@ -341,6 +386,14 @@ test('compile CLI validates compiler controls', async () => {
     const invalidGraph = await runCli(['compile', '--graph-hops', '3', '--path', root], root);
     assert.notEqual(invalidGraph.code, 0);
     assert.match(invalidGraph.stderr, /graph-hops must be one of/);
+    const checkpoint = await runCli(['checkpoint', '--path', root, '--title', 'Graph CLI', '--progress', 'Verify graph options'], root);
+    assert.equal(checkpoint.code, 0, checkpoint.stderr);
+    const contextId = JSON.parse(checkpoint.stdout).context.id as string;
+    for (const graphHops of ['0', '1', '2']) {
+      const compiled = await runCli(['compile', 'graph options', '--path', root, '--context', contextId, '--graph-hops', graphHops], root);
+      assert.equal(compiled.code, 0, compiled.stderr);
+      assert.equal(JSON.parse(compiled.stdout).graph.hops, Number(graphHops));
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -361,6 +414,16 @@ test('expand CLI resolves a selected candidate and validates stale identity', as
     const expanded = await runCli(['expand', '--path', root, '--manifest-hash', manifest.identity.manifestHash, '--candidate-id', candidate.candidateId, '--level', 'structured', '--compile-max-chars', '4000', '--context', contextId, '--query', 'CLI expansion'], root);
     assert.equal(expanded.code, 0, expanded.stderr);
     assert.equal(JSON.parse(expanded.stdout).status, 'complete');
+    for (const graphHops of ['0', '1', '2']) {
+      const graphCompiled = await runCli(['compile', 'CLI expansion', '--path', root, '--context', contextId, '--graph-hops', graphHops, '--max-chars', '4000'], root);
+      assert.equal(graphCompiled.code, 0, graphCompiled.stderr);
+      const graphManifest = JSON.parse(graphCompiled.stdout);
+      const graphCandidate = graphManifest.selected.find((item: { content: { field?: string } }) => item.content.field === 'progressSummary');
+      assert.ok(graphCandidate);
+      const graphExpanded = await runCli(['expand', '--path', root, '--manifest-hash', graphManifest.identity.manifestHash, '--candidate-id', graphCandidate.candidateId, '--level', 'structured', '--compile-max-chars', '4000', '--context', contextId, '--query', 'CLI expansion', '--graph-hops', graphHops], root);
+      assert.equal(graphExpanded.code, 0, graphExpanded.stderr);
+      assert.equal(JSON.parse(graphExpanded.stdout).status, 'complete');
+    }
     const stale = await runCli(['expand', '--path', root, '--manifest-hash', 'stale', '--candidate-id', candidate.candidateId, '--level', 'structured', '--compile-max-chars', '4000', '--context', contextId, '--query', 'CLI expansion'], root);
     assert.notEqual(stale.code, 0);
     assert.match(stale.stderr, /manifest hash mismatch/);

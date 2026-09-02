@@ -74,6 +74,11 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'skill_transition',
       'skill_record_invocation',
       'skill_record_outcome',
+      'evolution_propose',
+      'evolution_list',
+      'evolution_inspect',
+      'evolution_accept',
+      'evolution_transition',
       'context_checkpoint',
     ]);
 
@@ -163,6 +168,39 @@ test('MCP Recipe tools enforce explicit lifecycle and read-only reads', async ()
     await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
   }
 });
+test('MCP Evolution tools preserve explicit governance and server availability', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'mcp-evolution-context', payload: { record: { snapshot: { contextId: 'ctx-1', snapshotId: 'snap-1' } } } });
+    await appendEvent(root, { type: 'git.state.observed', idempotencyKey: 'mcp-evolution-git', payload: {} });
+    await appendEvent(root, { type: 'record.used', idempotencyKey: 'mcp-evolution-used', payload: { feedbackId: 'mcp-evolution-feedback', entity: 'knowledge', entityId: 'knowledge-1', outcome: 'used' } });
+    const proposed = await client.callTool({ name: 'evolution_propose', arguments: { path: root, eventIds: (await readJournal(root)).slice(-3).map((event) => event.eventId), targetKind: 'skill' } });
+    assert.notEqual(proposed.isError, true);
+    const proposalId = (proposed.structuredContent as { proposalId: string }).proposalId;
+    const beforeReads = await readJournal(root);
+    const listed = await client.callTool({ name: 'evolution_list', arguments: { path: root } });
+    assert.notEqual(listed.isError, true);
+    assert.equal((listed.structuredContent as { result: unknown[] }).result.length, 1);
+    const inspected = await client.callTool({ name: 'evolution_inspect', arguments: { path: root, proposalId } });
+    assert.notEqual(inspected.isError, true);
+    assert.equal((inspected.structuredContent as { status: string }).status, 'candidate');
+    assert.deepEqual(await readJournal(root), beforeReads);
+    const accepted = await client.callTool({ name: 'evolution_accept', arguments: { path: root, proposalId, rationale: 'Reviewed MCP evidence.' } });
+    assert.notEqual(accepted.isError, true);
+    const verified = await client.callTool({ name: 'evolution_transition', arguments: { path: root, proposalId, to: 'verified', rationale: 'Verified MCP proposal.' } });
+    assert.notEqual(verified.isError, true);
+    const invalid = await client.callTool({ name: 'evolution_transition', arguments: { path: root, proposalId, to: 'verified', rationale: '' } });
+    assert.equal(invalid.isError, true);
+    assert.notEqual((await client.callTool({ name: 'evolution_list', arguments: { path: root } })).isError, true);
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
 test('MCP context_usage_report returns structured read-only metrics', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
@@ -229,6 +267,18 @@ test('MCP context expansion preserves bounded read and write contracts', async (
     assert.notEqual(expanded.isError, true);
     assert.equal((expanded.structuredContent as { status: string }).status, 'complete');
     assert.equal((JSON.parse(textContent(expanded)) as { status: string }).status, 'complete');
+    for (const graphHops of [0, 1, 2] as const) {
+      const graphManifest = await compileContext(root, { contextId: saved.result.context.id, graphHops, query: 'MCP expansion', maxChars: 4000 });
+      const graphCandidate = graphManifest.selected.find((item) => (item.content as { field?: unknown }).field === 'progressSummary');
+      assert.ok(graphCandidate);
+      if (!graphCandidate) continue;
+      const graphExpanded = await client.callTool({
+        name: 'context_expand',
+        arguments: { path: root, manifestHash: graphManifest.identity.manifestHash, candidateId: graphCandidate.candidateId, level: 'structured', compile: { contextId: saved.result.context.id, graphHops, query: 'MCP expansion', maxChars: 4000 } },
+      });
+      assert.notEqual(graphExpanded.isError, true);
+      assert.equal((graphExpanded.structuredContent as { status: string }).status, 'complete');
+    }
 
     const partial = await client.callTool({
       name: 'context_expand',
@@ -296,6 +346,14 @@ test('MCP compile, resume, notes, and checkpoint preserve their read and write c
     assert.equal(manifest.status, 'ready');
     assert.ok(manifest.identity.manifestHash);
     assert.deepEqual(JSON.parse(textContent(compiled)), manifest);
+    for (const graphHops of [0, 1, 2] as const) {
+      const graphCompiled = await client.callTool({
+        name: 'context_compile',
+        arguments: { path: root, contextId: saved.result.context.id, graphHops, query: 'lifecycle', maxChars: 4000 },
+      });
+      assert.notEqual(graphCompiled.isError, true);
+      assert.equal((graphCompiled.structuredContent as { graph?: { hops: number } }).graph?.hops, graphHops);
+    }
 
     const resumed = await client.callTool({
       name: 'context_resume',
@@ -417,6 +475,11 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
       'skill_transition',
       'skill_record_invocation',
       'skill_record_outcome',
+      'evolution_propose',
+      'evolution_list',
+      'evolution_inspect',
+      'evolution_accept',
+      'evolution_transition',
       'context_checkpoint',
     ]);
     const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });

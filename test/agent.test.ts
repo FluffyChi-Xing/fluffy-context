@@ -9,7 +9,7 @@ import { initProject } from '../src/runtime/init.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { discoverKnowledge, recordDeadend, verifyDeadend, verifyKnowledge, learnKnowledge } from '../src/runtime/knowledge.js';
 import { addNote } from '../src/runtime/notes.js';
-import { contextCompile, contextExpand, contextOrient, saveContext, loadContext, recordContextUse, searchContext, inspectRecipe, listRecipes, materializeContextRecipe, transitionContextRecipe, inspectSkill, listSkills, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextSkill } from '../src/agent/api.js';
+import { acceptContextEvolutionCandidate, contextCompile, contextExpand, contextOrient, inspectContextEvolutionProposal, inspectRecipe, inspectSkill, listContextEvolutionProposals, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, proposeContextEvolution, recordContextSkillInvocation, recordContextSkillOutcome, recordContextUse, saveContext, searchContext, transitionContextEvolutionProposal, transitionContextRecipe, transitionContextSkill } from '../src/agent/api.js';
 import { appendEvent, readJournal } from '../src/cognition/journal.js';
 import { acceptEvolutionCandidate, proposeEvolution } from '../src/cognition/evolution.js';
 import { enableRuntime } from '../src/cognition/runtime.js';
@@ -45,6 +45,33 @@ test('Agent Skill wrappers preserve lifecycle and invocation policy', async () =
     await recordContextSkillInvocation(root, { skillId: skill.skillId, invocationId: 'invoke-1', callerEventId: 'caller-1', inputHash: 'hash-1' });
     await recordContextSkillOutcome(root, { skillId: skill.skillId, invocationId: 'invoke-1', outcomeId: 'outcome-1', callerEventId: 'caller-1', outcome: 'success', summary: 'Succeeded.' });
     assert.equal((await inspectSkill(root, skill.skillId)).outcomes[0].outcome, 'success');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Agent Evolution wrappers preserve proposal governance and read-only inspection', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'evolution-context', payload: { record: { snapshot: { contextId: 'ctx-1', snapshotId: 'snap-1' } } } });
+    await appendEvent(root, { type: 'git.state.observed', idempotencyKey: 'evolution-git', payload: {} });
+    await appendEvent(root, { type: 'record.used', idempotencyKey: 'evolution-used', payload: { feedbackId: 'evolution-feedback', entity: 'knowledge', entityId: 'knowledge-1', outcome: 'used' } });
+    const proposed = await proposeContextEvolution(root, {
+      eventIds: (await readJournal(root)).slice(-3).map((event) => event.eventId),
+      targetKind: 'skill',
+    });
+    assert.ok(proposed.proposalId);
+    if (!proposed.proposalId) return;
+    const beforeReads = await readJournal(root);
+    assert.equal((await listContextEvolutionProposals(root)).length, 1);
+    assert.equal((await inspectContextEvolutionProposal(root, proposed.proposalId)).status, 'candidate');
+    assert.deepEqual(await readJournal(root), beforeReads);
+    assert.equal((await acceptContextEvolutionCandidate(root, { proposalId: proposed.proposalId, rationale: 'Reviewed explicit metadata.' })).accepted, true);
+    assert.equal((await transitionContextEvolutionProposal(root, { proposalId: proposed.proposalId, to: 'verified', rationale: 'Verified after review.' })).transitioned, true);
+    assert.equal((await inspectContextEvolutionProposal(root, proposed.proposalId)).status, 'verified');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -99,6 +126,15 @@ test('Agent Recipe wrappers preserve lifecycle and compile propagation', async (
     });
     assert.equal(manifest.recipe?.recipeId, materialized.recipeId);
     assert.equal(manifest.recipe?.interpreterVersion, 'recipe-interpreter-v1');
+    for (const graphHops of [0, 1, 2] as const) {
+      const graphManifest = await contextCompile(root, {
+        contextId: saved.result.context.id,
+        graphHops,
+        query: 'recipe compilation',
+        maxChars: 4000,
+      });
+      assert.equal(graphManifest.graph?.hops, graphHops);
+    }
     const candidate = manifest.selected.find((item) => item.content && typeof item.content === 'object' && (item.content as { field?: string }).field === 'progressSummary');
     assert.ok(candidate);
     if (!candidate) return;
@@ -116,6 +152,19 @@ test('Agent Recipe wrappers preserve lifecycle and compile propagation', async (
     });
     assert.equal(expanded.status, 'complete');
     assert.equal(expanded.candidateId, candidate.candidateId);
+    for (const graphHops of [0, 1, 2] as const) {
+      const graphManifest = await contextCompile(root, { contextId: saved.result.context.id, graphHops, query: 'recipe compilation', maxChars: 4000 });
+      const graphCandidate = graphManifest.selected.find((item) => item.content && typeof item.content === 'object' && (item.content as { field?: string }).field === 'progressSummary');
+      assert.ok(graphCandidate);
+      if (!graphCandidate) continue;
+      const graphExpanded = await contextExpand(root, {
+        manifestHash: graphManifest.identity.manifestHash,
+        candidateId: graphCandidate.candidateId,
+        level: 'structured',
+        compile: { contextId: saved.result.context.id, graphHops, query: 'recipe compilation', maxChars: 4000 },
+      });
+      assert.equal(graphExpanded.status, 'complete');
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -2,7 +2,7 @@
 
 本地优先、Agent 无关的 Context 与 Knowledge Runtime，帮助 AI 编程 Agent 保存任务状态、恢复工作上下文、复用已验证共识，并生成有界且可追溯的上下文输入。
 
-**当前版本：0.7.7**
+**当前版本：0.8.0**
 
 ```text
 checkpoint → orient → compile → expand → feedback → Agent continues
@@ -21,28 +21,21 @@ checkpoint → orient → compile → expand → feedback → Agent continues
 - `ctx compile`：生成带预算、来源和排除原因的 provider-neutral Context Manifest。
 - `ctx learn` / `ctx deadend`：记录可复用结论和失败方案，之后显式验证再用于普通检索。
 
-## 0.7.7 当前能力与边界
+## 0.8.0 当前能力与边界
 
 | 能力 | 当前支持 |
 | --- | --- |
 | Context | 初始化、结构化 checkpoint、baseline/patch Snapshot、resume |
 | 检索 | `orient`、已验证 Knowledge/Deadend 检索、当前 Context 的 open Note |
-| Compiler | 确定性排序、字符预算、截断信息、provenance、纳入/排除原因 |
-| Manifest identity | `level`、`itemHash`、`manifestHash`、estimated token |
+| Compiler | 确定性排序、字符预算、截断信息、provenance、纳入/排除原因、显式 Recipe 与可选图排序 |
+| Manifest identity | `level`、`itemHash`、`manifestHash`、estimated token，以及 Recipe/图模式的身份绑定 |
+| 演化 | 元数据 Experience、显式候选 Proposal、Skill/Recipe 物化与追加式治理 |
 | 文件活动 | 可选记录经过过滤的文件 metadata，并编译为 `activity` section |
 | Runtime | 本地 v2 Runtime、Git 观察、可选文件观察、自动唤醒和 fail-open 集成 |
-| 治理 | Knowledge/Deadend 的 candidate、verify、deprecate/obsolete、reject |
-| 集成 | Claude Code Hook、Claude Code 配置集成、MCP `context_orient`/`context_expand`/`context_usage_report`、TypeScript Agent API |
+| 集成 | Claude Code Hook、Claude Code 配置集成、23 个 MCP 工具、TypeScript Agent API |
 | 观测 | `ctx usage report`：只读统计资产、显式复用、操作趋势和 estimated token 投入 |
 
-以下能力**不属于 0.7.7**：
-
-- 没有 `ctx clean`；`ctx usage report` 是当前支持的只读观测命令。
-- 不自动创建 checkpoint、Note、Knowledge 或 Deadend。
-- 不自动把 Candidate 提升为 Verified。
-- 不提供模型总结、Embedding/向量检索、远程同步、多人协作或 Context merge。
-
-0.7.7 已支持 `context_expand`，用于按需取得已选候选的 `structured` 或 `evidence` 层；它是无状态、只读操作，不读取项目文件内容，也不自动记录 feedback。
+0.8.0 仍明确不提供自动 checkpoint、自动候选提取、自动验证/发布、模型总结、Embedding/向量检索、远程同步、多人协作或 Context merge。`context_expand` 仍是无状态、只读操作：只按需取得已选候选的 `structured` 或 `evidence` 层，不读取项目文件内容，也不自动记录 feedback。
 
 ## 快速开始
 
@@ -181,7 +174,7 @@ Manifest 主要包含：
 - `identity`：Manifest hash、选中 item hash 和 estimated token；
 - `text`：最终有界文本。
 
-0.7.7 的候选项提供：
+0.8.0 的候选项提供：
 
 ```text
 level: signal | summary | structured | evidence
@@ -212,6 +205,24 @@ Compiler 具有以下边界：
 - 不写入 Context 或 journal；
 - 普通查询默认只纳入适用且已验证的 Knowledge 和 Deadend；
 - `context_expand` 只读取已选候选的安全 metadata，不读取任意项目文件内容。
+
+#### 显式 Recipe 与证据图
+
+Recipe 仅在调用方明确传入已验证或已发布的 `--recipe-id` 时参与编译：
+
+```bash
+ctx compile "验证签名逻辑" --recipe-id <recipe-id> --max-chars 4000
+```
+
+Recipe 是受限的声明式 source/section 偏好与预算，不执行文本、不读取文件、不替换核心排序，也不会被自动选择。未传入 `--recipe-id` 时，编译保持既有默认行为和兼容身份契约。Recipe 状态、内容或适用性改变后，旧的 Recipe Manifest 不能继续用于展开，必须重新 `compile`。
+
+可选 `--graph-hops 0|1|2` 让证据图在已经通过治理和词法检索的候选项之间进行有界排序：
+
+```bash
+ctx compile "验证签名逻辑" --graph-hops 1 --max-chars 4000
+```
+
+图不会生成图专属候选、不会绕过适用性或隐私过滤，也不会读取项目源文件。图投影不可用、无效或没有种子时，编译会明确说明 fallback 原因并回退到词法排序；`0` 表示不遍历图。展开时必须重传原始 `recipeId`、`graphHops` 与其他 compile 参数，Manifest hash 校验仍然有效。
 
 ### `ctx usage report`
 
@@ -309,7 +320,33 @@ ctx checkpoint \
 
 只有真正保存了新 Snapshot 时 Note 才会被标记为已吸收；`no_change` 和 `rate_limited` 不会改变 Note。
 
-## CLI 能力地图
+## Evolution、Skill 与 Recipe
+
+0.8.0 的 Evolution 是显式、确定性且仅使用已授权 metadata 的工作流：
+
+```text
+Experience metadata → explicit proposal → explicit acceptance
+                    → Skill / Recipe materialization → governed lifecycle
+```
+
+`ctx evolution propose` 只从有界的 journal、Git/workspace metadata 和显式 `record.used` 信号生成候选；不会读取源文件、原始 prompt、Note 内容或 Snapshot 内容。它不自动运行，也不会创建 checkpoint、接受 Proposal、验证/发布 Skill 或 Recipe、调用 Skill，或改变默认编译策略。
+
+```bash
+ctx evolution propose --recent-limit 32 --target-kind skill
+ctx evolution list
+ctx evolution inspect <proposal-id>
+ctx evolution accept <proposal-id> --rationale "人工审查来源与边界"
+ctx evolution verify <proposal-id> --rationale "确认候选可进入后续物化"
+ctx evolution supersede <proposal-id> \
+  --rationale "由新提案替代" --supersedes proposal:<predecessor-id>
+```
+
+所有 Proposal、候选工件、Skill、Recipe、调用和状态变化都追加到 v2 journal。修订通过 `supersedes` 保留前任与继任谱系，不覆盖或删除历史记录。接受 Proposal 只生成候选工件；Skill 或 Recipe 还必须显式 materialize 并经过各自的生命周期治理。
+
+Skill 生命周期为 `candidate → verified → published → deprecated|superseded`（也可以从 candidate 终止）。只有 `published` Skill 可记录调用；调用只保存调用方 event ID 与输入 hash，不保存原始输入。每次调用恰好允许一个终态 outcome：`success`、`failure`、`partial`、`irrelevant` 或 `unknown`。Skill procedure 是可审查文本，不会由 Runtime、Compiler 或 MCP 自动执行。
+
+Recipe 使用同样的 `candidate → verified → published → deprecated|superseded` 治理。它只在 `ctx recipe materialize` 后存在，并且只有显式 `--recipe-id` 才能影响一次 `compile`；候选、未验证、终态或不适用 Recipe 会被拒绝，不会静默回退到其它 Recipe。
+
 
 完整参数请使用 `ctx <command> --help`。常用命令按用途分组如下。
 
@@ -441,38 +478,57 @@ ctx integrate claude install --apply
 ctx agent serve
 ```
 
-0.7.7 当前暴露以下工具：
+0.8.0 当前暴露以下 23 个工具：
 
 ```text
-context_orient       只读、有界地获取任务上下文
-context_expand       只读地展开 selected compiler candidate
-context_compile      只读地生成确定性 Manifest
-context_resume       恢复 Context（可能更新 lastUsedAt）
-context_note_list    只读地列出 Note
-context_note_add     显式新增 Note
-context_checkpoint   显式保存 Context/Snapshot
+context_orient            只读、有界地获取任务上下文
+context_expand            只读地展开 selected compiler candidate
+context_compile           只读地生成确定性 Manifest
+context_resume            恢复 Context（可能更新 lastUsedAt）
+context_note_list         只读地列出 Note
+context_note_add          显式新增 Note
+context_usage_report      只读统计上下文使用情况
+recipe_list               只读列出 Recipe
+recipe_inspect            只读检查 Recipe
+recipe_materialize        从已接受候选显式物化 Recipe
+recipe_transition         显式追加 Recipe 生命周期变化
+skill_list                只读列出 Skill
+skill_inspect             只读检查 Skill
+skill_materialize         从已接受候选显式物化 Skill
+skill_transition          显式追加 Skill 生命周期变化
+skill_record_invocation   为已发布 Skill 记录输入 hash
+skill_record_outcome      为调用追加唯一终态 outcome
+evolution_propose         从授权 metadata 显式生成候选 Proposal
+evolution_list            只读列出 Proposal
+evolution_inspect         只读检查 Proposal
+evolution_accept          显式接受 Proposal 为候选工件
+evolution_transition      显式追加 Proposal 生命周期变化
+context_checkpoint        显式保存 Context/Snapshot
 ```
 
+`context_compile` 和嵌套的 `context_expand.compile` 可接收 `recipeId` 与 `graphHops: 0|1|2`。Evolution、Skill 和 Recipe 的读操作不逻辑创建用户可见认知记录；写操作始终必须显式调用。
 输入字段与 CLI/Agent API 对齐：
 
 - `context_orient`：`path`、`contextId`、`query`、`scope`、`maxChars` 和各 source limit；
-- `context_compile`：编译选项及 `scenario`、`paths`、`activityLimit`、`trigger` 等字段；
-- `context_expand`：`manifestHash`、`candidateId` 或 `itemHash`、`level`、独立 `maxChars` 和原始 `compile` 参数；
+- `context_compile`：编译选项，包括可选 `recipeId` 与 `graphHops: 0|1|2`；
+- `context_expand`：`manifestHash`、`candidateId` 或 `itemHash`、`level`、独立 `maxChars` 和原始 `compile` 参数（包含原始 Recipe/图选项）；
 - `context_resume`：`contextId`、`maxChars`、`includeDetails`、`query`、`scope`；
 - `context_note_list`：`contextId`、`openOnly`、`limit`、`maxChars`；
 - `context_note_add`：必填 `message`，以及 Note 的 `kind`、`actor`、关联 Context/Snapshot、`relatedFiles` 和 `status`；
-- `context_checkpoint`：Context 输入字段、`absorbNotes` 和可选的 `lastError`。
+- `context_checkpoint`：Context 输入字段、`absorbNotes` 和可选的 `lastError`；
+- `evolution_propose`：可选 `eventIds` 或 `recentLimit`，以及 `targetKind: skill|compiler-recipe`；`evolution_accept` 与 `evolution_transition` 均要求非空 rationale；
+- `skill_*` 与 `recipe_*`：只接受受治理的候选与追加式生命周期输入，不执行 Skill procedure 或 Recipe 内容。
 
 成功调用同时返回 JSON `content` 和 `structuredContent`。结果分别对应 CLI/Agent API 的 Manifest、load result、Note 列表、单个 Note 或 checkpoint result。Checkpoint 保留 `saved`、`no_change` 和 `rate_limited` 状态，MCP 不自动重试，也不暴露绕过限流的参数。
 
 读写边界如下：
 
-- `context_orient`、`context_expand`、`context_compile` 和 `context_note_list` 是只读操作；
+- `context_orient`、`context_expand`、`context_compile`、`context_note_list`、`context_usage_report`、`evolution_list`、`evolution_inspect`、`skill_list`、`skill_inspect`、`recipe_list` 和 `recipe_inspect` 是逻辑只读操作；
 - `context_resume` 使用现有 `loadContext` 语义，可能更新 `lastUsedAt`，但不会创建 Snapshot；
 - `context_note_add` 会写入 Note，但不会创建 Snapshot；
 - `context_checkpoint` 会创建或更新 Snapshot、Context metadata 和 index，并可显式吸收 Note；
-- 任何工具都不会自动创建 Knowledge、Deadend、feedback 或重复 checkpoint；
-- Knowledge/Deadend 的记录和治理暂不提供独立 MCP 工具，继续使用 CLI/Agent API。
+- `evolution_propose`、`evolution_accept`、`evolution_transition`、`skill_*` 写工具和 `recipe_*` 写工具都是显式的追加写入；没有工具会自动接受、验证、发布、物化、调用或执行 Skill/Recipe；
+- 任何工具都不会自动创建 Knowledge、Deadend、feedback 或重复 checkpoint。
 
 MCP 的 stdin/stdout 属于协议通道，不能混入日志或交互文本。调用错误（包括输入验证、缺失 Context、空 Note message 和 stale Manifest hash）返回单次工具错误，server 继续运行。`context_expand` 与 CLI/Agent API 使用相同的无状态 Manifest hash 校验和 partial 预算语义。
 
@@ -511,6 +567,11 @@ saveContext
 loadContext
 searchContext
 recordContextUse
+proposeContextEvolution
+listContextEvolutionProposals
+inspectContextEvolutionProposal
+acceptContextEvolutionCandidate
+transitionContextEvolutionProposal
 ```
 
 Compiler identity 工具也通过公开入口导出：
@@ -627,15 +688,15 @@ npm pack --dry-run --json
 
 ## 未来方向
 
-以下方向属于后续版本，不是 0.7.7 的当前能力：
+以下方向仍属于后续版本：
 
 | 方向 | 目标 |
 | --- | --- |
 | Context expansion | 在现有 `context_expand` 基础上继续完善更丰富的分层内容 |
-| Decision Graph | 将决策变成可治理、可追溯的一等对象 |
-| Knowledge Evolution | 支持知识合并、替代、范围演化和 review-needed 信号 |
+| 证据图深化 | 在当前有界 metadata 图之外评估更丰富、可解释的关联，但不引入不透明推断 |
+| Knowledge Evolution | 扩展已存在的候选、谱系和人工治理流程，不引入自动发布 |
 | Journal maintenance | 提供安全的清理、归档和长期运行维护能力 |
-| Usage reporting | 统计估算 token、编译、展开、检索和反馈覆盖情况（`ctx report`） |
+| Usage reporting | 继续完善估算 token、编译、展开、检索和反馈覆盖情况 |
 | 外部协作 | 远程同步、多人协作和团队权限 |
 
 这些方向不会改变当前的边界：Git、项目文档和宿主规则继续由各自系统负责；Candidate 仍需要显式治理；模型调用和远程服务不是核心 Runtime 的隐式依赖。

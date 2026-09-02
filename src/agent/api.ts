@@ -6,6 +6,7 @@ import { checkpoint, rebuildSnapshot, resume, resumeSnapshot } from '../runtime/
 import { recordUse } from '../cognition/feedback.js';
 import { inspectRecipe, listRecipes, materializeRecipe, transitionRecipe, type MaterializeRecipeInput, type TransitionRecipeInput } from '../cognition/recipes.js';
 import { inspectSkill, listSkills, materializeSkill, recordSkillInvocation, recordSkillOutcome, transitionSkill, type MaterializeSkillInput, type RecordSkillInvocationInput, type RecordSkillOutcomeInput, type TransitionSkillInput } from '../cognition/skills.js';
+import { acceptEvolutionCandidate, inspectEvolutionProposal, listEvolutionProposals, proposeEvolution, transitionEvolutionProposal, type AcceptEvolutionCandidateInput, type ProposeEvolutionInput, type TransitionEvolutionProposalInput } from '../cognition/evolution.js';
 import { selectV2Orientation } from '../cognition/orient.js';
 import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
@@ -338,6 +339,26 @@ export async function recordContextUse(startPath: string | undefined, input: Con
 }
 
 export { inspectRecipe, inspectSkill, listRecipes, listSkills };
+
+export async function proposeContextEvolution(startPath: string | undefined, input: ProposeEvolutionInput = {}): Promise<import('../cognition/evolution.js').ProposeEvolutionResult> {
+  return proposeEvolution(startPath, input);
+}
+
+export async function listContextEvolutionProposals(startPath?: string): Promise<import('../cognition/types.js').EvolutionProposalState[]> {
+  return listEvolutionProposals(startPath);
+}
+
+export async function inspectContextEvolutionProposal(startPath: string | undefined, proposalId: string): Promise<import('../cognition/types.js').EvolutionProposalState> {
+  return inspectEvolutionProposal(startPath, proposalId);
+}
+
+export async function acceptContextEvolutionCandidate(startPath: string | undefined, input: AcceptEvolutionCandidateInput): Promise<{ accepted: boolean; eventId: string }> {
+  return acceptEvolutionCandidate(startPath, input);
+}
+
+export async function transitionContextEvolutionProposal(startPath: string | undefined, input: TransitionEvolutionProposalInput): Promise<{ transitioned: boolean; eventId: string }> {
+  return transitionEvolutionProposal(startPath, input);
+}
 
 export async function materializeContextRecipe(startPath: string | undefined, input: MaterializeRecipeInput): Promise<{ materialized: boolean; recipeId: string; eventId: string }> {
   return materializeRecipe(startPath, input);

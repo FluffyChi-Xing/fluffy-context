@@ -9,7 +9,19 @@ export type {
   RecordSkillOutcomeInput,
   TransitionSkillInput,
 } from '../cognition/skills.js';
-export type { Skill, SkillState } from '../cognition/types.js';
+export type {
+  AcceptEvolutionCandidateInput,
+  ProposeEvolutionInput,
+  ProposeEvolutionResult,
+  TransitionEvolutionProposalInput,
+} from '../cognition/evolution.js';
+export type {
+  EvolutionCandidateArtifact,
+  EvolutionLineageReference,
+  EvolutionProposal,
+  EvolutionProposalState,
+  Experience,
+} from '../cognition/types.js';
 export type {
   ContextOrientContext,
   ContextUseInput,

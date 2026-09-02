@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextRecipe, transitionContextSkill } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextRecipe, transitionContextSkill, acceptContextEvolutionCandidate, inspectContextEvolutionProposal, listContextEvolutionProposals, proposeContextEvolution, transitionContextEvolutionProposal } from '../agent/api.js';
 import { formatUsageReport } from '../cognition/usage-report.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
@@ -395,6 +395,25 @@ Retire a compiler Recipe with an explicit governance reason.`,
   'recipe supersede': `usage: ctx recipe supersede <recipe-id> --rationale <text> --supersedes <entity:id> [--path <path>]
 
 Supersede a compiler Recipe while retaining its history.`,
+  evolution: `usage: ctx evolution propose|list|inspect|accept|verify|reject|deprecate|supersede [options]
+
+Create and govern bounded, metadata-only Evolution proposals.
+
+Options:
+  --path <path>          Project path
+  --events <items>       Comma-separated source event IDs
+  --recent-limit <n>     Number of recent source events
+  --target-kind <kind>   skill|compiler-recipe
+  --rationale <text>     Governance rationale
+  --supersedes <ref>     Superseding entity:id`,
+  'evolution propose': `usage: ctx evolution propose [--events <event-id,...>|--recent-limit <n>] [--target-kind skill|compiler-recipe] [--path <path>]`,
+  'evolution list': `usage: ctx evolution list [--path <path>]`,
+  'evolution inspect': `usage: ctx evolution inspect <proposal-id> [--path <path>]`,
+  'evolution accept': `usage: ctx evolution accept <proposal-id> --rationale <text> [--path <path>]`,
+  'evolution verify': `usage: ctx evolution verify <proposal-id> --rationale <text> [--path <path>]`,
+  'evolution reject': `usage: ctx evolution reject <proposal-id> --rationale <text> [--path <path>]`,
+  'evolution deprecate': `usage: ctx evolution deprecate <proposal-id> --rationale <text> [--path <path>]`,
+  'evolution supersede': `usage: ctx evolution supersede <proposal-id> --rationale <text> --supersedes <entity:id> [--path <path>]`,
   filesystem: `usage: ctx filesystem enable|disable|status [--path <path>]
 
 Control whether the Runtime records filtered file metadata changes.`,
@@ -434,7 +453,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|evolution|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -465,6 +484,7 @@ function printHelp(args: string[]): boolean {
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
     || (command === 'recipe' && ['list', 'inspect', 'materialize', 'verify', 'publish', 'deprecate', 'supersede'].includes(args[1]))
+    || (command === 'evolution' && ['propose', 'list', 'inspect', 'accept', 'verify', 'reject', 'deprecate', 'supersede'].includes(args[1]))
     || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]))
     || (command === 'usage' && args[1] === 'report');
   const key = nested ? `${command} ${args[1]}` : command;
@@ -771,6 +791,51 @@ async function run(args: string[]): Promise<void> {
       void skillId;
       throw new Error(HELP.skill);
     }
+    case 'evolution': {
+      const action = args[1];
+      const valueOptions = ['--path', '--events', '--recent-limit', '--target-kind', '--rationale', '--supersedes'];
+      if (action === 'propose') {
+        validateOptions(args.slice(2), valueOptions.slice(0, 4), valueOptions.slice(0, 4));
+        validatePositionals(positionals(args.slice(2), valueOptions.slice(0, 4)), 0, HELP['evolution propose']);
+        if (option(args, '--events') !== undefined && option(args, '--recent-limit') !== undefined) throw new Error('use either --events or --recent-limit');
+        const eventIds = listOption(args, '--events');
+        if (eventIds && (eventIds.length === 0 || eventIds.length > 32)) throw new Error('--events must contain 1 to 32 event IDs');
+        print(await proposeContextEvolution(target, { eventIds, recentLimit: option(args, '--recent-limit') === undefined ? undefined : numericOption(args, '--recent-limit', 32), targetKind: enumOption(args, '--target-kind', ['skill', 'compiler-recipe'] as const) }));
+        return;
+      }
+      if (action === 'list') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['evolution list']);
+        print(await listContextEvolutionProposals(target));
+        return;
+      }
+      const values = positionals(args.slice(2), valueOptions);
+      if (action === 'inspect') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        if (values.length !== 1) throw new Error(HELP['evolution inspect']);
+        print(await inspectContextEvolutionProposal(target, values[0]));
+        return;
+      }
+      if (['accept', 'verify', 'reject', 'deprecate', 'supersede'].includes(action ?? '')) {
+        validateOptions(args.slice(2), valueOptions, valueOptions);
+        if (values.length !== 1) throw new Error(HELP[`evolution ${action}`]);
+        const rationale = option(args, '--rationale') ?? '';
+        if (!rationale.trim()) throw new Error('--rationale is required');
+        const supersedes = option(args, '--supersedes');
+        const [entity, entityId] = supersedes?.split(':', 2) ?? [];
+        if (action === 'supersede' && (!entity || !entityId || !['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal'].includes(entity))) throw new Error('--supersedes must be <entity:id>');
+        if (action === 'accept') print(await acceptContextEvolutionCandidate(target, { proposalId: values[0], rationale }));
+        else {
+          const to = action === 'verify' ? 'verified'
+            : action === 'supersede' ? 'superseded'
+              : action as 'rejected' | 'deprecated';
+          print(await transitionContextEvolutionProposal(target, { proposalId: values[0], to, rationale, ...(supersedes ? { supersedes: { entity: entity as 'knowledge' | 'deadend' | 'skill' | 'compiler-recipe' | 'experience' | 'proposal', entityId: entityId!, relation: 'supersedes' as const } } : {}) }));
+        }
+        return;
+      }
+      throw new Error(HELP.evolution);
+    }
+
     case 'recipe': {
       const action = args[1];
       const valueOptions = ['--path', '--title', '--sources', '--sections', '--budgets', '--rationale', '--supersedes'];

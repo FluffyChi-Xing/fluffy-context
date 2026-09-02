@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { addNote, listNotes } from '../runtime/notes.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextRecipe, transitionContextSkill } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextRecipe, transitionContextSkill, acceptContextEvolutionCandidate, inspectContextEvolutionProposal, listContextEvolutionProposals, proposeContextEvolution, transitionContextEvolutionProposal } from '../agent/api.js';
 import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 
@@ -121,6 +121,12 @@ const skillMaterializeInput = z.object({ path: z.string().optional(), proposalId
 const skillTransitionInput = z.object({ path: z.string().optional(), skillId: z.string(), to: z.enum(['verified', 'published', 'deprecated', 'superseded']), rationale: z.string(), supersedes: z.object({ entity: skillEntity, entityId: z.string(), relation: z.literal('supersedes') }).optional() });
 const skillInvocationInput = z.object({ path: z.string().optional(), skillId: z.string(), invocationId: z.string(), callerEventId: z.string(), inputHash: z.string() });
 const skillOutcomeInput = z.object({ path: z.string().optional(), skillId: z.string(), invocationId: z.string(), outcomeId: z.string(), callerEventId: z.string(), outcome: skillOutcome, summary: z.string() });
+const evolutionEntity = z.enum(['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal']);
+const evolutionProposeInput = z.object({ path: z.string().optional(), eventIds: z.array(z.string()).min(1).max(32).optional(), recentLimit: z.int().nonnegative().max(32).optional(), targetKind: z.enum(['skill', 'compiler-recipe']).optional() });
+const evolutionListInput = z.object({ path: z.string().optional() });
+const evolutionInspectInput = z.object({ path: z.string().optional(), proposalId: z.string() });
+const evolutionAcceptInput = z.object({ path: z.string().optional(), proposalId: z.string(), rationale: z.string().min(1) });
+const evolutionTransitionInput = z.object({ path: z.string().optional(), proposalId: z.string(), to: z.enum(['verified', 'rejected', 'deprecated', 'superseded']), rationale: z.string().min(1), supersedes: z.object({ entity: evolutionEntity, entityId: z.string(), relation: z.literal('supersedes') }).optional() });
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -318,6 +324,41 @@ export function createMcpServer(): McpServer {
     } catch (error) {
       return failureResponse('skill_record_outcome', error);
     }
+  });
+  server.registerTool('evolution_propose', {
+    title: 'Propose Evolution',
+    description: 'Derive a bounded candidate Evolution proposal from authorized metadata.',
+    inputSchema: evolutionProposeInput,
+  }, async ({ path, ...input }) => {
+    try { return successResponse(await proposeContextEvolution(path, input)); } catch (error) { return failureResponse('evolution_propose', error); }
+  });
+  server.registerTool('evolution_list', {
+    title: 'List Evolution proposals',
+    description: 'List Evolution proposals without modifying project state.',
+    inputSchema: evolutionListInput,
+  }, async ({ path }) => {
+    try { return successResponse(await listContextEvolutionProposals(path)); } catch (error) { return failureResponse('evolution_list', error); }
+  });
+  server.registerTool('evolution_inspect', {
+    title: 'Inspect Evolution proposal',
+    description: 'Inspect one Evolution proposal and its lifecycle.',
+    inputSchema: evolutionInspectInput,
+  }, async ({ path, proposalId }) => {
+    try { return successResponse(await inspectContextEvolutionProposal(path, proposalId)); } catch (error) { return failureResponse('evolution_inspect', error); }
+  });
+  server.registerTool('evolution_accept', {
+    title: 'Accept Evolution candidate',
+    description: 'Accept a proposal into an immutable candidate artifact.',
+    inputSchema: evolutionAcceptInput,
+  }, async ({ path, ...input }) => {
+    try { return successResponse(await acceptContextEvolutionCandidate(path, input)); } catch (error) { return failureResponse('evolution_accept', error); }
+  });
+  server.registerTool('evolution_transition', {
+    title: 'Transition Evolution proposal',
+    description: 'Apply an explicit append-only Evolution proposal lifecycle transition.',
+    inputSchema: evolutionTransitionInput,
+  }, async ({ path, ...input }) => {
+    try { return successResponse(await transitionContextEvolutionProposal(path, input)); } catch (error) { return failureResponse('evolution_transition', error); }
   });
   server.registerTool('context_checkpoint', {
     title: 'Checkpoint context',
