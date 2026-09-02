@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { addNote, listNotes } from '../runtime/notes.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, loadContext, saveContext } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectSkill, listSkills, loadContext, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextSkill } from '../agent/api.js';
 import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 
@@ -104,6 +104,15 @@ const usageReportInput = z.object({
   baselineSource: z.enum(['manual', 'recorded-control']).optional(),
 });
 
+const skillOutcome = z.enum(['success', 'failure', 'partial', 'irrelevant', 'unknown']);
+const skillEntity = z.enum(['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal']);
+const skillListInput = z.object({ path: z.string().optional() });
+const skillInspectInput = z.object({ path: z.string().optional(), skillId: z.string() });
+const skillMaterializeInput = z.object({ path: z.string().optional(), proposalId: z.string(), title: z.string(), procedure: z.array(z.string()) });
+const skillTransitionInput = z.object({ path: z.string().optional(), skillId: z.string(), to: z.enum(['verified', 'published', 'deprecated', 'superseded']), rationale: z.string(), supersedes: z.object({ entity: skillEntity, entityId: z.string(), relation: z.literal('supersedes') }).optional() });
+const skillInvocationInput = z.object({ path: z.string().optional(), skillId: z.string(), invocationId: z.string(), callerEventId: z.string(), inputHash: z.string() });
+const skillOutcomeInput = z.object({ path: z.string().optional(), skillId: z.string(), invocationId: z.string(), outcomeId: z.string(), callerEventId: z.string(), outcome: skillOutcome, summary: z.string() });
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -205,6 +214,72 @@ export function createMcpServer(): McpServer {
       return successResponse(await contextUsageReport(path, options));
     } catch (error) {
       return failureResponse('context_usage_report', error);
+    }
+  });
+  server.registerTool('skill_list', {
+    title: 'List Skills',
+    description: 'List immutable v2 Skills without modifying project state.',
+    inputSchema: skillListInput,
+  }, async ({ path }) => {
+    try {
+      return successResponse(await listSkills(path));
+    } catch (error) {
+      return failureResponse('skill_list', error);
+    }
+  });
+  server.registerTool('skill_inspect', {
+    title: 'Inspect Skill',
+    description: 'Inspect an immutable v2 Skill and its lifecycle without modifying project state.',
+    inputSchema: skillInspectInput,
+  }, async ({ path, skillId }) => {
+    try {
+      return successResponse(await inspectSkill(path, skillId));
+    } catch (error) {
+      return failureResponse('skill_inspect', error);
+    }
+  });
+  server.registerTool('skill_materialize', {
+    title: 'Materialize Skill',
+    description: 'Materialize a Skill from an accepted candidate Skill proposal.',
+    inputSchema: skillMaterializeInput,
+  }, async ({ path, ...input }) => {
+    try {
+      return successResponse(await materializeContextSkill(path, input));
+    } catch (error) {
+      return failureResponse('skill_materialize', error);
+    }
+  });
+  server.registerTool('skill_transition', {
+    title: 'Transition Skill',
+    description: 'Apply an explicit append-only Skill lifecycle transition.',
+    inputSchema: skillTransitionInput,
+  }, async ({ path, ...input }) => {
+    try {
+      return successResponse(await transitionContextSkill(path, input));
+    } catch (error) {
+      return failureResponse('skill_transition', error);
+    }
+  });
+  server.registerTool('skill_record_invocation', {
+    title: 'Record Skill invocation',
+    description: 'Record a published Skill invocation using only an input hash.',
+    inputSchema: skillInvocationInput,
+  }, async ({ path, ...input }) => {
+    try {
+      return successResponse(await recordContextSkillInvocation(path, input));
+    } catch (error) {
+      return failureResponse('skill_record_invocation', error);
+    }
+  });
+  server.registerTool('skill_record_outcome', {
+    title: 'Record Skill outcome',
+    description: 'Record one explicit terminal outcome for a Skill invocation.',
+    inputSchema: skillOutcomeInput,
+  }, async ({ path, ...input }) => {
+    try {
+      return successResponse(await recordContextSkillOutcome(path, input));
+    } catch (error) {
+      return failureResponse('skill_record_outcome', error);
     }
   });
   server.registerTool('context_checkpoint', {

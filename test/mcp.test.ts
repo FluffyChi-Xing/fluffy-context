@@ -10,7 +10,7 @@ import { initProject } from '../src/runtime/init.js';
 import { saveContext } from '../src/agent/api.js';
 import { compileContext } from '../src/compiler/compile.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
-import { runtimeStatus, stopRuntime } from '../src/cognition/runtime.js';
+import { runtimeStatus, stopRuntime, enableRuntime } from '../src/cognition/runtime.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
@@ -61,6 +61,12 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'context_note_list',
       'context_note_add',
       'context_usage_report',
+      'skill_list',
+      'skill_inspect',
+      'skill_materialize',
+      'skill_transition',
+      'skill_record_invocation',
+      'skill_record_outcome',
       'context_checkpoint',
     ]);
 
@@ -77,6 +83,32 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
     const noQuery = await client.callTool({ name: 'context_orient', arguments: { path: root } });
     assert.notEqual(noQuery.isError, true);
     assert.equal(orientPayload(noQuery).status, 'ready');
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
+
+test('MCP Skill tools expose bounded reads and preserve server availability', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
+    let before = '';
+    try { before = await readFile(journalPath, 'utf8'); } catch { before = ''; }
+    const listed = await client.callTool({ name: 'skill_list', arguments: { path: root } });
+    assert.notEqual(listed.isError, true);
+    assert.deepEqual(listed.structuredContent, { result: [] });
+    assert.equal(await readFile(journalPath, 'utf8').catch(() => ''), before);
+    const missing = await client.callTool({ name: 'skill_inspect', arguments: { path: root, skillId: 'missing' } });
+    assert.equal(missing.isError, true);
+    assert.match(textContent(missing), /skill not found/);
+    const invalid = await client.callTool({ name: 'skill_record_outcome', arguments: { path: root, skillId: 'missing', invocationId: 'i', outcomeId: 'o', callerEventId: 'c', outcome: 'invalid', summary: 'Nope' } });
+    assert.equal(invalid.isError, true);
+    assert.notEqual((await client.callTool({ name: 'skill_list', arguments: { path: root } })).isError, true);
   } finally {
     await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
   }
@@ -325,6 +357,12 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
       'context_note_list',
       'context_note_add',
       'context_usage_report',
+      'skill_list',
+      'skill_inspect',
+      'skill_materialize',
+      'skill_transition',
+      'skill_record_invocation',
+      'skill_record_outcome',
       'context_checkpoint',
     ]);
     const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });

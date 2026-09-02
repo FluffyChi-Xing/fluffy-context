@@ -1,5 +1,12 @@
 export * from './api.js';
 export type {
+  MaterializeSkillInput,
+  RecordSkillInvocationInput,
+  RecordSkillOutcomeInput,
+  TransitionSkillInput,
+} from '../cognition/skills.js';
+export type { Skill, SkillState } from '../cognition/types.js';
+export type {
   ContextOrientContext,
   ContextUseInput,
   ContextOrientExplanation,

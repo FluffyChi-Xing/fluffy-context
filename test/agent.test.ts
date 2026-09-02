@@ -6,10 +6,12 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
 import { discoverKnowledge, recordDeadend, verifyDeadend, verifyKnowledge, learnKnowledge } from '../src/runtime/knowledge.js';
 import { addNote } from '../src/runtime/notes.js';
-import { contextExpand, contextOrient, saveContext, loadContext, recordContextUse, searchContext } from '../src/agent/api.js';
-import { importV1 } from '../src/cognition/migration-v1.js';
+import { contextExpand, contextOrient, saveContext, loadContext, recordContextUse, searchContext, inspectSkill, listSkills, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextSkill } from '../src/agent/api.js';
+import { appendEvent, readJournal } from '../src/cognition/journal.js';
+import { acceptEvolutionCandidate, proposeEvolution } from '../src/cognition/evolution.js';
 import { enableRuntime } from '../src/cognition/runtime.js';
 
 const execFileAsync = promisify(execFile);
@@ -21,6 +23,32 @@ async function git(root: string, args: string[]): Promise<void> {
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-agent-'));
 }
+
+test('Agent Skill wrappers preserve lifecycle and invocation policy', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'context', payload: { record: { snapshot: { contextId: 'ctx-1', snapshotId: 'snap-1' } } } });
+    await appendEvent(root, { type: 'git.state.observed', idempotencyKey: 'git', payload: {} });
+    await appendEvent(root, { type: 'record.used', idempotencyKey: 'used', payload: { feedbackId: 'feedback-1', entity: 'knowledge', entityId: 'knowledge-1', outcome: 'used' } });
+    const proposal = await proposeEvolution(root, { eventIds: (await readJournal(root)).slice(-3).map((event) => event.eventId), targetKind: 'skill' });
+    assert.ok(proposal.proposalId);
+    await acceptEvolutionCandidate(root, { proposalId: proposal.proposalId!, rationale: 'Reviewed.' });
+
+    const skill = await materializeContextSkill(root, { proposalId: proposal.proposalId!, title: 'Agent wrapper skill', procedure: ['Inspect state'] });
+    assert.equal((await listSkills(root)).length, 1);
+    assert.equal((await inspectSkill(root, skill.skillId)).status, 'candidate');
+    await transitionContextSkill(root, { skillId: skill.skillId, to: 'verified', rationale: 'Verified.' });
+    await transitionContextSkill(root, { skillId: skill.skillId, to: 'published', rationale: 'Published.' });
+    await recordContextSkillInvocation(root, { skillId: skill.skillId, invocationId: 'invoke-1', callerEventId: 'caller-1', inputHash: 'hash-1' });
+    await recordContextSkillOutcome(root, { skillId: skill.skillId, invocationId: 'invoke-1', outcomeId: 'outcome-1', callerEventId: 'caller-1', outcome: 'success', summary: 'Succeeded.' });
+    assert.equal((await inspectSkill(root, skill.skillId)).outcomes[0].outcome, 'success');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('Agent API completes save, load and search without exposing storage layout', async () => {
   const root = await project();

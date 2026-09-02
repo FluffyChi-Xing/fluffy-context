@@ -38,7 +38,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'journal'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -260,6 +260,30 @@ test('knowledge discover CLI returns deterministic JSON and validates filters', 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('skill CLI exposes help and validates unavailable Skill operations', async () => {
+  const root = await project();
+  try {
+    const help = await runCli(['skill', 'inspect', '--help'], root);
+    assert.equal(help.code, 0);
+    assert.match(help.stdout, /usage: ctx skill/);
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
+    const listed = await runCli(['skill', 'list', '--path', root], root);
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.deepEqual(JSON.parse(listed.stdout), []);
+    const missing = await runCli(['skill', 'inspect', 'missing', '--path', root], root);
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.stderr, /skill not found/);
+    const invalid = await runCli(['skill', 'supersede', 'missing', '--rationale', 'Replace', '--supersedes', 'bad', '--path', root], root);
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stderr, /supersedes must be/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 
 test('compile CLI returns a manifest and validates compiler options', async () => {
   const root = await project();

@@ -15,7 +15,7 @@ const eventTypes: ReadonlySet<string> = new Set([
   'deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected',
   'experience.recorded',
   'evolution.proposed', 'evolution.candidate.accepted', 'evolution.verified', 'evolution.published', 'evolution.rejected', 'evolution.deprecated', 'evolution.superseded',
-  'skill.invoked', 'skill.outcome.recorded', 'record.used',
+  'skill.materialized', 'skill.invoked', 'skill.outcome.recorded', 'record.used',
   'usage.operation.completed',
   'projection.advanced', 'projection.failed',
 ]);
@@ -117,6 +117,20 @@ function validEvolutionTransition(from: unknown, to: unknown): boolean {
     || (from === 'published' && (to === 'deprecated' || to === 'superseded' || to === 'obsolete'));
 }
 
+function validSkill(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.skillId === 'string' && value.skillId.trim().length > 0
+    && value.schemaVersion === 1
+    && typeof value.proposalId === 'string' && value.proposalId.trim().length > 0
+    && typeof value.title === 'string' && value.title.trim().length > 0
+    && Array.isArray(value.procedure) && value.procedure.length > 0 && value.procedure.length <= 32 && value.procedure.every((step) => typeof step === 'string' && step.trim().length > 0)
+    && validApplicability(value.applicability)
+    && value.status === 'candidate'
+    && typeof value.contentHash === 'string' && value.contentHash.trim().length > 0
+    && Array.isArray(value.lineage) && value.lineage.every(validLineage)
+    && validIsoDate(value.createdAt);
+}
+
 function validatePayloadBoundary(input: AppendEventInput): void {
   const payload = input.payload as Record<string, unknown>;
   if (input.type === 'host.prompt.submitted' && (typeof payload.intent !== 'string' || payload.intent.trim().length === 0)) {
@@ -157,6 +171,9 @@ function validatePayloadBoundary(input: AppendEventInput): void {
     const transition = payload.transition;
     if (!isRecord(transition) || (transition.entity !== 'knowledge' && transition.entity !== 'deadend' && transition.entity !== 'skill' && transition.entity !== 'compiler-recipe' && transition.entity !== 'proposal') || typeof transition.entityId !== 'string' || transition.entityId.trim().length === 0 || !validEvolutionTransition(transition.from, transition.to) || typeof transition.reason !== 'string' || transition.reason.trim().length === 0 || (transition.supersedes !== undefined && !validLineage(transition.supersedes))) throw new Error('invalid evolution lifecycle transition');
     if ((input.type === 'evolution.verified' && transition.to !== 'verified') || (input.type === 'evolution.published' && transition.to !== 'published') || (input.type === 'evolution.rejected' && transition.to !== 'rejected') || (input.type === 'evolution.deprecated' && transition.to !== 'deprecated') || (input.type === 'evolution.superseded' && (transition.to !== 'superseded' || !validLineage(transition.supersedes)))) throw new Error('evolution lifecycle event does not match transition');
+  }
+  if (input.type === 'skill.materialized') {
+    if (!validSkill(payload.record)) throw new Error('invalid skill record');
   }
   if (input.type === 'skill.invoked') {
     const invocation = payload.record;
@@ -239,6 +256,7 @@ export async function readJournal(startPath?: string, options: { allowPartialTai
         throw new Error(`invalid journal record ${file}:${index + 1}: ${error instanceof Error ? error.message : 'invalid JSON'}`);
       }
       validateEventShape(event, projectId, file, index + 1);
+      validatePayloadBoundary(event);
       const { hash, ...withoutHash } = event;
       if (event.previousHash !== previousHash || hash !== eventHash(withoutHash)) {
         throw new Error(`invalid journal hash chain at ${file}:${index + 1}`);

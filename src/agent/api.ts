@@ -4,6 +4,7 @@ import { contextsRoot, contextMetadataPath } from '../storage/layout.js';
 import { isRecord, readJson } from '../storage/json-store.js';
 import { checkpoint, rebuildSnapshot, resume, resumeSnapshot } from '../runtime/runtime.js';
 import { recordUse } from '../cognition/feedback.js';
+import { inspectSkill, listSkills, materializeSkill, recordSkillInvocation, recordSkillOutcome, transitionSkill, type MaterializeSkillInput, type RecordSkillInvocationInput, type RecordSkillOutcomeInput, type TransitionSkillInput } from '../cognition/skills.js';
 import { selectV2Orientation } from '../cognition/orient.js';
 import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
@@ -333,6 +334,24 @@ export async function contextUsageReport(startPath: string | undefined, options:
 
 export async function recordContextUse(startPath: string | undefined, input: ContextUseInput): Promise<{ recorded: boolean; eventId: string }> {
   return recordUse(startPath, input);
+}
+
+export { inspectSkill, listSkills };
+
+export async function materializeContextSkill(startPath: string | undefined, input: MaterializeSkillInput): Promise<{ materialized: boolean; skillId: string; eventId: string }> {
+  return materializeSkill(startPath, input);
+}
+
+export async function transitionContextSkill(startPath: string | undefined, input: TransitionSkillInput): Promise<{ transitioned: boolean; eventId: string }> {
+  return transitionSkill(startPath, input);
+}
+
+export async function recordContextSkillInvocation(startPath: string | undefined, input: RecordSkillInvocationInput): Promise<{ recorded: boolean; eventId: string }> {
+  return recordSkillInvocation(startPath, input);
+}
+
+export async function recordContextSkillOutcome(startPath: string | undefined, input: RecordSkillOutcomeInput): Promise<{ recorded: boolean; eventId: string }> {
+  return recordSkillOutcome(startPath, input);
 }
 
 export async function searchContext(startPath: string | undefined, query: string, options: ContextSearchOptions = {}): Promise<ContextSearchResult> {

@@ -32,6 +32,7 @@ export type CognitionEventType =
   | 'evolution.rejected'
   | 'evolution.deprecated'
   | 'evolution.superseded'
+  | 'skill.materialized'
   | 'skill.invoked'
   | 'skill.outcome.recorded'
   | 'record.used'
@@ -177,14 +178,31 @@ export interface EvolutionProposalState {
 export interface Skill {
   skillId: string;
   schemaVersion: 1;
+  proposalId: string;
   title: string;
   procedure: string[];
   applicability: Applicability;
-  status: EvolutionArtifactStatus;
+  status: 'candidate';
   contentHash: string;
   lineage: EvolutionLineageReference[];
   createdAt: string;
-  updatedAt: string;
+}
+
+export interface SkillLifecycleEntry {
+  eventId: string;
+  occurredAt: string;
+  from: EvolutionArtifactStatus;
+  to: EvolutionArtifactStatus;
+  reason: string;
+  supersedes?: EvolutionLineageReference;
+}
+
+export interface SkillState {
+  skill: Skill;
+  status: EvolutionArtifactStatus;
+  lifecycle: SkillLifecycleEntry[];
+  invocations: SkillInvocation[];
+  outcomes: SkillOutcome[];
 }
 
 export interface CompilerRecipe {
@@ -371,6 +389,7 @@ export interface CognitionProjection {
   deadends: Record<string, CognitionRecordPayload>;
   experiences: Record<string, Experience>;
   proposals: Record<string, EvolutionProposalState>;
+  skills: Record<string, SkillState>;
   workspaces: Record<string, BranchWorkspace>;
 }
 

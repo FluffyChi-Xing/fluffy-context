@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, loadContext } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectSkill, listSkills, loadContext, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextSkill } from '../agent/api.js';
 import { formatUsageReport } from '../cognition/usage-report.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
@@ -285,6 +285,13 @@ Record explicit use of verified v2 retrieval material.`,
   'feedback use': `usage: ctx feedback use knowledge|deadend <id> --event-id <stable-id> [--path <path>]
 
 Record an idempotent use signal that affects deterministic rank only.`,
+  skill: `usage: ctx skill list [--path <path>]
+       ctx skill inspect <skill-id> [--path <path>]
+       ctx skill materialize <proposal-id> --title <title> --procedure <steps> [--path <path>]
+       ctx skill verify|publish|deprecate <skill-id> --rationale <text> [--path <path>]
+       ctx skill supersede <skill-id> --rationale <text> --supersedes <entity:id> [--path <path>]
+       ctx skill invoke <skill-id> --invocation-id <id> --caller-event <id> --input-hash <hash> [--path <path>]
+       ctx skill outcome <skill-id> --invocation-id <id> --outcome-id <id> --caller-event <id> --outcome <value> --summary <text> [--path <path>]`,
   journal: `usage: ctx journal verify [--path <path>]
 
 Validate the v2 journal hash chain and replay projections in memory.`,
@@ -390,7 +397,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -661,6 +668,66 @@ async function run(args: string[]): Promise<void> {
         print(await setFilesystemEvents(target, args[1] === 'enable'));
       }
       return;
+    }
+    case 'skill': {
+      const action = args[1];
+      if (action === 'list') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP.skill);
+        print(await listSkills(target));
+        return;
+      }
+      if (!action) throw new Error(HELP.skill);
+      const skillId = positionals(args.slice(2), ['--path', '--title', '--procedure', '--rationale', '--supersedes', '--invocation-id', '--caller-event', '--input-hash', '--outcome-id', '--outcome', '--summary'])[0];
+      if (action === 'inspect') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        const values = positionals(args.slice(2), ['--path']);
+        if (values.length !== 1) throw new Error(HELP.skill);
+        print(await inspectSkill(target, values[0]));
+        return;
+      }
+      if (action === 'materialize') {
+        const options = ['--path', '--title', '--procedure'];
+        validateOptions(args.slice(2), options, options);
+        const values = positionals(args.slice(2), options);
+        if (values.length !== 1) throw new Error(HELP.skill);
+        print(await materializeContextSkill(target, { proposalId: values[0], title: option(args, '--title') ?? '', procedure: listOption(args, '--procedure') ?? [] }));
+        return;
+      }
+      if (['verify', 'publish', 'deprecate', 'supersede'].includes(action)) {
+        const options = ['--path', '--rationale', '--supersedes'];
+        validateOptions(args.slice(2), options, options);
+        const values = positionals(args.slice(2), options);
+        if (values.length !== 1) throw new Error(HELP.skill);
+        const supersedes = option(args, '--supersedes');
+        const [entity, entityId] = supersedes?.split(':', 2) ?? [];
+        if (action === 'supersede' && (!entity || !entityId || !['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal'].includes(entity))) throw new Error('--supersedes must be <entity:id>');
+        print(await transitionContextSkill(target, {
+          skillId: values[0],
+          to: action === 'supersede' ? 'superseded' : action as 'verified' | 'published' | 'deprecated',
+          rationale: option(args, '--rationale') ?? '',
+          ...(supersedes ? { supersedes: { entity: entity as 'knowledge' | 'deadend' | 'skill' | 'compiler-recipe' | 'experience' | 'proposal', entityId: entityId!, relation: 'supersedes' as const } } : {}),
+        }));
+        return;
+      }
+      if (action === 'invoke') {
+        const options = ['--path', '--invocation-id', '--caller-event', '--input-hash'];
+        validateOptions(args.slice(2), options, options);
+        const values = positionals(args.slice(2), options);
+        if (values.length !== 1) throw new Error(HELP.skill);
+        print(await recordContextSkillInvocation(target, { skillId: values[0], invocationId: option(args, '--invocation-id') ?? '', callerEventId: option(args, '--caller-event') ?? '', inputHash: option(args, '--input-hash') ?? '' }));
+        return;
+      }
+      if (action === 'outcome') {
+        const options = ['--path', '--invocation-id', '--outcome-id', '--caller-event', '--outcome', '--summary'];
+        validateOptions(args.slice(2), options, options);
+        const values = positionals(args.slice(2), options);
+        if (values.length !== 1) throw new Error(HELP.skill);
+        print(await recordContextSkillOutcome(target, { skillId: values[0], invocationId: option(args, '--invocation-id') ?? '', outcomeId: option(args, '--outcome-id') ?? '', callerEventId: option(args, '--caller-event') ?? '', outcome: enumOption(args, '--outcome', ['success', 'failure', 'partial', 'irrelevant', 'unknown'] as const) ?? 'unknown', summary: option(args, '--summary') ?? '' }));
+        return;
+      }
+      void skillId;
+      throw new Error(HELP.skill);
     }
     case 'journal': {
       if (args[1] !== 'verify') throw new Error(HELP.journal);
