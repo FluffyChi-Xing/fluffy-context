@@ -9,7 +9,7 @@ import { initProject } from '../src/runtime/init.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { discoverKnowledge, recordDeadend, verifyDeadend, verifyKnowledge, learnKnowledge } from '../src/runtime/knowledge.js';
 import { addNote } from '../src/runtime/notes.js';
-import { contextExpand, contextOrient, saveContext, loadContext, recordContextUse, searchContext, inspectSkill, listSkills, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextSkill } from '../src/agent/api.js';
+import { contextCompile, contextExpand, contextOrient, saveContext, loadContext, recordContextUse, searchContext, inspectRecipe, listRecipes, materializeContextRecipe, transitionContextRecipe, inspectSkill, listSkills, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextSkill } from '../src/agent/api.js';
 import { appendEvent, readJournal } from '../src/cognition/journal.js';
 import { acceptEvolutionCandidate, proposeEvolution } from '../src/cognition/evolution.js';
 import { enableRuntime } from '../src/cognition/runtime.js';
@@ -50,6 +50,76 @@ test('Agent Skill wrappers preserve lifecycle and invocation policy', async () =
   }
 });
 
+test('Agent Recipe wrappers preserve lifecycle and compile propagation', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    const saved = await saveContext(root, {
+      title: 'Recipe context',
+      progressSummary: 'Keep recipe compilation bounded',
+    });
+    assert.equal(saved.result.status, 'saved');
+    if (saved.result.status !== 'saved') return;
+
+    await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'recipe-context', payload: { record: { snapshot: { contextId: saved.result.context.id, snapshotId: saved.result.snapshot.snapshotId } } } });
+    await appendEvent(root, { type: 'git.state.observed', idempotencyKey: 'recipe-git', payload: {} });
+    await appendEvent(root, { type: 'record.used', idempotencyKey: 'recipe-use', payload: { feedbackId: 'recipe-feedback', entity: 'knowledge', entityId: 'knowledge-1', outcome: 'used' } });
+    const proposal = await proposeEvolution(root, {
+      eventIds: (await readJournal(root)).slice(-3).map((event) => event.eventId),
+      targetKind: 'compiler-recipe',
+    });
+    assert.ok(proposal.proposalId);
+    await acceptEvolutionCandidate(root, { proposalId: proposal.proposalId!, rationale: 'Reviewed declarative controls.' });
+
+    const materialized = await materializeContextRecipe(root, {
+      proposalId: proposal.proposalId!,
+      title: 'Agent Recipe',
+      preferredSources: ['context'],
+      preferredSections: ['summary'],
+      sectionBudgets: { summary: 1000 },
+    });
+    assert.equal(materialized.materialized, true);
+    const beforeReads = await readJournal(root);
+    assert.equal((await listRecipes(root)).length, 1);
+    assert.equal((await inspectRecipe(root, materialized.recipeId)).status, 'candidate');
+    assert.deepEqual(await readJournal(root), beforeReads);
+
+    await transitionContextRecipe(root, {
+      recipeId: materialized.recipeId,
+      to: 'verified',
+      rationale: 'Verified bounded controls.',
+    });
+    const manifest = await contextCompile(root, {
+      contextId: saved.result.context.id,
+      recipeId: materialized.recipeId,
+      query: 'recipe compilation',
+      maxChars: 4000,
+    });
+    assert.equal(manifest.recipe?.recipeId, materialized.recipeId);
+    assert.equal(manifest.recipe?.interpreterVersion, 'recipe-interpreter-v1');
+    const candidate = manifest.selected.find((item) => item.content && typeof item.content === 'object' && (item.content as { field?: string }).field === 'progressSummary');
+    assert.ok(candidate);
+    if (!candidate) return;
+
+    const expanded = await contextExpand(root, {
+      manifestHash: manifest.identity.manifestHash,
+      candidateId: candidate.candidateId,
+      level: 'structured',
+      compile: {
+        contextId: saved.result.context.id,
+        recipeId: materialized.recipeId,
+        query: 'recipe compilation',
+        maxChars: 4000,
+      },
+    });
+    assert.equal(expanded.status, 'complete');
+    assert.equal(expanded.candidateId, candidate.candidateId);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test('Agent API completes save, load and search without exposing storage layout', async () => {
   const root = await project();
   try {

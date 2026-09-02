@@ -4,6 +4,7 @@ import { contextsRoot, contextMetadataPath } from '../storage/layout.js';
 import { isRecord, readJson } from '../storage/json-store.js';
 import { checkpoint, rebuildSnapshot, resume, resumeSnapshot } from '../runtime/runtime.js';
 import { recordUse } from '../cognition/feedback.js';
+import { inspectRecipe, listRecipes, materializeRecipe, transitionRecipe, type MaterializeRecipeInput, type TransitionRecipeInput } from '../cognition/recipes.js';
 import { inspectSkill, listSkills, materializeSkill, recordSkillInvocation, recordSkillOutcome, transitionSkill, type MaterializeSkillInput, type RecordSkillInvocationInput, type RecordSkillOutcomeInput, type TransitionSkillInput } from '../cognition/skills.js';
 import { selectV2Orientation } from '../cognition/orient.js';
 import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.js';
@@ -336,7 +337,15 @@ export async function recordContextUse(startPath: string | undefined, input: Con
   return recordUse(startPath, input);
 }
 
-export { inspectSkill, listSkills };
+export { inspectRecipe, inspectSkill, listRecipes, listSkills };
+
+export async function materializeContextRecipe(startPath: string | undefined, input: MaterializeRecipeInput): Promise<{ materialized: boolean; recipeId: string; eventId: string }> {
+  return materializeRecipe(startPath, input);
+}
+
+export async function transitionContextRecipe(startPath: string | undefined, input: TransitionRecipeInput): Promise<{ transitioned: boolean; eventId: string }> {
+  return transitionRecipe(startPath, input);
+}
 
 export async function materializeContextSkill(startPath: string | undefined, input: MaterializeSkillInput): Promise<{ materialized: boolean; skillId: string; eventId: string }> {
   return materializeSkill(startPath, input);

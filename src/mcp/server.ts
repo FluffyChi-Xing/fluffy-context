@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { addNote, listNotes } from '../runtime/notes.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectSkill, listSkills, loadContext, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextSkill } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextRecipe, transitionContextSkill } from '../agent/api.js';
 import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 
@@ -24,6 +24,7 @@ const noteStatus = z.enum(['open', 'resolved']);
 
 const compileOptions = z.object({
   contextId: z.string().optional(),
+  recipeId: z.string().optional(),
   query: z.string().optional(),
   scenario: scenario.optional(),
   scope: z.string().optional(),
@@ -105,6 +106,13 @@ const usageReportInput = z.object({
 });
 
 const skillOutcome = z.enum(['success', 'failure', 'partial', 'irrelevant', 'unknown']);
+const recipeEntity = z.enum(['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal']);
+const recipeListInput = z.object({ path: z.string().optional() });
+const recipeInspectInput = z.object({ path: z.string().optional(), recipeId: z.string() });
+const recipeMaterializeInput = z.object({ path: z.string().optional(), proposalId: z.string(), title: z.string(), preferredSources: z.array(z.enum(['context', 'knowledge', 'deadend', 'note'])).optional(), preferredSections: z.array(z.enum(['summary', 'pending', 'decision', 'risk', 'note', 'knowledge', 'deadend', 'activity'])).optional(), sectionBudgets: z.record(z.string(), z.int().nonnegative().max(100_000)).optional() });
+const recipeTransitionInput = z.object({ path: z.string().optional(), recipeId: z.string(), to: z.enum(['verified', 'published', 'deprecated', 'superseded']), rationale: z.string(), supersedes: z.object({ entity: recipeEntity, entityId: z.string(), relation: z.literal('supersedes') }).optional() });
+
+
 const skillEntity = z.enum(['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal']);
 const skillListInput = z.object({ path: z.string().optional() });
 const skillInspectInput = z.object({ path: z.string().optional(), skillId: z.string() });
@@ -215,6 +223,34 @@ export function createMcpServer(): McpServer {
     } catch (error) {
       return failureResponse('context_usage_report', error);
     }
+  });
+  server.registerTool('recipe_list', {
+    title: 'List Recipes',
+    description: 'List immutable v2 compiler Recipes without modifying project state.',
+    inputSchema: recipeListInput,
+  }, async ({ path }) => {
+    try { return successResponse(await listRecipes(path)); } catch (error) { return failureResponse('recipe_list', error); }
+  });
+  server.registerTool('recipe_inspect', {
+    title: 'Inspect Recipe',
+    description: 'Inspect a compiler Recipe and its lifecycle.',
+    inputSchema: recipeInspectInput,
+  }, async ({ path, recipeId }) => {
+    try { return successResponse(await inspectRecipe(path, recipeId)); } catch (error) { return failureResponse('recipe_inspect', error); }
+  });
+  server.registerTool('recipe_materialize', {
+    title: 'Materialize Recipe',
+    description: 'Materialize a Recipe from an accepted compiler-recipe proposal.',
+    inputSchema: recipeMaterializeInput,
+  }, async ({ path, ...input }) => {
+    try { return successResponse(await materializeContextRecipe(path, input)); } catch (error) { return failureResponse('recipe_materialize', error); }
+  });
+  server.registerTool('recipe_transition', {
+    title: 'Transition Recipe',
+    description: 'Apply an explicit append-only Recipe lifecycle transition.',
+    inputSchema: recipeTransitionInput,
+  }, async ({ path, ...input }) => {
+    try { return successResponse(await transitionContextRecipe(path, input)); } catch (error) { return failureResponse('recipe_transition', error); }
   });
   server.registerTool('skill_list', {
     title: 'List Skills',

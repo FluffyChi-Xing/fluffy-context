@@ -10,6 +10,9 @@ import { initProject } from '../src/runtime/init.js';
 import { saveContext } from '../src/agent/api.js';
 import { compileContext } from '../src/compiler/compile.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
+import { appendEvent, readJournal } from '../src/cognition/journal.js';
+import { acceptEvolutionCandidate, proposeEvolution } from '../src/cognition/evolution.js';
+import { materializeRecipe, transitionRecipe } from '../src/cognition/recipes.js';
 import { runtimeStatus, stopRuntime, enableRuntime } from '../src/cognition/runtime.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
@@ -61,6 +64,10 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'context_note_list',
       'context_note_add',
       'context_usage_report',
+      'recipe_list',
+      'recipe_inspect',
+      'recipe_materialize',
+      'recipe_transition',
       'skill_list',
       'skill_inspect',
       'skill_materialize',
@@ -115,6 +122,47 @@ test('MCP Skill tools expose bounded reads and preserve server availability', as
 });
 
 
+test('MCP Recipe tools enforce explicit lifecycle and read-only reads', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    const saved = await saveContext(root, { title: 'MCP Recipe', progressSummary: 'Use bounded recipe controls' });
+    assert.equal(saved.result.status, 'saved');
+    if (saved.result.status !== 'saved') return;
+    await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'mcp-recipe-context', payload: { record: { snapshot: { contextId: saved.result.context.id, snapshotId: saved.result.snapshot.snapshotId } } } });
+    await appendEvent(root, { type: 'git.state.observed', idempotencyKey: 'mcp-recipe-git', payload: {} });
+    await appendEvent(root, { type: 'record.used', idempotencyKey: 'mcp-recipe-use', payload: { feedbackId: 'mcp-recipe-feedback', entity: 'knowledge', entityId: 'knowledge-1', outcome: 'used' } });
+    const proposal = await proposeEvolution(root, { eventIds: (await readJournal(root)).slice(-3).map((event) => event.eventId), targetKind: 'compiler-recipe' });
+    assert.ok(proposal.proposalId);
+    await acceptEvolutionCandidate(root, { proposalId: proposal.proposalId!, rationale: 'Review MCP Recipe.' });
+
+    const invalid = await client.callTool({ name: 'recipe_materialize', arguments: { path: root, proposalId: proposal.proposalId, title: 'Invalid', preferredSources: ['shell'] } });
+    assert.equal(invalid.isError, true);
+    const beforeReads = await readJournal(root);
+    const empty = await client.callTool({ name: 'recipe_list', arguments: { path: root } });
+    assert.notEqual(empty.isError, true);
+    assert.deepEqual(empty.structuredContent, { result: [] });
+    assert.deepEqual(await readJournal(root), beforeReads);
+
+    const materialized = await client.callTool({ name: 'recipe_materialize', arguments: { path: root, proposalId: proposal.proposalId, title: 'MCP Recipe', preferredSources: ['context'], preferredSections: ['summary'], sectionBudgets: { summary: 1000 } } });
+    assert.notEqual(materialized.isError, true);
+    const recipeId = (materialized.structuredContent as { recipeId: string }).recipeId;
+    const inspected = await client.callTool({ name: 'recipe_inspect', arguments: { path: root, recipeId } });
+    assert.notEqual(inspected.isError, true);
+    assert.equal((inspected.structuredContent as { status: string }).status, 'candidate');
+    const verified = await client.callTool({ name: 'recipe_transition', arguments: { path: root, recipeId, to: 'verified', rationale: 'Verified MCP controls.' } });
+    assert.notEqual(verified.isError, true);
+    assert.equal((verified.structuredContent as { transitioned: boolean }).transitioned, true);
+    const compiled = await client.callTool({ name: 'context_compile', arguments: { path: root, contextId: saved.result.context.id, recipeId, query: 'recipe controls', maxChars: 4000 } });
+    assert.notEqual(compiled.isError, true);
+    assert.equal((compiled.structuredContent as { recipe?: { recipeId: string } }).recipe?.recipeId, recipeId);
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
 test('MCP context_usage_report returns structured read-only metrics', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
@@ -357,6 +405,10 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
       'context_note_list',
       'context_note_add',
       'context_usage_report',
+      'recipe_list',
+      'recipe_inspect',
+      'recipe_materialize',
+      'recipe_transition',
       'skill_list',
       'skill_inspect',
       'skill_materialize',

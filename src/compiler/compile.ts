@@ -17,6 +17,7 @@ import type {
   ContextIntent,
   ContextIntentSignal,
   ContextManifest,
+  ContextRecipeParticipation,
   ContextScenario,
   ContextSourceDescriptor,
   ContextTruncation,
@@ -161,6 +162,48 @@ function sortCandidates(left: ContextCandidate, right: ContextCandidate): number
     || stableCompare(left.candidateId, right.candidateId);
 }
 
+function recipeParticipation(sources: CompilerSources): ContextRecipeParticipation | undefined {
+  const recipe = sources.recipe?.recipe;
+  if (!recipe) return undefined;
+  return {
+    recipeId: recipe.recipeId,
+    contentHash: recipe.contentHash,
+    interpreterVersion: 'recipe-interpreter-v1',
+    preferredSources: [...(recipe.preferredSources ?? [])],
+    preferredSections: [...(recipe.preferredSections ?? [])],
+    sectionBudgets: { ...(recipe.sectionBudgets ?? {}) },
+  };
+}
+
+function sourcePreference(candidate: ContextCandidate, recipe: ContextRecipeParticipation): number {
+  const source = candidate.source.kind === 'current-context' ? 'context' : candidate.source.kind;
+  const index = recipe.preferredSources.indexOf(source as ContextRecipeParticipation['preferredSources'][number]);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function sectionPreference(candidate: ContextCandidate, recipe: ContextRecipeParticipation): number {
+  const index = recipe.preferredSections.indexOf(candidate.section);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function recipeApplicable(recipe: ContextRecipeParticipation, sources: CompilerSources, paths: string[]): boolean {
+  const applicability = sources.recipe!.recipe.applicability;
+  if (applicability.branchMode === 'global') return true;
+  if (applicability.branchMode !== 'exact') return false;
+  const branch = sources.anchor.ref ?? sources.anchor.branch ?? 'detached';
+  if (applicability.branches?.length && !applicability.branches.includes(branch) && !applicability.branches.includes(sources.anchor.branch ?? '')) return false;
+  if (applicability.sourceCommit && applicability.sourceCommit !== sources.anchor.head) return false;
+  if (paths.length > 0 && applicability.paths?.length && !applicability.paths.some((path) => paths.includes(path.replaceAll('\\', '/')))) return false;
+  return recipe.recipeId === sources.recipe!.recipe.recipeId;
+}
+
+function sortWithRecipe(recipe: ContextRecipeParticipation | undefined): (left: ContextCandidate, right: ContextCandidate) => number {
+  if (!recipe) return sortCandidates;
+  return (left, right) => sourcePreference(left, recipe) - sourcePreference(right, recipe)
+    || sectionPreference(left, recipe) - sectionPreference(right, recipe)
+    || sortCandidates(left, right);
+}
+
 function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
   if (value.length <= maxChars) return { text: value, truncated: false };
   if (maxChars <= 0) return { text: '', truncated: true };
@@ -264,6 +307,8 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const sources = await loadCompilerSources(startPath, options);
   const normalizedPaths = options.paths ? await filterPaths(sources.anchor.projectRoot, options.paths) : [];
   const intent = intentFor(sources, options, normalizedPaths);
+  const recipe = recipeParticipation(sources);
+  if (recipe && !recipeApplicable(recipe, sources, normalizedPaths)) throw new Error(`compiler recipe is not applicable: ${recipe.recipeId}`);
   const orientation = sources.orientation;
   const maxChars = intent.budget.total;
   const notes = orientation.status === 'ready' ? (await listNotes(sources.anchor.projectRoot, { contextId: orientation.context.id, openOnly: true, limit: options.noteLimit ?? 50, maxChars: Number.MAX_SAFE_INTEGER })).filter((note) => orientation.notes.some((selected) => selected.noteId === note.noteId)) : [];
@@ -276,14 +321,16 @@ export async function compileContext(startPath?: string, options: ContextCompile
     const check = applicable(candidate, intent);
     if (!check.ok) excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: check.reason ?? 'query_no_match' });
     return check.ok;
-  }).sort(sortCandidates);
+  }).sort(sortWithRecipe(recipe));
   const selected: ContextCandidate[] = [];
   const truncation = emptyTruncation();
   const sectionStats: ContextManifest['budget']['sections'] = {};
   let usedChars = 0;
   for (const candidate of eligible) {
     const separator = selected.length > 0 ? 1 : 0;
-    const available = maxChars - usedChars - separator;
+    const sectionBudget = recipe?.sectionBudgets[candidate.section] ?? maxChars;
+    const consumedInSection = sectionStats[candidate.section]?.consumed ?? 0;
+    const available = Math.min(maxChars - usedChars - separator, sectionBudget - consumedInSection - separator);
     if (available <= 0) {
       excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: 'budget' });
       truncation.candidatesOmittedByBudget += 1;
@@ -300,7 +347,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     const item = { ...candidate, text: limited.text, selectedChars: limited.text.length, selected: true, truncated: limited.truncated };
     selected.push(item);
     usedChars += separator + item.selectedChars;
-    const prior = sectionStats[item.section] ?? { allocated: maxChars, consumed: 0, truncated: false };
+    const prior = sectionStats[item.section] ?? { allocated: recipe?.sectionBudgets[item.section] ?? maxChars, consumed: 0, truncated: false };
     sectionStats[item.section] = { ...prior, consumed: prior.consumed + item.selectedChars + separator, truncated: prior.truncated || limited.truncated };
     if (limited.truncated) {
       truncation.candidatesPartiallyTruncated += 1;
@@ -336,6 +383,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     selected,
     budget: { requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats },
     truncation,
+    ...(recipe ? { recipe } : {}),
   });
   return {
     schemaVersion: 1,
@@ -366,6 +414,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
       selectedEventIds: [...new Set(selected.flatMap((item) => item.source.provenance.eventId ? [item.source.provenance.eventId] : []))].sort(stableCompare),
       fallbackReason: sources.fallbackReason,
     },
+    ...(recipe ? { recipe } : {}),
     text: manifestText(selected),
   };
 }

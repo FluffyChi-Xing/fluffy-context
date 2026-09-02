@@ -1,4 +1,4 @@
-import type { CognitionGitAnchor, WorkspacePathChange } from '../cognition/types.js';
+import type { CognitionGitAnchor, CompilerRecipeSection, CompilerRecipeSource, WorkspacePathChange } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
 import type { Deadend, Knowledge, Note, ResumeSummary, StructuredContext } from '../runtime/types.js';
 
@@ -179,8 +179,18 @@ export interface ContextManifestIdentity {
   tokenEstimate: ContextTokenEstimate;
 }
 
+export interface ContextRecipeParticipation {
+  recipeId: string;
+  contentHash: string;
+  interpreterVersion: 'recipe-interpreter-v1';
+  preferredSources: CompilerRecipeSource[];
+  preferredSections: CompilerRecipeSection[];
+  sectionBudgets: Partial<Record<ContextCandidateSection, number>>;
+}
+
 export interface ContextCompileOptions {
   contextId?: string;
+  recipeId?: string;
   query?: string;
   scenario?: ContextScenario;
   scope?: string;
@@ -254,6 +264,7 @@ export interface ContextManifest {
   budget: ContextBudgetReport;
   truncation: ContextTruncation;
   provenance: ContextManifestProvenance;
+  recipe?: ContextRecipeParticipation;
   text: string;
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { checkpoint, resume } from '../runtime/runtime.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectSkill, listSkills, loadContext, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextSkill } from '../agent/api.js';
+import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextRecipe, transitionContextSkill } from '../agent/api.js';
 import { formatUsageReport } from '../cognition/usage-report.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
@@ -72,6 +72,8 @@ function enumOption<T extends string>(args: string[], name: string, values: read
   if (!values.includes(value as T)) throw new Error(`${name} must be one of: ${values.join(', ')}`);
   return value as T;
 }
+
+const recipeBudgets = (value: string | undefined): Record<string, number> | undefined => value === undefined ? undefined : Object.fromEntries(value.split(',').map((item) => { const [section, budget] = item.split('=', 2); const parsed = Number(budget); if (!section || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 100_000) throw new Error('--budgets must be section=non-negative-integer up to 100000'); return [section, parsed]; }));
 
 const HELP: Record<string, string> = {
   init: `usage: ctx init [path] [--path <path>]
@@ -151,6 +153,7 @@ Compile bounded, provider-neutral context with source provenance and selection e
 Options:
   --path <path>              Project path
   --context <id>             Context ID
+  --recipe-id <id>           Explicit verified or published Recipe
   --scenario <scenario>      resume|implementation|debugging|verification|handoff|exploration|unknown
   --scope <scope>            Exact consensus scope
   --paths <paths>            Comma-separated project-relative paths
@@ -172,6 +175,7 @@ Options:
   --max-chars <number>       Maximum expanded characters
   --compile-max-chars <number> Original compile budget (default: 4000)
   --context <id>             Context ID
+  --recipe-id <id>           Explicit verified or published Recipe
   --query <text>             Original compile query
   --scenario <scenario>      resume|implementation|debugging|verification|handoff|exploration|unknown
   --scope <scope>            Exact consensus scope
@@ -358,9 +362,30 @@ Rebuild v2 projections and verify imported v1 parity.
 
 Options:
   --path <path>          Project path`,
-  runtime: `usage: ctx runtime enable|disable|start|stop|status [--path <path>]
+  recipe: `usage: ctx recipe list|inspect|materialize|verify|publish|deprecate|supersede [options]
 
-Control the local event-driven Knowledge Runtime after v1 migration verification.`,
+List, inspect, materialize, or govern immutable compiler Recipes.
+
+Options:
+  --path <path>          Project path
+  --title <text>         Recipe title for materialize
+  --sources <items>      Comma-separated source preferences
+  --sections <items>     Comma-separated section preferences
+  --budgets <items>      Comma-separated section=characters budgets
+  --rationale <text>     Governance rationale
+  --supersedes <ref>     Superseding entity:id`,
+  'recipe verify': `usage: ctx recipe verify <recipe-id> --rationale <text> [--path <path>]
+
+Mark a candidate compiler Recipe as verified.`,
+  'recipe publish': `usage: ctx recipe publish <recipe-id> --rationale <text> [--path <path>]
+
+Publish a verified compiler Recipe.`,
+  'recipe deprecate': `usage: ctx recipe deprecate <recipe-id> --rationale <text> [--path <path>]
+
+Retire a compiler Recipe with an explicit governance reason.`,
+  'recipe supersede': `usage: ctx recipe supersede <recipe-id> --rationale <text> --supersedes <entity:id> [--path <path>]
+
+Supersede a compiler Recipe while retaining its history.`,
   filesystem: `usage: ctx filesystem enable|disable|status [--path <path>]
 
 Control whether the Runtime records filtered file metadata changes.`,
@@ -373,6 +398,9 @@ Disable filesystem change observation and restart a running Runtime.`,
   'filesystem status': `usage: ctx filesystem status [--path <path>]
 
 Show the filesystem observation policy and Runtime status.`,
+  runtime: `usage: ctx runtime enable|disable|start|stop|status [--path <path>]
+
+Control the local Knowledge Runtime lifecycle.`,
   'runtime status': `usage: ctx runtime status [--path <path>]
 
 Show the read-only runtime policy, migration and authenticated lease status.
@@ -397,7 +425,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|journal [options]
+  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -427,6 +455,7 @@ function printHelp(args: string[]): boolean {
     || (command === 'journal' && args[1] === 'verify')
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
+    || (command === 'recipe' && ['list', 'inspect', 'materialize', 'verify', 'publish', 'deprecate', 'supersede'].includes(args[1]))
     || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]))
     || (command === 'usage' && args[1] === 'report');
   const key = nested ? `${command} ${args[1]}` : command;
@@ -506,12 +535,13 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'compile': {
-      const valueOptions = ['--path', '--context', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
+      const valueOptions = ['--path', '--context', '--recipe-id', '--scenario', '--scope', '--paths', '--max-chars', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       const query = positionals(args.slice(1), valueOptions);
       validatePositionals(query, 1, HELP.compile);
       print(await contextCompile(target, {
         contextId: option(args, '--context'),
+        recipeId: option(args, '--recipe-id'),
         query: query[0],
         scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
         scope: option(args, '--scope'),
@@ -525,7 +555,7 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'expand': {
-      const valueOptions = ['--path', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
+      const valueOptions = ['--path', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--recipe-id', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       validatePositionals(positionals(args.slice(1), valueOptions), 0, HELP.expand);
       const level = enumOption(args, '--level', ['structured', 'evidence'] as const);
@@ -542,6 +572,7 @@ async function run(args: string[]): Promise<void> {
         maxChars: option(args, '--max-chars') === undefined ? undefined : numericOption(args, '--max-chars', 0),
         compile: {
           contextId: option(args, '--context'),
+          recipeId: option(args, '--recipe-id'),
           query: option(args, '--query'),
           scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const),
           scope: option(args, '--scope'),
@@ -728,6 +759,52 @@ async function run(args: string[]): Promise<void> {
       }
       void skillId;
       throw new Error(HELP.skill);
+    }
+    case 'recipe': {
+      const action = args[1];
+      const valueOptions = ['--path', '--title', '--sources', '--sections', '--budgets', '--rationale', '--supersedes'];
+      if (action === 'list') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP.recipe);
+        print(await listRecipes(target));
+        return;
+      }
+      if (action === 'inspect') {
+        validateOptions(args.slice(2), ['--path'], ['--path']);
+        const values = positionals(args.slice(2), ['--path']);
+        if (values.length !== 1) throw new Error(HELP.recipe);
+        print(await inspectRecipe(target, values[0]));
+        return;
+      }
+      if (action === 'materialize') {
+        validateOptions(args.slice(2), valueOptions, valueOptions);
+        const values = positionals(args.slice(2), valueOptions);
+        if (values.length !== 1) throw new Error(HELP.recipe);
+        print(await materializeContextRecipe(target, {
+          proposalId: values[0],
+          title: option(args, '--title') ?? '',
+          preferredSources: listOption(args, '--sources') as never,
+          preferredSections: listOption(args, '--sections') as never,
+          sectionBudgets: recipeBudgets(option(args, '--budgets')) as never,
+        }));
+        return;
+      }
+      if (['verify', 'publish', 'deprecate', 'supersede'].includes(action ?? '')) {
+        validateOptions(args.slice(2), ['--path', '--rationale', '--supersedes'], ['--path', '--rationale', '--supersedes']);
+        const values = positionals(args.slice(2), ['--path', '--rationale', '--supersedes']);
+        if (values.length !== 1) throw new Error(HELP.recipe);
+        const supersedes = option(args, '--supersedes');
+        const [entity, entityId] = supersedes?.split(':', 2) ?? [];
+        if (action === 'supersede' && (!entity || !entityId || !['knowledge', 'deadend', 'skill', 'compiler-recipe', 'experience', 'proposal'].includes(entity))) throw new Error('--supersedes must be <entity:id>');
+        print(await transitionContextRecipe(target, {
+          recipeId: values[0],
+          to: action === 'supersede' ? 'superseded' : action as 'verified' | 'published' | 'deprecated',
+          rationale: option(args, '--rationale') ?? '',
+          ...(supersedes ? { supersedes: { entity: entity as never, entityId: entityId!, relation: 'supersedes' as const } } : {}),
+        }));
+        return;
+      }
+      throw new Error(HELP.recipe);
     }
     case 'journal': {
       if (args[1] !== 'verify') throw new Error(HELP.journal);

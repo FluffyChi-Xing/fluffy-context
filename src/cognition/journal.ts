@@ -15,7 +15,7 @@ const eventTypes: ReadonlySet<string> = new Set([
   'deadend.proposed', 'deadend.verified', 'deadend.obsoleted', 'deadend.rejected',
   'experience.recorded',
   'evolution.proposed', 'evolution.candidate.accepted', 'evolution.verified', 'evolution.published', 'evolution.rejected', 'evolution.deprecated', 'evolution.superseded',
-  'skill.materialized', 'skill.invoked', 'skill.outcome.recorded', 'record.used',
+  'skill.materialized', 'recipe.materialized', 'skill.invoked', 'skill.outcome.recorded', 'record.used',
   'usage.operation.completed',
   'projection.advanced', 'projection.failed',
 ]);
@@ -131,6 +131,32 @@ function validSkill(value: unknown): boolean {
     && validIsoDate(value.createdAt);
 }
 
+const recipeSources = new Set(['context', 'knowledge', 'deadend', 'note']);
+const recipeSections = new Set(['summary', 'pending', 'decision', 'risk', 'note', 'knowledge', 'deadend', 'activity']);
+
+function validRecipe(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const allowed = new Set(['recipeId', 'schemaVersion', 'proposalId', 'title', 'applicability', 'preferredSources', 'preferredSections', 'sectionBudgets', 'status', 'contentHash', 'lineage', 'createdAt']);
+  if (Object.keys(value).some((key) => !allowed.has(key))) return false;
+  const validPreferences = (items: unknown, allowedItems: Set<string>) => items === undefined
+    || (Array.isArray(items) && items.length <= allowedItems.size && items.every((item) => typeof item === 'string' && allowedItems.has(item)) && new Set(items).size === items.length);
+  const sectionBudgets = isRecord(value.sectionBudgets) ? value.sectionBudgets : null;
+  const validBudgets = value.sectionBudgets === undefined || (sectionBudgets !== null
+    && Object.keys(sectionBudgets).every((key) => recipeSections.has(key) && validNonNegativeInteger(sectionBudgets[key]) && sectionBudgets[key] <= 100_000));
+  return typeof value.recipeId === 'string' && value.recipeId.trim().length > 0
+    && value.schemaVersion === 1
+    && typeof value.proposalId === 'string' && value.proposalId.trim().length > 0
+    && typeof value.title === 'string' && value.title.trim().length > 0
+    && validApplicability(value.applicability)
+    && validPreferences(value.preferredSources, recipeSources)
+    && validPreferences(value.preferredSections, recipeSections)
+    && validBudgets
+    && value.status === 'candidate'
+    && typeof value.contentHash === 'string' && value.contentHash.trim().length > 0
+    && Array.isArray(value.lineage) && value.lineage.every(validLineage)
+    && validIsoDate(value.createdAt);
+}
+
 function validatePayloadBoundary(input: AppendEventInput): void {
   const payload = input.payload as Record<string, unknown>;
   if (input.type === 'host.prompt.submitted' && (typeof payload.intent !== 'string' || payload.intent.trim().length === 0)) {
@@ -174,6 +200,9 @@ function validatePayloadBoundary(input: AppendEventInput): void {
   }
   if (input.type === 'skill.materialized') {
     if (!validSkill(payload.record)) throw new Error('invalid skill record');
+  }
+  if (input.type === 'recipe.materialized') {
+    if (!validRecipe(payload.record)) throw new Error('invalid compiler recipe record');
   }
   if (input.type === 'skill.invoked') {
     const invocation = payload.record;

@@ -2,7 +2,7 @@ import { readGitWorktreeState } from '../git/git-adapter.js';
 import { contextOrient } from '../agent/api.js';
 import { readJournal } from '../cognition/journal.js';
 import { projectEvents, workspaceKey } from '../cognition/projections.js';
-import type { BranchWorkspace, CognitionEvent } from '../cognition/types.js';
+import type { BranchWorkspace, CognitionEvent, CompilerRecipeState } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
 import type { ContextAnchor, ContextProvenance, ContextSourceDescriptor, ContextSourceApplicability } from './types.js';
 import type { ContextCompileOptions } from './types.js';
@@ -12,6 +12,7 @@ export interface CompilerSources {
   anchor: ContextAnchor;
   events: CognitionEvent[];
   workspace: BranchWorkspace | null;
+  recipe: CompilerRecipeState | null;
   fallbackReason: string | null;
 }
 
@@ -135,7 +136,12 @@ export async function loadCompilerSources(startPath: string | undefined, options
   const anchor = anchorFromGit(git, projectRoot);
   const projection = events.length > 0 ? projectEvents(events) : null;
   const workspace = projection?.workspaces[workspaceKey(anchor)] ?? null;
-  return { orientation, anchor, events, workspace, fallbackReason };
+  const recipeId = options.recipeId?.trim();
+  if (options.recipeId !== undefined && !recipeId) throw new Error('compiler recipe ID must not be empty');
+  const recipe = recipeId ? projection?.recipes[recipeId] ?? null : null;
+  if (recipeId && !recipe) throw new Error(`compiler recipe not found: ${recipeId}`);
+  if (recipe && !['verified', 'published'].includes(recipe.status)) throw new Error(`compiler recipe is not active: ${recipe.recipe.recipeId}`);
+  return { orientation, anchor, events, workspace, recipe, fallbackReason };
 }
 
 export function latestHostIntent(events: CognitionEvent[], anchor: ContextAnchor): { value: string; eventId: string } | null {

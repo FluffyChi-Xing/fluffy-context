@@ -13,10 +13,11 @@ import {
   cognitionProposalsProjectionPath,
   cognitionRetrievalProjectionPath,
   cognitionSkillsProjectionPath,
+  cognitionRecipesProjectionPath,
 } from '../storage/layout.js';
 import { readJournal } from './journal.js';
 import { buildRetrievalProjection } from './retrieval.js';
-import type { BranchWorkspace, CognitionEvent, CognitionGitAnchor, CognitionProjection, CognitionRecordPayload, EvolutionCandidateArtifact, EvolutionLifecycleTransition, EvolutionProposal, EvolutionProposalState, Experience, ProjectionCursor, Skill, SkillInvocation, SkillLifecycleEntry, SkillOutcome, WorkspacePathsChangedPayload } from './types.js';
+import type { BranchWorkspace, CognitionEvent, CognitionGitAnchor, CognitionProjection, CognitionRecordPayload, CompilerRecipe, CompilerRecipeLifecycleEntry, EvolutionCandidateArtifact, EvolutionLifecycleTransition, EvolutionProposal, EvolutionProposalState, Experience, ProjectionCursor, Skill, SkillInvocation, SkillLifecycleEntry, SkillOutcome, WorkspacePathsChangedPayload } from './types.js';
 
 export function workspaceKey(anchor: Pick<CognitionGitAnchor, 'worktreeId' | 'branch' | 'ref'>): string {
   return crypto.createHash('sha256')
@@ -101,6 +102,20 @@ function skillLifecycleEntry(event: CognitionEvent): SkillLifecycleEntry | null 
   };
 }
 
+function recipeLifecycleEntry(event: CognitionEvent): CompilerRecipeLifecycleEntry | null {
+  const payload = event.payload as Record<string, unknown>;
+  const transition = payload.transition;
+  if (!isRecord(transition) || transition.entity !== 'compiler-recipe' || typeof transition.entityId !== 'string' || typeof transition.from !== 'string' || typeof transition.to !== 'string' || typeof transition.reason !== 'string') return null;
+  return {
+    eventId: event.eventId,
+    occurredAt: event.occurredAt,
+    from: transition.from as EvolutionLifecycleTransition['from'],
+    to: transition.to as EvolutionLifecycleTransition['to'],
+    reason: transition.reason,
+    ...(isRecord(transition.supersedes) ? { supersedes: transition.supersedes as unknown as EvolutionLifecycleTransition['supersedes'] } : {}),
+  };
+}
+
 function latestOpenObservationIds(events: CognitionEvent[], notes: Record<string, CognitionRecordPayload>): Set<string> {
   const latest = new Map<string, { eventId: string; record: Record<string, unknown> }>();
   for (const event of events) {
@@ -117,7 +132,7 @@ function latestOpenObservationIds(events: CognitionEvent[], notes: Record<string
 }
 
 export function projectEvents(events: CognitionEvent[]): CognitionProjection {
-  const projection: CognitionProjection = { schemaVersion: 2, contexts: {}, notes: {}, knowledge: {}, deadends: {}, experiences: {}, proposals: {}, skills: {}, workspaces: {} };
+  const projection: CognitionProjection = { schemaVersion: 2, contexts: {}, notes: {}, knowledge: {}, deadends: {}, experiences: {}, proposals: {}, skills: {}, recipes: {}, workspaces: {} };
   const openObservationIds = latestOpenObservationIds(events, projection.notes);
   for (const event of events) {
     const key = workspaceKey(event.git);
@@ -180,6 +195,20 @@ export function projectEvents(events: CognitionEvent[]): CognitionProjection {
         skillState.lifecycle.push(skillEntry);
       }
     }
+    if (event.type === 'recipe.materialized') {
+      const recipe = evolutionRecord<CompilerRecipe>(event);
+      if (recipe && typeof recipe.recipeId === 'string' && !projection.recipes[recipe.recipeId]) {
+        projection.recipes[recipe.recipeId] = { recipe, status: recipe.status, lifecycle: [] };
+      }
+    }
+    if (['evolution.verified', 'evolution.published', 'evolution.rejected', 'evolution.deprecated', 'evolution.superseded'].includes(event.type)) {
+      const recipeEntry = recipeLifecycleEntry(event);
+      const recipeState = recipeEntry ? projection.recipes[(event.payload as { transition: { entityId: string } }).transition.entityId] : null;
+      if (recipeEntry && recipeState && recipeState.status === recipeEntry.from) {
+        recipeState.status = recipeEntry.to;
+        recipeState.lifecycle.push(recipeEntry);
+      }
+    }
     if (event.type === 'skill.invoked') {
       const invocation = evolutionRecord<SkillInvocation>(event);
       const skillState = invocation ? projection.skills[invocation.skillId] : null;
@@ -235,6 +264,7 @@ export async function rebuildProjections(projectRoot: string): Promise<{ project
     atomicWriteJson(cognitionExperiencesProjectionPath(projectRoot), projection.experiences),
     atomicWriteJson(cognitionProposalsProjectionPath(projectRoot), projection.proposals),
     atomicWriteJson(cognitionSkillsProjectionPath(projectRoot), projection.skills),
+    atomicWriteJson(cognitionRecipesProjectionPath(projectRoot), projection.recipes),
     atomicWriteJson(cognitionRetrievalProjectionPath(projectRoot), retrieval),
     ...Object.values(projection.workspaces).map((workspace) => atomicWriteJson(`${cognitionBranchesDirectory(projectRoot)}/${workspace.workspaceKey}.json`, workspace)),
   ]);

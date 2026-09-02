@@ -16,7 +16,7 @@ export function estimateTokens(value: string): number {
   return value.length === 0 ? 0 : Math.ceil(value.length / 4);
 }
 
-export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | 'projectRoot' | 'mode' | 'anchor' | 'intent' | 'selected' | 'budget' | 'truncation'>): string {
+export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | 'projectRoot' | 'mode' | 'anchor' | 'intent' | 'selected' | 'budget' | 'truncation' | 'recipe'>): string {
   return contentHash({
     schemaVersion: 1,
     compilerVersion: '0.7.7',
@@ -29,6 +29,7 @@ export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | '
     selectedItemHashes: manifest.selected.map((item) => item.itemHash),
     budget: { usedChars: manifest.budget.usedChars, maxChars: manifest.budget.requested.total },
     truncation: manifest.truncation,
+    ...(manifest.recipe ? { recipe: { recipeId: manifest.recipe.recipeId, contentHash: manifest.recipe.contentHash, interpreterVersion: manifest.recipe.interpreterVersion } } : {}),
   });
 }
 

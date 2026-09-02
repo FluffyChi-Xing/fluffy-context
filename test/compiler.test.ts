@@ -8,8 +8,10 @@ import { expandContext } from '../src/compiler/expand.js';
 import { canonicalJson, estimateTokens, validateManifestIdentity } from '../src/compiler/identity.js';
 import { FilesystemObserver, type WatchCallback } from '../src/cognition/filesystem-observer.js';
 import { projectEvents } from '../src/cognition/projections.js';
-import { appendEvent } from '../src/cognition/journal.js';
+import { appendEvent, readJournal } from '../src/cognition/journal.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
+import { enableRuntime } from '../src/cognition/runtime.js';
+import { acceptEvolutionCandidate, proposeEvolution } from '../src/cognition/evolution.js';
 import { initProject } from '../src/runtime/init.js';
 import { checkpoint } from '../src/runtime/runtime.js';
 import { addNote } from '../src/runtime/notes.js';
@@ -88,6 +90,73 @@ test('Compiler emits a deterministic bounded manifest with governed sources', as
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('Recipe compilation is explicit, deterministic, bounded, and stale-safe', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await importV1(root);
+    await enableRuntime(root);
+    const saved = await checkpoint(root, {
+      title: 'Recipe compiler context',
+      progressSummary: 'Prefer the durable note over the current context',
+      decisions: ['Keep the selected source bounded'],
+    });
+    assert.equal(saved.status, 'saved');
+    if (saved.status !== 'saved') return;
+    const note = await addNote(root, 'Durable note for recipe selection', { contextId: saved.context.id });
+    await appendEvent(root, {
+      type: 'context.state.recorded',
+      idempotencyKey: 'recipe-context-evidence',
+      payload: { record: { snapshot: { contextId: saved.context.id, snapshotId: saved.snapshot.snapshotId } } },
+    });
+    await appendEvent(root, {
+      type: 'git.state.observed',
+      idempotencyKey: 'recipe-git-evidence',
+      payload: {},
+    });
+    await appendEvent(root, {
+      type: 'record.used',
+      idempotencyKey: 'recipe-use-evidence',
+      payload: { feedbackId: 'recipe-feedback', entity: 'knowledge', entityId: 'recipe-knowledge', outcome: 'used' },
+    });
+    const proposal = await proposeEvolution(root, {
+      eventIds: (await readJournal(root)).slice(-3).map((item) => item.eventId),
+      targetKind: 'compiler-recipe',
+    });
+    assert.ok(proposal.proposalId);
+    await acceptEvolutionCandidate(root, { proposalId: proposal.proposalId!, rationale: 'Reviewed deterministic compiler controls.' });
+    const { materializeRecipe, transitionRecipe } = await import('../src/cognition/recipes.js');
+    const materialized = await materializeRecipe(root, {
+      proposalId: proposal.proposalId!,
+      title: 'Prefer notes',
+      preferredSources: ['note', 'context'],
+      preferredSections: ['note', 'summary'],
+      sectionBudgets: { note: 80 },
+    });
+    await transitionRecipe(root, { recipeId: materialized.recipeId, to: 'verified', rationale: 'Controls reviewed.' });
+    const baseline = await compileContext(root, { contextId: saved.context.id, query: 'recipe durable', maxChars: 4000 });
+    const unchanged = await compileContext(root, { contextId: saved.context.id, query: 'recipe durable', maxChars: 4000 });
+    assert.deepEqual(unchanged, baseline);
+    const recipeManifest = await compileContext(root, { contextId: saved.context.id, query: 'recipe durable', recipeId: materialized.recipeId, maxChars: 4000 });
+    assert.equal(recipeManifest.recipe?.recipeId, materialized.recipeId);
+    assert.equal(validateManifestIdentity(recipeManifest), true);
+    assert.deepEqual(recipeManifest, await compileContext(root, { contextId: saved.context.id, query: 'recipe durable', recipeId: materialized.recipeId, maxChars: 4000 }));
+    assert.equal(recipeManifest.selected[0]?.source.entityId, note.noteId);
+    assert.ok((recipeManifest.budget.sections.note?.consumed ?? 0) <= 80);
+    await assert.rejects(() => compileContext(root, { contextId: saved.context.id, query: 'recipe durable', recipeId: 'missing', maxChars: 4000 }), /recipe not found/);
+    await transitionRecipe(root, { recipeId: materialized.recipeId, to: 'deprecated', rationale: 'No longer active.' });
+    await assert.rejects(() => expandContext(root, {
+      manifestHash: recipeManifest.identity.manifestHash,
+      candidateId: recipeManifest.selected[0]?.candidateId,
+      level: 'structured',
+      compile: { contextId: saved.context.id, query: 'recipe durable', recipeId: materialized.recipeId, maxChars: 4000 },
+    }), /compiler recipe is not active|manifest hash mismatch/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 
 test('Compiler expands selected candidates by identity with bounded structured and evidence output', async () => {
   const root = await project();

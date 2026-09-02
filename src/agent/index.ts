@@ -1,5 +1,9 @@
 export * from './api.js';
 export type {
+  MaterializeRecipeInput,
+  TransitionRecipeInput,
+} from '../cognition/recipes.js';
+export type {
   MaterializeSkillInput,
   RecordSkillInvocationInput,
   RecordSkillOutcomeInput,
@@ -35,6 +39,7 @@ export type {
   ContextCandidate,
   ContextCandidateSection,
   ContextCompileOptions,
+  ContextRecipeParticipation,
   ContextExpandInput,
   ContextExpandLevel,
   ContextExpandResult,
@@ -49,3 +54,4 @@ export type {
   ContextSourceDescriptor,
   ContextTruncation,
 } from '../compiler/types.js';
+export type { CompilerRecipe, CompilerRecipeState } from '../cognition/types.js';

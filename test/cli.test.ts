@@ -38,7 +38,7 @@ test('cli reports the package release version', async () => {
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'journal'];
+    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'recipe', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -68,6 +68,9 @@ test('each command has focused help without creating runtime files', async () =>
     const journal = await runCli(['journal', 'verify', '--help'], root);
     assert.equal(journal.code, 0);
     assert.match(journal.stdout, /journal verify/);
+    const recipe = await runCli(['recipe', 'verify', '--help'], root);
+    assert.equal(recipe.code, 0);
+    assert.match(recipe.stdout, /recipe verify/);
     const verify = await runCli(['knowledge', 'verify', '--help'], root);
     assert.equal(verify.code, 0);
     assert.match(verify.stdout, /knowledge verify/);
@@ -285,7 +288,36 @@ test('skill CLI exposes help and validates unavailable Skill operations', async 
 });
 
 
-test('compile CLI returns a manifest and validates compiler options', async () => {
+test('recipe CLI exposes read-only discovery and validates explicit controls', async () => {
+  const root = await project();
+  try {
+    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
+    const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
+    const before = await readFile(journalPath, 'utf8');
+    const listed = await runCli(['recipe', 'list', '--path', root], root);
+    assert.equal(listed.code, 0, listed.stderr);
+    assert.deepEqual(JSON.parse(listed.stdout), []);
+    const inspected = await runCli(['recipe', 'inspect', 'missing', '--path', root], root);
+    assert.notEqual(inspected.code, 0);
+    assert.match(inspected.stderr, /recipe not found/);
+    const invalidSources = await runCli(['recipe', 'materialize', 'proposal', '--title', 'Recipe', '--sources', 'shell', '--path', root], root);
+    assert.notEqual(invalidSources.code, 0);
+    assert.match(invalidSources.stderr, /must be one of/);
+    const invalidBudget = await runCli(['recipe', 'materialize', 'proposal', '--title', 'Recipe', '--budgets', 'summary=-1', '--path', root], root);
+    assert.notEqual(invalidBudget.code, 0);
+    assert.match(invalidBudget.stderr, /non-negative-integer/);
+    const unknown = await runCli(['compile', 'recipe', '--recipe-id', 'missing', '--path', root], root);
+    assert.notEqual(unknown.code, 0);
+    assert.match(unknown.stderr, /compiler recipe not found/);
+    assert.equal(await readFile(journalPath, 'utf8'), before);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
   const root = await project();
   try {
     assert.equal((await runCli(['init', '--path', root], root)).code, 0);

@@ -33,6 +33,7 @@ export type CognitionEventType =
   | 'evolution.deprecated'
   | 'evolution.superseded'
   | 'skill.materialized'
+  | 'recipe.materialized'
   | 'skill.invoked'
   | 'skill.outcome.recorded'
   | 'record.used'
@@ -205,22 +206,37 @@ export interface SkillState {
   outcomes: SkillOutcome[];
 }
 
+export type CompilerRecipeSource = 'context' | 'knowledge' | 'deadend' | 'note';
+export type CompilerRecipeSection = 'summary' | 'pending' | 'decision' | 'risk' | 'note' | 'knowledge' | 'deadend' | 'activity';
+
 export interface CompilerRecipe {
   recipeId: string;
   schemaVersion: 1;
+  proposalId: string;
   title: string;
   applicability: Applicability;
-  scenario?: string;
-  queryTerms?: string[];
-  preferredSources?: Array<'context' | 'knowledge' | 'deadend' | 'note'>;
-  preferredSections?: string[];
-  sectionBudgets?: Record<string, number>;
-  graph?: { enabled: boolean; maxDepth: 0 | 1 | 2; maxFanOut: number };
-  status: EvolutionArtifactStatus;
+  preferredSources?: CompilerRecipeSource[];
+  preferredSections?: CompilerRecipeSection[];
+  sectionBudgets?: Partial<Record<CompilerRecipeSection, number>>;
+  status: 'candidate';
   contentHash: string;
   lineage: EvolutionLineageReference[];
   createdAt: string;
-  updatedAt: string;
+}
+
+export interface CompilerRecipeLifecycleEntry {
+  eventId: string;
+  occurredAt: string;
+  from: EvolutionArtifactStatus;
+  to: EvolutionArtifactStatus;
+  reason: string;
+  supersedes?: EvolutionLineageReference;
+}
+
+export interface CompilerRecipeState {
+  recipe: CompilerRecipe;
+  status: EvolutionArtifactStatus;
+  lifecycle: CompilerRecipeLifecycleEntry[];
 }
 
 export interface EvolutionLifecycleTransition {
@@ -390,6 +406,7 @@ export interface CognitionProjection {
   experiences: Record<string, Experience>;
   proposals: Record<string, EvolutionProposalState>;
   skills: Record<string, SkillState>;
+  recipes: Record<string, CompilerRecipeState>;
   workspaces: Record<string, BranchWorkspace>;
 }
 
