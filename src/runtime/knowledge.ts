@@ -180,12 +180,31 @@ function matchedFields(knowledge: Knowledge, terms: string[]): { fields: string[
   return { fields: [...fields], matchedTerms: [...matched], score };
 }
 
-function limitedKnowledge(knowledge: Knowledge, maxChars: number): Knowledge {
-  const statement = knowledge.statement.length <= maxChars ? knowledge.statement : `${knowledge.statement.slice(0, Math.max(0, maxChars - 1))}…`;
-  return { ...knowledge, statement, supportingEvidence: knowledge.supportingEvidence.map((item) => item.length <= maxChars ? item : `${item.slice(0, Math.max(0, maxChars - 1))}…`) };
+function takeText(value: string, budget: { remaining: number; truncated: boolean }): string {
+  const size = Math.max(0, budget.remaining);
+  const result = value.length <= size ? value : size === 0 ? '' : `${value.slice(0, size - 1)}…`;
+  budget.remaining -= result.length;
+  budget.truncated ||= result.length < value.length;
+  return result;
+}
+
+function possibleContradiction(left: string, right: string): boolean {
+  const a = normalized(left).replace(/[.!。！]+$/, '');
+  const b = normalized(right).replace(/[.!。！]+$/, '');
+  const negative = (text: string) => /\b(?:not|never|no)\b|不能|不应|禁止|不要|无需/.test(text);
+  const proposition = (text: string) => text.replace(/\b(?:must|should|does|do|is|are|be|not|never|no|always|the|a|an)\b/g, '')
+    .replace(/不能|不应|禁止|不要|无需|必须|应该|应当/g, '').replace(/\s+/g, ' ').trim();
+  if (negative(a) !== negative(b) && proposition(a).length > 3 && proposition(a) === proposition(b)) return true;
+  const existing = /^(?:use|reuse) (?:the )?existing (.+)$/;
+  const replacement = /^(?:build|create) (?:a )?new (.+)$/;
+  return Boolean(existing.exec(a)?.[1] && existing.exec(a)?.[1] === replacement.exec(b)?.[1])
+    || Boolean(existing.exec(b)?.[1] && existing.exec(b)?.[1] === replacement.exec(a)?.[1]);
 }
 
 export async function discoverKnowledge(startPath: string | undefined, query: string, options: KnowledgeDiscoverOptions = {}): Promise<KnowledgeDiscoveryResult> {
+  for (const [name, value] of Object.entries({ limit: options.limit, maxChars: options.maxChars })) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error(`${name} must be a non-negative safe integer`);
+  }
   const projectRoot = await resolveProjectRoot(startPath);
   const cleanQuery = query.trim();
   if (!cleanQuery) throw new Error('knowledge discovery query must not be empty');
@@ -199,17 +218,42 @@ export async function discoverKnowledge(startPath: string | undefined, query: st
     .filter((item) => item.matchedTerms.length > 0)
     .sort((left, right) => right.score - left.score || Number(right.knowledge.status === 'verified') - Number(left.knowledge.status === 'verified') || right.knowledge.confidence - left.knowledge.confidence || right.knowledge.updatedAt.localeCompare(left.knowledge.updatedAt) || left.knowledge.knowledgeId.localeCompare(right.knowledge.knowledgeId));
   const duplicateMap = new Map<string, string[]>();
-  for (const item of file.items) {
+  const eligibleIds = new Set(matches.slice(0, 100).map((item) => item.knowledge.knowledgeId));
+  const diagnosticItems = file.items.filter((item) => eligibleIds.has(item.knowledgeId));
+  const diagnosticLimit = Math.min(options.limit ?? 10, 10);
+  for (const item of diagnosticItems) {
     const key = `${normalized(item.kind)}|${normalized(item.scope)}|${normalized(item.statement)}`;
     duplicateMap.set(key, [...(duplicateMap.get(key) ?? []), item.knowledgeId]);
   }
-  const duplicateIds = [...duplicateMap.values()].filter((ids) => ids.length > 1);
-  const possibleConflicts = file.items.flatMap((left, index) => file.items.slice(index + 1).filter((right) => normalized(left.scope) === normalized(right.scope) && normalized(left.statement) !== normalized(right.statement) && queryTerms(left.statement).some((term) => normalized(right.statement).includes(term))).map((right) => ({ scope: left.scope, knowledgeIds: [left.knowledgeId, right.knowledgeId], statements: [left.statement, right.statement] })));
+  const duplicateGroups = [...duplicateMap.values()].filter((ids) => ids.length > 1);
+  const duplicateIds = duplicateGroups.slice(0, diagnosticLimit).map((ids) => ids.slice(0, 10));
   const limit = options.limit ?? 10;
   const selected = matches.slice(0, limit);
   const maxChars = options.maxChars ?? 4000;
-  const hits = selected.map((item) => ({ knowledge: limitedKnowledge(item.knowledge, maxChars), score: item.score, matchedTerms: item.matchedTerms, matchedFields: item.fields, why: item.fields.map((field) => `matched ${field}`) }));
-  return { query: cleanQuery, total: matches.length, truncated: matches.length > selected.length, hits, duplicateIds, possibleConflicts };
+  let textTruncated = false;
+  const hits = selected.map((item) => {
+    const budget = { remaining: maxChars, truncated: false };
+    const statement = takeText(item.knowledge.statement, budget);
+    const supportingEvidence = item.knowledge.supportingEvidence.map((text) => takeText(text, budget)).filter(Boolean);
+    textTruncated ||= budget.truncated;
+    return { knowledge: { ...item.knowledge, statement, supportingEvidence }, score: item.score, matchedTerms: item.matchedTerms, matchedFields: item.fields, why: item.fields.map((field) => `matched ${field}`) };
+  });
+  const possibleConflicts: KnowledgeDiscoveryResult['possibleConflicts'] = [];
+  const diagnosticBudget = { remaining: maxChars, truncated: false };
+  let diagnosticsTruncated = matches.length > diagnosticItems.length || duplicateGroups.length > duplicateIds.length || duplicateGroups.some((ids) => ids.length > 10);
+  outer: for (let i = 0; i < diagnosticItems.length; i += 1) {
+    const left = diagnosticItems[i];
+    for (const right of diagnosticItems.slice(i + 1)) {
+      if (normalized(left.scope) !== normalized(right.scope) || normalized(left.kind) !== normalized(right.kind)
+        || !possibleContradiction(left.statement, right.statement)) continue;
+      if (possibleConflicts.length >= diagnosticLimit) { diagnosticsTruncated = true; break outer; }
+      possibleConflicts.push({ scope: left.scope, knowledgeIds: [left.knowledgeId, right.knowledgeId],
+        statements: [takeText(left.statement, diagnosticBudget), takeText(right.statement, diagnosticBudget)] });
+    }
+  }
+  return { query: cleanQuery, total: matches.length,
+    truncated: matches.length > selected.length || textTruncated || diagnosticsTruncated || diagnosticBudget.truncated,
+    hits, duplicateIds, possibleConflicts };
 }
 
 export async function verifyKnowledge(startPath: string | undefined, knowledgeId: string): Promise<Knowledge> {

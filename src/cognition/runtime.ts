@@ -255,6 +255,9 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
     return closing;
   };
   const touch = (): void => {
+    // Draining observations during shutdown can still notify activity. Never
+    // recreate an inactivity timer after closeServer has cleared the timers.
+    if (closing) return;
     if (inactivity) clearTimeout(inactivity);
     inactivity = setTimeout(() => { void close('inactivity').catch(() => undefined); }, inactivityTimeoutMs);
   };

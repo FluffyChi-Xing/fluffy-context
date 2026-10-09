@@ -2,6 +2,8 @@ import { readdir } from 'node:fs/promises';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { readJson, isRecord } from '../storage/json-store.js';
 import { contextsRoot, contextMetadataPath, snapshotsDirectory } from '../storage/layout.js';
+import { journalStorage } from './journal-segments.js';
+import { readAdmissionStats } from './admission.js';
 import { readJournal } from './journal.js';
 import { listDeadends, listKnowledge } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
@@ -162,6 +164,7 @@ function operationStats(events: CognitionEvent[]): Record<string, unknown> {
 }
 
 export async function buildUsageReport(startPath: string | undefined, options: UsageReportOptions = {}): Promise<UsageReport> {
+  if (options.baselineTokens !== undefined && (!Number.isSafeInteger(options.baselineTokens) || options.baselineTokens < 0)) throw new Error('baselineTokens must be a non-negative safe integer');
   const projectRoot = await resolveProjectRoot(startPath);
   const window = windowOf(options);
   let events: CognitionEvent[] = [];
@@ -171,6 +174,12 @@ export async function buildUsageReport(startPath: string | undefined, options: U
     journalVerified = false;
   }
   const scoped = events.filter((event) => inWindow(event, window));
+  const storage = await journalStorage(projectRoot, true);
+  const admission = await readAdmissionStats(projectRoot);
+  const journalBytes = storage.bytes;
+  const eventTypes: Record<string, number> = {};
+  for (const event of scoped) eventTypes[event.type] = (eventTypes[event.type] ?? 0) + 1;
+  const semanticEvents = scoped.filter((event) => /^(context\.|knowledge\.|deadend\.|note\.|experience\.|evolution\.|skill\.|recipe\.|record\.used)/.test(event.type)).length;
   const usageEvents = scoped.map((event) => ({ event, payload: usagePayload(event) })).filter((item): item is { event: CognitionEvent; payload: UsageOperationCompletedPayload } => item.payload !== null);
   const knowledge = await listKnowledge(projectRoot, true);
   const deadends = await listDeadends(projectRoot, true);
@@ -204,20 +213,22 @@ export async function buildUsageReport(startPath: string | undefined, options: U
     buckets.set(key, bucket);
   }
   const ctxTokens = usageEvents.reduce((sum, item) => sum + item.payload.estimatedOutputTokens, 0);
+  const inputTokens = usageEvents.reduce((sum, item) => sum + item.payload.estimatedInputTokens, 0);
+  const totalTokens = ctxTokens + inputTokens;
   const baseline = options.baselineTokens ?? null;
-  const savings = baseline === null ? null : baseline - ctxTokens;
+  const savings = baseline === null || usageEvents.length === 0 ? null : baseline - totalTokens;
   const investment = metric(ctxTokens, 'estimated', 'tokens', 'chars-div-four');
   const rawAssets = verified.length;
   const usedCount = verified.reduce((sum, key) => sum + Math.min(used.get(key) ?? 0, 3), 0);
   const trendEntries = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b));
   let cumulativeInvestmentTokens = 0;
   let cumulativeOutputChars = 0;
-  let paybackPeriodStart: string | null = null;
+
   const trends = trendEntries.map(([periodStart, values]) => {
     cumulativeInvestmentTokens += values.estimatedOutputTokens;
     cumulativeOutputChars += values.outputChars;
-    const cumulativeSavings = baseline === null ? null : baseline - cumulativeInvestmentTokens;
-    if (paybackPeriodStart === null && cumulativeSavings !== null && cumulativeSavings >= cumulativeInvestmentTokens) paybackPeriodStart = periodStart;
+    // A window-total baseline cannot establish when savings occurred.
+    const cumulativeSavings = null;
     return {
       periodStart,
       ...values,
@@ -226,35 +237,38 @@ export async function buildUsageReport(startPath: string | undefined, options: U
       cumulativeEstimatedSavings: cumulativeSavings,
     };
   });
-  const paybackReached = paybackPeriodStart !== null;
-  const paybackPeriodDays = paybackPeriodStart === null ? null : Math.max(0, (Date.parse(paybackPeriodStart) - Date.parse(window.from)) / 86_400_000);
   return {
     schemaVersion: 1, generatedAt: new Date().toISOString(), projectRoot, window,
-    dataQuality: { journalVerified, journalEventCount: events.length, windowEventCount: scoped.length, usageEventCount: usageEvents.length, firstUsageAt: usageEvents[0]?.event.occurredAt ?? null, lastUsageAt: usageEvents.at(-1)?.event.occurredAt ?? null, measuredMetricCount: usageEvents.length * 7, estimatedMetricCount: usageEvents.length * 2 + (ctxTokens > 0 ? 1 : 0), unavailableMetricCount: 1 },
+    dataQuality: { journalVerified, journalBytes, journalStorage: storage, admission, eventTypes, semanticEventRatio: metric(scoped.length ? semanticEvents / scoped.length : null, 'derived', 'ratio', 'semantic lifecycle events / window events; not a correctness score'), journalEventCount: events.length, windowEventCount: scoped.length, usageEventCount: usageEvents.length, firstUsageAt: usageEvents[0]?.event.occurredAt ?? null, lastUsageAt: usageEvents.at(-1)?.event.occurredAt ?? null, measuredMetricCount: usageEvents.length * 7, estimatedMetricCount: usageEvents.length * 2 + (ctxTokens > 0 ? 1 : 0), unavailableMetricCount: 1 },
     assets: {
       knowledge: { total: knowledge.length, candidate: knowledge.filter((item) => item.status === 'candidate').length, verified: knowledge.filter((item) => item.status === 'verified').length, retired: knowledge.filter((item) => ['deprecated', 'rejected'].includes(item.status)).length, created: lifecycle('knowledge.proposed'), verifiedInWindow: lifecycle('knowledge.verified') },
       deadends: { total: deadends.length, candidate: deadends.filter((item) => item.status === 'candidate').length, verified: deadends.filter((item) => item.status === 'verified').length, retired: deadends.filter((item) => ['obsolete', 'rejected'].includes(item.status)).length, created: lifecycle('deadend.proposed'), verifiedInWindow: lifecycle('deadend.verified') },
       notes: { total: notes.length, createdInWindow: lifecycle('note.recorded') }, contexts: { total: contextData.items.length, active: contextData.items.filter((item) => ['active', 'stable'].includes(item.status)).length, snapshots: contextData.snapshots }, rawVerifiedAssetCount: rawAssets, effectiveAssetPoints: metric(rawAssets + usedCount * 0.25, 'derived', 'asset-points'), assumptions: { reuseBonusPerUse: 0.25, maxBonusUses: 3 },
     },
     reuse: { recordUsedInWindow: recordUsed, recordUsedTotal: events.filter((event) => event.type === 'record.used').length, usedVerifiedAssetCount: usedVerified, verifiedAssetReuseRate: metric(rawAssets === 0 ? null : usedVerified / rawAssets, 'derived', 'ratio') },
-    investment: { contextOutputTokens: investment, providerTokens: metric(null, 'unavailable', 'tokens') },
+    investment: { contextOutputTokens: investment, contextInputTokens: metric(inputTokens, 'estimated', 'tokens', 'chars-div-four'), totalContextTokens: metric(totalTokens, 'estimated', 'tokens', 'chars-div-four'), providerTokens: metric(null, 'unavailable', 'tokens') },
     payback: {
       baselineTokens: baseline,
       baselineSource: options.baselineSource ?? null,
       estimatedSavings: savings === null ? metric(null, 'unavailable', 'tokens') : metric(savings, 'estimated', 'tokens'),
-      estimatedROI: baseline === null || ctxTokens === 0 ? null : savings! / ctxTokens,
-      status: baseline === null ? 'no_baseline' : paybackReached ? 'reached' : 'not_reached',
-      paybackAt: paybackPeriodStart,
-      paybackPeriodDays,
+      estimatedROI: savings === null || totalTokens === 0 ? null : savings / totalTokens,
+      status: baseline === null ? 'no_baseline' : 'unpaired_baseline',
+      paybackAt: null,
+      paybackPeriodDays: null,
     },
     operations: { available: usageEvents.length > 0, byOperation: operationStats(scoped), reason: usageEvents.length > 0 ? null : 'operation output telemetry is not yet recorded' },
     trends,
-    warnings: [...(!journalVerified ? ['v2 journal unavailable; lifecycle metrics may be incomplete'] : []), 'Provider token usage is unavailable', ...(usageEvents.length === 0 ? ['Token investment is unavailable until operation output telemetry is recorded'] : [])],
+    warnings: [...(!journalVerified ? ['v2 journal unavailable; lifecycle metrics may be incomplete'] : []), 'Provider token usage is unavailable', 'chars-div-four is a rough estimate, especially for CJK; context compression is not proven task savings', ...(baseline !== null ? ['Window baseline is unpaired; no causal savings or payback date can be established'] : []), ...(usageEvents.length === 0 ? ['Token investment is unavailable until operation output telemetry is recorded'] : [])],
   };
 }
 
 export function formatUsageReport(report: Record<string, any>): string {
   const assets = report.assets; const payback = report.payback;
-  const lines = ['fluffy-context usage report', `Window: ${String(report.window.from).slice(0, 10)} to ${String(report.window.to).slice(0, 10)}`, '', 'ASSET VALUE', `  Verified knowledge       ${assets.knowledge.verified}`, `  Verified deadends        ${assets.deadends.verified}`, `  Used verified assets     ${report.reuse.usedVerifiedAssetCount}`, `  Asset points             ${assets.effectiveAssetPoints.value.toFixed(2)}  derived`, '', 'TOKEN INVESTMENT', `  Estimated tokens         ${report.investment.contextOutputTokens.value}  estimated`, '  Provider tokens          n/a  unavailable', '', 'RETURN', `  Baseline tokens          ${payback.baselineTokens ?? 'n/a'}`, `  Estimated savings        ${payback.estimatedSavings.value ?? 'n/a'}`, `  ROI                      ${payback.estimatedROI ?? 'n/a'}`, `  Payback                  ${payback.status}`, '', 'COMMAND OUTPUT TREND', `  Usage events             ${report.dataQuality.usageEventCount}`, '', 'DATA QUALITY', `  Journal verified         ${report.dataQuality.journalVerified ? 'yes' : 'no'}`, `  Window events            ${report.dataQuality.windowEventCount}`, `  Warnings                 ${report.warnings.length}`];
+  const lines = ['fluffy-context usage report', `Window: ${String(report.window.from).slice(0, 10)} to ${String(report.window.to).slice(0, 10)}`, '', 'ASSET VALUE', `  Verified knowledge       ${assets.knowledge.verified}`, `  Verified deadends        ${assets.deadends.verified}`, `  Used verified assets     ${report.reuse.usedVerifiedAssetCount}`, `  Asset points             ${assets.effectiveAssetPoints.value.toFixed(2)}  derived`, '', 'TOKEN INVESTMENT', `  Estimated tokens         ${report.investment.totalContextTokens.value}  estimated (input + output)`, '  Provider tokens          n/a  unavailable', '', 'RETURN', `  Baseline tokens          ${payback.baselineTokens ?? 'n/a'}`, `  Estimated savings        ${payback.estimatedSavings.value ?? 'n/a'}`, `  ROI                      ${payback.estimatedROI ?? 'n/a'}`, `  Payback                  ${payback.status}`, '', 'COMMAND OUTPUT TREND', `  Usage events             ${report.dataQuality.usageEventCount}`, '', 'DATA QUALITY', `  Journal verified         ${report.dataQuality.journalVerified ? 'yes' : 'no'}`, `  Window events            ${report.dataQuality.windowEventCount}`, `  Warnings                 ${report.warnings.length}`];
+  lines.push(`  Journal bytes            ${report.dataQuality.journalBytes}`, `  Semantic event ratio     ${report.dataQuality.semanticEventRatio.value ?? 'n/a'}  derived`, '', 'EVENT TYPES');
+  lines.push(`  Archives                 ${report.dataQuality.journalStorage.archives}`, `  Expanded journal bytes   ${report.dataQuality.journalStorage.expandedBytes}`);
+  for (const [type, count] of Object.entries(report.dataQuality.eventTypes)) lines.push(`  ${type}: ${count}`);
+  lines.push(`  Budget-rejected observations ${Object.values(report.dataQuality.admission.dropped).reduce((sum, count) => Number(sum) + Number(count), 0)}`);
+  lines.push('', ...report.warnings.map((warning: string) => `  ${warning}`));
   return `${lines.join('\n')}\n`;
 }

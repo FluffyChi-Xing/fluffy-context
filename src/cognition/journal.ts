@@ -1,11 +1,14 @@
 import crypto from 'node:crypto';
-import { appendFile, mkdir, readFile, readdir, truncate } from 'node:fs/promises';
+import { appendFile, readFile, truncate } from 'node:fs/promises';
 import path from 'node:path';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { loadManifest } from '../runtime/init.js';
 import { withLock } from '../storage/lock.js';
 import { cognitionJournalDirectory, locksDirectory } from '../storage/layout.js';
 import type { CognitionEvent, CognitionEventSource, CognitionEventType, CognitionGitAnchor } from './types.js';
+import { appendJournalLine, archiveSegment, journalFiles, journalStorage, readSegment } from './journal-segments.js';
+import { loadRuntimePolicy } from './policy.js';
+import { recordAdmissionDrop } from './admission.js';
 
 const eventTypes: ReadonlySet<string> = new Set([
   'runtime.enabled', 'runtime.started', 'runtime.stopped', 'host.session.started', 'host.prompt.submitted',
@@ -21,7 +24,6 @@ const eventTypes: ReadonlySet<string> = new Set([
 ]);
 const sourceKinds: ReadonlySet<string> = new Set(['cli', 'claude-hook', 'mcp', 'agent', 'git-observer', 'fs-observer', 'migration']);
 
-const segmentName = '00000001.ndjson';
 
 export interface AppendEventInput<T = Record<string, unknown>> {
   eventId?: string;
@@ -54,14 +56,6 @@ export function eventHash<T>(event: Omit<CognitionEvent<T>, 'hash'>): string {
   return digest(event);
 }
 
-async function journalFiles(projectRoot: string): Promise<string[]> {
-  try {
-    return (await readdir(cognitionJournalDirectory(projectRoot))).filter((file) => file.endsWith('.ndjson')).sort();
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT') return [];
-    throw error;
-  }
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -252,7 +246,7 @@ function validateEventShape(event: unknown, projectId: string, file: string, lin
 async function recoverPartialTail(projectRoot: string): Promise<void> {
   const files = await journalFiles(projectRoot);
   const file = files.at(-1);
-  if (!file) return;
+  if (!file || file.endsWith('.gz')) return;
   const filePath = path.join(cognitionJournalDirectory(projectRoot), file);
   const content = await readFile(filePath, 'utf8');
   if (content.endsWith('\n')) return;
@@ -262,7 +256,7 @@ async function recoverPartialTail(projectRoot: string): Promise<void> {
     JSON.parse(tail);
     await appendFile(filePath, '\n', 'utf8');
   } catch {
-    await truncate(filePath, boundary < 0 ? 0 : boundary + 1);
+    await truncate(filePath, boundary < 0 ? 0 : Buffer.byteLength(content.slice(0, boundary + 1), 'utf8'));
   }
 }
 
@@ -271,8 +265,9 @@ export async function readJournal(startPath?: string, options: { allowPartialTai
   const projectId = (await loadManifest(projectRoot)).projectId;
   const events: CognitionEvent[] = [];
   let previousHash: string | null = null;
-  for (const file of await journalFiles(projectRoot)) {
-    const content = await readFile(path.join(cognitionJournalDirectory(projectRoot), file), 'utf8');
+  const files = await journalFiles(projectRoot);
+  for (const file of files) {
+    const content = (await readSegment(projectRoot, file)).toString('utf8');
     const lines = content.split('\n');
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
@@ -281,7 +276,7 @@ export async function readJournal(startPath?: string, options: { allowPartialTai
       try {
         event = JSON.parse(line) as CognitionEvent;
       } catch (error) {
-        if (options.allowPartialTail !== false && index === lines.length - 1 && !content.endsWith('\n')) break;
+        if (options.allowPartialTail !== false && file === files.at(-1) && !file.endsWith('.gz') && index === lines.length - 1 && !content.endsWith('\n')) break;
         throw new Error(`invalid journal record ${file}:${index + 1}: ${error instanceof Error ? error.message : 'invalid JSON'}`);
       }
       validateEventShape(event, projectId, file, index + 1);
@@ -299,6 +294,31 @@ export async function readJournal(startPath?: string, options: { allowPartialTai
 
 export async function verifyJournal(startPath?: string): Promise<CognitionEvent[]> {
   return readJournal(startPath, { allowPartialTail: false });
+}
+
+export async function compactJournal(startPath?: string, options: { apply?: boolean; minBytes?: number } = {}) {
+  const root = await resolveProjectRoot(startPath);
+  const minBytes = options.minBytes ?? 1;
+  if (!Number.isSafeInteger(minBytes) || minBytes < 0) throw new Error('minBytes must be a non-negative integer');
+  const operation = async () => {
+    const events = await verifyJournal(root);
+    const before = await journalStorage(root);
+    const eligible = [];
+    for (const file of await journalFiles(root)) {
+      if (!file.endsWith('.gz') && (await readSegment(root, file)).length >= minBytes) eligible.push(file);
+    }
+    if (options.apply) {
+      for (const file of eligible) await archiveSegment(root, file);
+      // Complete deletion after an interrupted publication, but only after validation.
+      for (const file of await journalFiles(root)) if (file.endsWith('.gz')) await archiveSegment(root, file);
+      const replay = await verifyJournal(root);
+      if (replay.length !== events.length || replay.at(-1)?.hash !== events.at(-1)?.hash) throw new Error('journal replay changed during compaction');
+    }
+    const after = options.apply ? await journalStorage(root) : before;
+    return { applied: options.apply === true, eligible, events: events.length, headHash: events.at(-1)?.hash ?? null,
+      bytesBefore: before.bytes, bytesAfter: after.bytes, savedBytes: before.bytes - after.bytes, archives: after.archives };
+  };
+  return options.apply ? withLock(`${locksDirectory(root)}/cognition-journal.lock`, operation) : operation();
 }
 
 export async function appendEvent<T>(startPath: string | undefined, input: AppendEventInput<T>): Promise<{ event: CognitionEvent<T>; appended: boolean }> {
@@ -347,8 +367,17 @@ export async function appendEvent<T>(startPath: string | undefined, input: Appen
       previousHash: existing.at(-1)?.hash ?? null,
     };
     const event = { ...eventWithoutHash, hash: eventHash(eventWithoutHash) };
-    await mkdir(cognitionJournalDirectory(projectRoot), { recursive: true });
-    await appendFile(path.join(cognitionJournalDirectory(projectRoot), segmentName), `${JSON.stringify(event)}\n`, 'utf8');
+    const line = `${JSON.stringify(event)}\n`;
+    if (['workspace.paths.changed', 'host.prompt.submitted', 'usage.operation.completed'].includes(input.type)) {
+      let limit: number | undefined;
+      try { limit = (await loadRuntimePolicy(projectRoot)).retentionMaxBytes; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      if (limit !== undefined && (await journalStorage(projectRoot)).bytes + Buffer.byteLength(line) > limit) {
+        await recordAdmissionDrop(projectRoot, input.type);
+        throw new Error('observation budget exceeded; semantic records remain writable');
+      }
+    }
+    await appendJournalLine(projectRoot, line);
     return { event, appended: true };
   });
 }

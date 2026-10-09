@@ -1,4 +1,7 @@
 export * from './api.js';
+export { injectContext } from '../compiler/inject.js';
+export { importMemory } from '../cognition/import-memory.js';
+export { setupProject } from '../runtime/setup.js';
 export type {
   MaterializeRecipeInput,
   TransitionRecipeInput,

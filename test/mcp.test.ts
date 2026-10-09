@@ -57,6 +57,8 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
 
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'context_inject',
+      'context_import',
       'context_orient',
       'context_expand',
       'context_compile',
@@ -81,6 +83,14 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'evolution_transition',
       'context_checkpoint',
     ]);
+    const injected = await client.callTool({ name: 'context_inject', arguments: { path: root, query: 'authentication error', maxChars: 200 } });
+    assert.notEqual(injected.isError, true);
+    const injection = injected.structuredContent as { text: string; scenario: string };
+    assert.equal(injection.scenario, 'debugging');
+    assert.ok(injection.text.length <= 200);
+    const imported = await client.callTool({ name: 'context_import', arguments: { path: root } });
+    assert.notEqual(imported.isError, true);
+    assert.equal((imported.structuredContent as { applied: boolean }).applied, false);
 
     const ready = await client.callTool({ name: 'context_orient', arguments: { path: root, query: 'authentication' } });
     assert.notEqual(ready.isError, true);
@@ -458,6 +468,8 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
     await client.connect(transport);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'context_inject',
+      'context_import',
       'context_orient',
       'context_expand',
       'context_compile',

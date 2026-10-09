@@ -4,6 +4,8 @@ import { addNote, listNotes } from '../runtime/notes.js';
 import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextRecipe, transitionContextSkill, acceptContextEvolutionCandidate, inspectContextEvolutionProposal, listContextEvolutionProposals, proposeContextEvolution, transitionContextEvolutionProposal } from '../agent/api.js';
 import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
+import { injectContext } from '../compiler/inject.js';
+import { importMemory } from '../cognition/import-memory.js';
 
 const orientInput = z.object({
   path: z.string().optional(),
@@ -148,6 +150,22 @@ function failureResponse(tool: string, error: unknown) {
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'fluffy-context', version: VERSION });
+  server.registerTool('context_inject', {
+    title: 'Prepare task context',
+    description: 'Use at task start, context reset, task change or a new failure. Returns bounded project evidence with automatic scenario selection. Expand only when more detail is needed.',
+    inputSchema: compileInput.extend({ explain: z.boolean().optional() }),
+  }, async ({ path, ...options }) => {
+    try { return successResponse(await injectContext(path, options, 'mcp')); }
+    catch (error) { return failureResponse('context_inject', error); }
+  });
+  server.registerTool('context_import', {
+    title: 'Import project memories',
+    description: 'Scan project agent instructions and memory files. Defaults to preview; apply stores source-linked unverified candidates, never trusted instructions.',
+    inputSchema: z.object({ path: z.string().optional(), apply: z.boolean().optional() }),
+  }, async ({ path, apply }) => {
+    try { return successResponse(await importMemory(path, apply)); }
+    catch (error) { return failureResponse('context_import', error); }
+  });
   server.registerTool('context_orient', {
     title: 'Orient context',
     description: 'Load bounded, read-only task context with verified consensus and open notes. Compiler manifests expose deterministic levels, hashes, and estimated tokens through the Agent API and CLI.',

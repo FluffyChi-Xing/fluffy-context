@@ -11,6 +11,8 @@ const builtinPatterns = [
   'coverage/**',
   'tmp/**',
   '.cache/**',
+  '*.log',
+  '*.tgz',
   '.env',
   '.env.*',
   '*.pem',

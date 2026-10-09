@@ -23,7 +23,7 @@ import {
 } from '../storage/layout.js';
 import { readJson } from '../storage/json-store.js';
 import type { ContextMetadata, Snapshot } from '../runtime/types.js';
-import { appendEvent } from './journal.js';
+import { appendEvent, readJournal } from './journal.js';
 import { rebuildProjections } from './projections.js';
 import { v1Fingerprint } from './v1-bridge.js';
 import { migrationReadiness } from './readiness.js';
@@ -179,13 +179,41 @@ export async function reconcileV1State(startPath?: string): Promise<void> {
   await withLock(`${locksDirectory(projectRoot)}/cognition-migration.lock`, async () => {
     const readiness = await migrationReadiness(projectRoot);
     if (!readiness.eligible) return;
-    const { records, sourceHash } = await sourceRecords(projectRoot);
+    const { records } = await sourceRecords(projectRoot);
+    const existing = await readJournal(projectRoot);
+    // Compare the latest entity state, not the whole-store hash. Read counters
+    // are not project knowledge and must not duplicate historical checkpoints.
+    const semantic = (record: Record<string, unknown>): string => {
+      if (record.context && record.snapshot) {
+        const context = record.context as Record<string, unknown>;
+        return sha256(JSON.stringify({ snapshot: record.snapshot, status: context.status, title: context.title, tags: context.tags, dependencies: context.dependencies }));
+      }
+      return sha256(JSON.stringify(record));
+    };
+    const identity = (record: Record<string, unknown>): string | null => {
+      if (record.context && record.snapshot) {
+        const snapshot = record.snapshot as Record<string, unknown>;
+        return `context:${snapshot.contextId}:${snapshot.snapshotId}`;
+      }
+      if (typeof record.noteId === 'string') return `note:${record.noteId}`;
+      if (typeof record.knowledgeId === 'string') return `knowledge:${record.knowledgeId}`;
+      if (typeof record.deadendId === 'string') return `deadend:${record.deadendId}`;
+      return null;
+    };
+    const latest = new Map<string, string>();
+    for (const event of existing) {
+      const record = (event.payload as { record?: Record<string, unknown> }).record;
+      if (record) { const key = identity(record); if (key) latest.set(key, semantic(record)); }
+    }
     for (const record of records) {
+      const key = `${record.kind}:${record.id}`;
+      const contentHash = semantic(record.record);
+      if (latest.get(key) === contentHash) continue;
       await appendEvent(projectRoot, {
         type: eventType(record, true),
         occurredAt: record.occurredAt,
         source: { kind: 'migration' },
-        idempotencyKey: `v1-live-sync:${sourceHash}:${record.kind}:${record.id}`,
+        idempotencyKey: `v1-live-sync-v2:${existing.at(-1)?.hash ?? 'empty'}:${key}:${contentHash}`,
         git: { worktreeId: null, branch: record.git.branch, ref: record.git.branch, head: record.git.head },
         payload: { record: record.record, sourcePath: record.sourcePath, sourceHash: record.sourceHash, anchorProvenance: record.git.branch === null && record.git.head === null ? 'global' : 'snapshot' },
       });

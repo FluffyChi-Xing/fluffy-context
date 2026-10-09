@@ -4,6 +4,8 @@ import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { initProject } from '../src/runtime/init.js';
+import { stopRuntime } from '../src/cognition/runtime.js';
 import { appendEvent, readJournal } from '../src/cognition/journal.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
@@ -29,17 +31,36 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '0.8.0');
+    assert.equal(JSON.parse(result.stdout), '1.0.0-dev.2');
     assert.equal(result.stderr, '');
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+});
+
+test('default init starts the runtime and exposes simplified task and report commands', async () => {
+  const root = await project();
+  try {
+    const initialized = await runCli(['init', '--path', root], root);
+    assert.equal(initialized.code, 0, initialized.stderr);
+    assert.equal(JSON.parse(initialized.stdout).runtime.running, true);
+    assert.match(await readFile(path.join(root, 'AGENTS.md'), 'utf8'), /ctx inject/);
+    for (const args of [['inject', 'debug an error', '--max-chars', '100'], ['import'], ['report']]) {
+      const result = await runCli([...args, '--path', root], root);
+      assert.equal(result.code, 0, result.stderr);
+      assert.ok(JSON.parse(result.stdout));
+    }
+  } finally {
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('each command has focused help without creating runtime files', async () => {
   const root = await project();
   try {
-    const commands = ['init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'recipe', 'evolution', 'journal'];
+    const commands = ['import', 'inject', 'report', 'init', 'checkpoint', 'resume', 'orient', 'compile', 'expand', 'usage', 'agent', 'hook', 'integrate', 'status', 'doctor', 'learn', 'knowledge', 'deadend', 'deadends', 'note', 'activity', 'migrate', 'runtime', 'filesystem', 'feedback', 'skill', 'recipe', 'evolution', 'journal'];
     for (const command of commands) {
       const result = await runCli([command, '--help'], root);
       assert.equal(result.code, 0, command);
@@ -99,7 +120,8 @@ test('each command has focused help without creating runtime files', async () =>
     }
     assert.deepEqual(await readdir(root), []);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -107,7 +129,7 @@ test('each command has focused help without creating runtime files', async () =>
 test('usage report supports JSON and ASCII output without writing a report event', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
     let beforeJournal = '';
     try { beforeJournal = await readFile(journalPath, 'utf8'); } catch { beforeJournal = ''; }
@@ -127,9 +149,9 @@ test('usage report supports JSON and ASCII output without writing a report event
     assert.equal(report.schemaVersion, 1);
     assert.equal(report.payback.baselineTokens, 100);
     assert.equal(report.investment.providerTokens.quality, 'unavailable');
-    assert.equal(report.payback.status, 'not_reached');
-    assert.equal(report.payback.estimatedSavings.quality, 'estimated');
-    assert.equal(report.payback.estimatedSavings.value, 100);
+    assert.equal(report.payback.status, 'unpaired_baseline');
+    assert.equal(report.payback.estimatedSavings.quality, 'unavailable');
+    assert.equal(report.payback.estimatedSavings.value, null);
     assert.equal(report.payback.estimatedROI, null);
     assert.deepEqual(JSON.parse(json.stdout), report);
     const ascii = await runCli(['usage', 'report', '--path', root, '--format', 'ascii'], root);
@@ -138,15 +160,15 @@ test('usage report supports JSON and ASCII output without writing a report event
     const invalid = await runCli(['usage', 'report', '--path', root, '--granularity', 'year'], root);
     assert.notEqual(invalid.code, 0);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('v1 migration CLI previews, applies, and verifies migrations', async () => {
   const root = await project();
   try {
-    const initialized = await runCli(['init', '--path', root], root);
-    assert.equal(initialized.code, 0);
+    await initProject(root);
     const preview = await runCli(['migrate', 'v1', '--dry-run', '--path', root], root);
     assert.equal(preview.code, 0, preview.stderr);
     assert.deepEqual(await readdir(path.join(root, '.context')), ['contexts', 'index.json', 'locks', 'manifest.json']);
@@ -159,14 +181,15 @@ test('v1 migration CLI previews, applies, and verifies migrations', async () => 
     const invalid = await runCli(['migrate', 'v1', '--dry-run', '--apply', '--path', root], root);
     assert.notEqual(invalid.code, 0);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('journal verify is read-only and governance commands validate transitions', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    await initProject(root);
     const candidate = await runCli(['learn', 'Payment callbacks require signature validation', '--path', root], root);
     assert.equal(candidate.code, 0);
     const knowledgeId = JSON.parse(candidate.stdout).knowledgeId as string;
@@ -182,14 +205,15 @@ test('journal verify is read-only and governance commands validate transitions',
     assert.equal(JSON.parse(verified.stdout).verified, true);
     assert.equal(await readFile(path.join(root, '.context', 'v2', 'journal', '00000001.ndjson'), 'utf8'), before);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('runtime lifecycle CLI starts and stops its loopback service', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
     const enabled = await runCli(['runtime', 'enable', '--path', root], root);
     assert.equal(enabled.code, 0, enabled.stderr);
@@ -219,8 +243,7 @@ test('runtime lifecycle CLI starts and stops its loopback service', async () => 
 test('runtime status and v1 migration dry-run remain read-only', async () => {
   const root = await project();
   try {
-    const initialized = await runCli(['init', '--path', root], root);
-    assert.equal(initialized.code, 0);
+    await initProject(root);
     const migration = await runCli(['migrate', 'v1', '--dry-run', '--path', root], root);
     assert.equal(migration.code, 0, migration.stderr);
     assert.equal(JSON.parse(migration.stdout).eligible, true);
@@ -229,14 +252,15 @@ test('runtime status and v1 migration dry-run remain read-only', async () => {
     assert.equal(JSON.parse(runtime.stdout).v2Present, false);
     assert.deepEqual((await readdir(path.join(root, '.context'))).sort(), ['contexts', 'index.json', 'locks', 'manifest.json']);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('knowledge discover CLI returns deterministic JSON and validates filters', async () => {
   const root = await project();
   try {
-    const init = await runCli(['init', '--path', root], root);
+    const init = await runCli(['init', '--no-start', '--no-integrations', '--path', root], root);
     assert.equal(init.code, 0);
     const candidate = await runCli(['learn', 'Applicant authentication uses SMS verification', '--kind', 'workflow', '--scope', 'project', '--path', root], root);
     assert.equal(candidate.code, 0);
@@ -266,7 +290,8 @@ test('knowledge discover CLI returns deterministic JSON and validates filters', 
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /unknown option/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -276,7 +301,7 @@ test('skill CLI exposes help and validates unavailable Skill operations', async 
     const help = await runCli(['skill', 'inspect', '--help'], root);
     assert.equal(help.code, 0);
     assert.match(help.stdout, /usage: ctx skill/);
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
     assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
     const listed = await runCli(['skill', 'list', '--path', root], root);
@@ -289,7 +314,8 @@ test('skill CLI exposes help and validates unavailable Skill operations', async 
     assert.notEqual(invalid.code, 0);
     assert.match(invalid.stderr, /supersedes must be/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -297,7 +323,7 @@ test('skill CLI exposes help and validates unavailable Skill operations', async 
 test('evolution CLI creates explicit proposals and validates governance input', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
     assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
     await appendEvent(root, { type: 'context.state.recorded', idempotencyKey: 'cli-evolution-context', payload: { record: { snapshot: { contextId: 'ctx-1', snapshotId: 'snap-1' } } } });
@@ -329,14 +355,15 @@ test('evolution CLI creates explicit proposals and validates governance input', 
     assert.notEqual(invalidSupersedes.code, 0);
     assert.match(invalidSupersedes.stderr, /supersedes must be/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('recipe CLI exposes read-only discovery and validates explicit controls', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     assert.equal((await runCli(['migrate', 'v1', '--apply', '--path', root], root)).code, 0);
     assert.equal((await runCli(['runtime', 'enable', '--path', root], root)).code, 0);
     const journalPath = path.join(root, '.context', 'v2', 'journal', '00000001.ndjson');
@@ -358,7 +385,8 @@ test('recipe CLI exposes read-only discovery and validates explicit controls', a
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /compiler recipe not found/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -366,7 +394,7 @@ test('recipe CLI exposes read-only discovery and validates explicit controls', a
 test('compile CLI validates compiler controls', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     const noContext = await runCli(['compile', 'debug authentication', '--path', root, '--scenario', 'debugging', '--max-chars', '0'], root);
     assert.equal(noContext.code, 0, noContext.stderr);
     const output = JSON.parse(noContext.stdout);
@@ -395,14 +423,15 @@ test('compile CLI validates compiler controls', async () => {
       assert.equal(JSON.parse(compiled.stdout).graph.hops, Number(graphHops));
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('expand CLI resolves a selected candidate and validates stale identity', async () => {
   const root = await project();
   try {
-    assert.equal((await runCli(['init', '--path', root], root)).code, 0);
+    assert.equal((await runCli(['init', '--no-start', '--no-integrations', '--path', root], root)).code, 0);
     const checkpoint = await runCli(['checkpoint', '--path', root, '--title', 'CLI expand', '--progress', 'Keep CLI expansion bounded'], root);
     assert.equal(checkpoint.code, 0, checkpoint.stderr);
     const contextId = JSON.parse(checkpoint.stdout).context.id as string;
@@ -428,14 +457,15 @@ test('expand CLI resolves a selected candidate and validates stale identity', as
     assert.notEqual(stale.code, 0);
     assert.match(stale.stderr, /manifest hash mismatch/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
 test('orient CLI returns no_context and validates options', async () => {
   const root = await project();
   try {
-    const init = await runCli(['init', '--path', root], root);
+    const init = await runCli(['init', '--no-start', '--no-integrations', '--path', root], root);
     assert.equal(init.code, 0);
     const noContext = await runCli(['orient', 'authentication', '--path', root, '--scope', 'project', '--knowledge-limit', '1', '--deadend-limit', '1', '--note-limit', '1'], root);
     assert.equal(noContext.code, 0);
@@ -454,7 +484,8 @@ test('orient CLI returns no_context and validates options', async () => {
     assert.notEqual(invalidLimit.code, 0);
     assert.match(invalidLimit.stderr, /non-negative integer/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -473,7 +504,8 @@ test('Claude integration CLI previews and validates nested commands', async () =
     assert.notEqual(invalid.code, 0);
     assert.match(invalid.stderr, /hook claude-code/);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 
@@ -483,13 +515,14 @@ test('cli rejects unknown options and returns JSON for business commands', async
     const invalid = await runCli(['status', '--unknown'], root);
     assert.notEqual(invalid.code, 0);
     assert.match(invalid.stderr, /unknown option/);
-    const init = await runCli(['init', '--path', root], root);
+    const init = await runCli(['init', '--no-start', '--no-integrations', '--path', root], root);
     assert.equal(init.code, 0);
     assert.doesNotThrow(() => JSON.parse(init.stdout));
     const status = await runCli(['status', '--path', root], root);
     assert.equal(status.code, 0);
     assert.equal(JSON.parse(status.stdout).initialized, true);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 });

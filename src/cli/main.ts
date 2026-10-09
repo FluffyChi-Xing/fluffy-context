@@ -4,7 +4,7 @@ import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspe
 import { formatUsageReport } from '../cognition/usage-report.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
-import { readJournal, verifyJournal } from '../cognition/journal.js';
+import { compactJournal, readJournal, verifyJournal } from '../cognition/journal.js';
 import { projectEvents } from '../cognition/projections.js';
 import { disableRuntime, enableRuntime, ensureRuntimeForSession, runtimeStatus, serveRuntime, setFilesystemEvents, startRuntime, stopRuntime } from '../cognition/runtime.js';
 import { loadRuntimePolicy } from '../cognition/policy.js';
@@ -13,7 +13,9 @@ import { runClaudeCodeHook } from '../hooks/claude-code.js';
 import { readGitWorktreeState } from '../git/git-adapter.js';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../integrations/claude-code.js';
 import { doctor, status } from '../runtime/diagnostics.js';
-import { initProject } from '../runtime/init.js';
+import { setupProject } from '../runtime/setup.js';
+import { importMemory } from '../cognition/import-memory.js';
+import { injectContext } from '../compiler/inject.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionKnowledge, transitionDeadend } from '../runtime/knowledge.js';
 import { addNote, listActivity, listNotes } from '../runtime/notes.js';
 import type { ActivityQuery, CheckpointInput, DeadendInput, KnowledgeInput, NoteInput, NoteKind, NoteStatus, NoteActor } from '../runtime/types.js';
@@ -83,12 +85,24 @@ function graphHopsOption(args: string[]): 0 | 1 | 2 | undefined {
 const recipeBudgets = (value: string | undefined): Record<string, number> | undefined => value === undefined ? undefined : Object.fromEntries(value.split(',').map((item) => { const [section, budget] = item.split('=', 2); const parsed = Number(budget); if (!section || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 100_000) throw new Error('--budgets must be section=non-negative-integer up to 100000'); return [section, parsed]; }));
 
 const HELP: Record<string, string> = {
-  init: `usage: ctx init [path] [--path <path>]
+  init: `usage: ctx init [path] [--path <path>] [--no-start] [--no-integrations]
 
-Initialize the local .context runtime layout. Re-running init is safe.
+Initialize, migrate, verify, install project guidance and start the runtime. Re-running init preserves policy.
 
 Options:
-  --path <path>  Project path`,
+  --path <path>  Project path
+  --no-start    Configure without starting a background process
+  --no-integrations  Skip project guidance and host configuration`,
+  import: `usage: ctx import [--path <path>] [--apply]
+
+Preview project memory, .claude, .zcode, .cursor, .curcor, .codex and AGENTS.md.
+--apply imports deduplicated, source-linked candidates; verification remains explicit.`,
+  inject: `usage: ctx inject [query] [--path <path>] [--max-chars <number>] [--paths <paths>] [--explain]
+
+Select bounded task context; --explain includes detailed source provenance.`,
+  report: `usage: ctx report [options]
+
+Alias of ctx usage report; supports its window, format and baseline options.`,
   usage: `usage: ctx usage report [options]
 
 Show read-only context asset, reuse, token investment, and operation metrics.
@@ -305,12 +319,16 @@ Record an idempotent use signal that affects deterministic rank only.`,
        ctx skill supersede <skill-id> --rationale <text> --supersedes <entity:id> [--path <path>]
        ctx skill invoke <skill-id> --invocation-id <id> --caller-event <id> --input-hash <hash> [--path <path>]
        ctx skill outcome <skill-id> --invocation-id <id> --outcome-id <id> --caller-event <id> --outcome <value> --summary <text> [--path <path>]`,
-  journal: `usage: ctx journal verify [--path <path>]
+  journal: `usage: ctx journal verify|compact [--path <path>] [--apply]
 
 Validate the v2 journal hash chain and replay projections in memory.`,
   'journal verify': `usage: ctx journal verify [--path <path>]
 
 Validate journal integrity without writing derived state.`,
+  'journal compact': `usage: ctx journal compact [--path <path>] [--apply]
+
+Preview or apply lossless gzip archival. Replays the full hash chain before and after.
+Archived projects require this development version or newer readers.`,
   deadends: `usage: ctx deadends [--all] [--path <path>]
 
 List recorded deadends.`,
@@ -453,7 +471,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|evolution|journal [options]
+  return `usage: ctx init|inject|import|report|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|evolution|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -480,7 +498,7 @@ function printHelp(args: string[]): boolean {
     || (command === 'knowledge' && ['verify', 'discover', 'deprecate', 'reject'].includes(args[1]))
     || (command === 'deadend' && ['verify', 'obsolete', 'reject'].includes(args[1]))
     || (command === 'feedback' && args[1] === 'use')
-    || (command === 'journal' && args[1] === 'verify')
+    || (command === 'journal' && ['verify', 'compact'].includes(args[1]))
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
     || (command === 'recipe' && ['list', 'inspect', 'materialize', 'verify', 'publish', 'deprecate', 'supersede'].includes(args[1]))
@@ -503,6 +521,7 @@ function validatePositionals(values: string[], max: number, usageText: string): 
 }
 
 async function run(args: string[]): Promise<void> {
+  if (args[0] === 'report' && !args.includes('--help')) args = ['usage', 'report', ...args.slice(1)];
   if (args.includes('--version')) {
     print(VERSION);
     return;
@@ -517,10 +536,24 @@ async function run(args: string[]): Promise<void> {
   const target = option(args, '--path');
   switch (command) {
     case 'init': {
-      validateOptions(args.slice(1), ['--path'], ['--path']);
+      validateOptions(args.slice(1), ['--path', '--no-start', '--no-integrations'], ['--path']);
       const values = positionals(args.slice(1), ['--path']);
       validatePositionals(values, 1, HELP.init);
-      print(await initProject(target ?? values[0]));
+      print(await setupProject(target ?? values[0], { start: !args.includes('--no-start'), integrations: !args.includes('--no-integrations') }));
+      return;
+    }
+    case 'import': {
+      validateOptions(args.slice(1), ['--path', '--apply'], ['--path']);
+      validatePositionals(positionals(args.slice(1), ['--path']), 0, HELP.import);
+      print(await importMemory(target, args.includes('--apply')));
+      return;
+    }
+    case 'inject': {
+      const valueOptions = ['--path', '--max-chars', '--paths'];
+      validateOptions(args.slice(1), [...valueOptions, '--explain'], valueOptions);
+      const values = positionals(args.slice(1), valueOptions);
+      validatePositionals(values, 1, HELP.inject);
+      print(await injectContext(target, { query: values[0], paths: listOption(args, '--paths'), maxChars: numericOption(args, '--max-chars', 2400), explain: args.includes('--explain') }, 'cli'));
       return;
     }
     case 'checkpoint': {
@@ -883,6 +916,12 @@ async function run(args: string[]): Promise<void> {
       throw new Error(HELP.recipe);
     }
     case 'journal': {
+      if (args[1] === 'compact') {
+        validateOptions(args.slice(2), ['--path', '--apply'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['journal compact']);
+        print(await compactJournal(target, { apply: args.includes('--apply') }));
+        return;
+      }
       if (args[1] !== 'verify') throw new Error(HELP.journal);
       validateOptions(args.slice(2), ['--path'], ['--path']);
       validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['journal verify']);

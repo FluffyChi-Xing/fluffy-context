@@ -53,14 +53,16 @@ test('Claude Code hooks inject bounded phase guidance without modifying context 
     const session = await runCli(['hook', 'claude-code', 'session-start'], root, JSON.stringify({ cwd: root }));
     assert.equal(session.code, 0);
     assert.equal(session.stderr, '');
-    assert.match(JSON.parse(session.stdout).additionalContext, /Orient → Plan → Implement → Verify → Handoff/);
-    assert.match(JSON.parse(session.stdout).additionalContext, /Applicant authentication/);
+    assert.equal(JSON.parse(session.stdout).hookSpecificOutput.hookEventName, 'SessionStart');
+    assert.match(JSON.parse(session.stdout).hookSpecificOutput.additionalContext, /Orient → Plan → Implement → Verify → Handoff/);
+    assert.match(JSON.parse(session.stdout).hookSpecificOutput.additionalContext, /Applicant authentication/);
 
     const prompt = await runCli(['hook', 'claude-code', 'user-prompt'], root, JSON.stringify({ cwd: root, prompt: 'Implement applicant authentication' }));
     assert.equal(prompt.code, 0);
     assert.equal(prompt.stderr, '');
-    assert.match(JSON.parse(prompt.stdout).additionalContext, /Implement → Verify → Handoff/);
-    assert.match(JSON.parse(prompt.stdout).additionalContext, /ctx note/);
+    assert.equal(JSON.parse(prompt.stdout).hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    assert.match(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext, /Implement → Verify → Handoff/);
+    assert.match(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext, /ctx note/);
     assert.equal(await readFile(contextPath, 'utf8'), beforeContext);
     assert.equal(await readFile(indexPath, 'utf8'), beforeIndex);
   } finally {
@@ -140,7 +142,7 @@ test('Claude Code hooks fail open for missing context and malformed input', asyn
     await initProject(root);
     const noContext = await runCli(['hook', 'claude-code', 'session-start'], root, JSON.stringify({ cwd: root }));
     assert.equal(noContext.code, 0);
-    assert.match(JSON.parse(noContext.stdout).additionalContext, /没有可恢复的 Context/);
+    assert.match(JSON.parse(noContext.stdout).hookSpecificOutput.additionalContext, /没有可恢复的 Context/);
 
     const malformed = await runCli(['hook', 'claude-code', 'user-prompt'], root, '{');
     assert.equal(malformed.code, 0);

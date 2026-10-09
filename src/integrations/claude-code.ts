@@ -51,7 +51,7 @@ function hookInstalled(value: unknown, command: string): boolean {
     && group.hooks.some((hook) => isRecord(hook) && hook.type === 'command' && hook.command === command));
 }
 
-function addHook(value: unknown, command: string, legacyCommand: string): JsonObject[] {
+function addHook(value: unknown, command: string, legacyCommand: string, relocatedCommand?: string): JsonObject[] {
   const groups = Array.isArray(value) ? value.filter(isRecord).map((group) => ({ ...group })) : [];
   if (hookInstalled(groups, command)) return groups;
   let replaced = false;
@@ -59,7 +59,7 @@ function addHook(value: unknown, command: string, legacyCommand: string): JsonOb
     ...group,
     hooks: Array.isArray(group.hooks)
       ? group.hooks.map((hook) => {
-        if (!isRecord(hook) || hook.type !== 'command' || hook.command !== legacyCommand) return hook;
+        if (!isRecord(hook) || hook.type !== 'command' || (hook.command !== legacyCommand && hook.command !== relocatedCommand)) return hook;
         replaced = true;
         return { ...hook, command };
       })
@@ -99,14 +99,14 @@ function mcpInstalled(value: unknown, server = MCP_SERVER): boolean {
     && value.args.every((item, index) => item === server.args[index]);
 }
 
-function status(projectRoot: string, settingsPath: string, mcpPath: string, settings: JsonObject, mcp: JsonObject, settingsExists: boolean, mcpExists: boolean, initialized: boolean): ClaudeIntegrationStatus {
+function status(projectRoot: string, settingsPath: string, mcpPath: string, settings: JsonObject, mcp: JsonObject, settingsExists: boolean, mcpExists: boolean, initialized: boolean, relocatable = false): ClaudeIntegrationStatus {
   const hooks = object(settings.hooks);
   const sessionStartInstalled = hookInstalled(hooks.SessionStart, HOOK_COMMANDS.sessionStart);
   const userPromptInstalled = hookInstalled(hooks.UserPromptSubmit, HOOK_COMMANDS.userPrompt);
   const mcpServers = object(mcp.mcpServers);
   const configuredMcp = mcpServers['fluffy-context'];
   const installed = mcpInstalled(configuredMcp);
-  const mcpConflict = configuredMcp !== undefined && !installed && !mcpInstalled(configuredMcp, LEGACY_MCP_SERVER);
+  const mcpConflict = configuredMcp !== undefined && !installed && !mcpInstalled(configuredMcp, LEGACY_MCP_SERVER) && !relocatable;
   return {
     projectRoot,
     initialized,
@@ -122,7 +122,23 @@ function status(projectRoot: string, settingsPath: string, mcpPath: string, sett
   };
 }
 
-async function inspect(projectRoot: string): Promise<{ status: ClaudeIntegrationStatus; settings: JsonObject; mcp: JsonObject }> {
+async function relocatedCommand(value: unknown): Promise<string | undefined> {
+  if (!isRecord(value) || typeof value.command !== 'string' || !path.isAbsolute(value.command)
+    || !/^node(?:\.exe)?$/i.test(path.basename(value.command)) || !Array.isArray(value.args)
+    || value.args.length !== 3 || value.args[1] !== 'agent' || value.args[2] !== 'serve'
+    || typeof value.args[0] !== 'string' || !path.isAbsolute(value.args[0])) return;
+  const entry = value.args[0];
+  const packageRoot = path.resolve(path.dirname(entry), '../../..');
+  if (path.normalize(entry) !== path.join(packageRoot, 'dist', 'src', 'cli', 'main.js')) return;
+  try {
+    const pkg = await readJson<JsonObject>(path.join(packageRoot, 'package.json'), isRecord);
+    if (pkg.name !== 'fluffy-context' || !isRecord(pkg.bin) || pkg.bin.ctx !== 'dist/src/cli/main.js') return;
+    await access(entry);
+    return `"${value.command}" "${entry}"`;
+  } catch { return; }
+}
+
+async function inspect(projectRoot: string): Promise<{ status: ClaudeIntegrationStatus; settings: JsonObject; mcp: JsonObject; relocated?: string }> {
   const settingsPath = path.join(projectRoot, '.claude', 'settings.json');
   const mcpPath = path.join(projectRoot, '.mcp.json');
   const [settingsExists, mcpExists, initialized] = await Promise.all([
@@ -132,7 +148,8 @@ async function inspect(projectRoot: string): Promise<{ status: ClaudeIntegration
   ]);
   const [settings, mcp] = await Promise.all([loadObject(settingsPath), loadObject(mcpPath)]);
   validateConfig(settings, mcp);
-  return { status: status(projectRoot, settingsPath, mcpPath, settings, mcp, settingsExists, mcpExists, initialized), settings, mcp };
+  const relocated = await relocatedCommand(object(mcp.mcpServers)['fluffy-context']);
+  return { status: status(projectRoot, settingsPath, mcpPath, settings, mcp, settingsExists, mcpExists, initialized, relocated !== undefined), settings, mcp, relocated };
 }
 
 export async function inspectClaudeIntegration(startPath: string | undefined): Promise<ClaudeIntegrationStatus> {
@@ -152,14 +169,14 @@ export async function installClaudeIntegration(startPath: string | undefined, ap
     ...inspected.settings,
     hooks: {
       ...settingsHooks,
-      SessionStart: addHook(settingsHooks.SessionStart, HOOK_COMMANDS.sessionStart, LEGACY_HOOK_COMMANDS.sessionStart),
-      UserPromptSubmit: addHook(settingsHooks.UserPromptSubmit, HOOK_COMMANDS.userPrompt, LEGACY_HOOK_COMMANDS.userPrompt),
+      SessionStart: addHook(settingsHooks.SessionStart, HOOK_COMMANDS.sessionStart, LEGACY_HOOK_COMMANDS.sessionStart, inspected.relocated ? `${inspected.relocated} hook claude-code session-start` : undefined),
+      UserPromptSubmit: addHook(settingsHooks.UserPromptSubmit, HOOK_COMMANDS.userPrompt, LEGACY_HOOK_COMMANDS.userPrompt, inspected.relocated ? `${inspected.relocated} hook claude-code user-prompt` : undefined),
     },
   };
   const mcpServers = object(inspected.mcp.mcpServers);
   const mcp = {
     ...inspected.mcp,
-    mcpServers: { ...mcpServers, 'fluffy-context': MCP_SERVER },
+    mcpServers: { ...mcpServers, 'fluffy-context': { ...object(mcpServers['fluffy-context']), ...MCP_SERVER } },
   };
   await Promise.all([
     atomicWriteJson(inspected.status.settingsPath, settings),

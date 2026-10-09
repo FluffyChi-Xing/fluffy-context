@@ -2,7 +2,33 @@
 
 本地优先、Agent 无关的 Context 与 Knowledge Runtime，帮助 AI 编程 Agent 保存任务状态、恢复工作上下文、复用已验证共识，并生成有界且可追溯的上下文输入。
 
-**当前版本：0.8.0**
+**当前源码版本：1.0.0-dev.2（本地开发包，未发布）；npm 已发布版本：0.8.0**
+
+## 下一大版本：1.0 开发中
+
+源码工作树已加入第一阶段实现，尚未发布。完整范围与验收门槛见 [1.0 计划](ROADMAP-1.0.md)。
+
+后续已完成本地打包安装闭环、旧安装路径迁移和日志存储治理。每批验证后运行 `npm run install:local`：构建并打包为带 SHA-256 标识的 tgz、安装全局 ctx、逐文件比对哈希、初始化真实项目，并保存 `.context/builds/install-*.json` 回执。不会发布到 npm。
+
+日志达到约 1 MiB 后封存为 gzip 段，连续哈希链、事件身份与重放结果保持不变；`ctx init` 会维护达到阈值的历史段。高级维护可用 `ctx journal compact` 预览、`ctx journal compact --apply` 执行。`retentionMaxBytes` 现在限制可选观察事件的入库，超出预算累计拒绝计数，不阻止 checkpoint 等语义写入，因此不是全部历史的硬容量上限。`.log` 和 `.tgz` 默认不参与文件观察。
+
+**格式兼容性**：归档后必须使用 `1.0.0-dev.1` 或更新版本访问认知日志，不能混用 0.8.0。升级磁盘上的全局包不会热更新已连接的 MCP 进程；这类连接需要重新启动。v1 Context/Snapshot 文件保持原样。
+
+`dev.2` 修复知识诊断污染：duplicate/conflict 诊断与命中使用相同的状态、scope、query 过滤，不再把全库候选或仅主题相近的文本作为冲突返回。冲突判断只覆盖明确否定及 reuse/rebuild 对立，最多检查 100 个匹配项、返回 10 组诊断；每条命中的正文与 evidence 共用 `--max-chars` 预算，诊断正文另有同等总预算。JSON 身份等元数据不计入该文本预算。
+
+```bash
+ctx init                         # 布局、迁移、校验、项目指引、运行时
+ctx inject "修复支付回调错误"      # 按任务选择有界上下文
+ctx import                       # 预览项目内已有 memory / agent 文档
+ctx import --apply               # 来源可追溯、去重后写入候选知识
+ctx report                       # 日志构成、复用、输入输出 token 估算
+```
+
+`init` 保留已有策略；CI 可用 `--no-start --no-integrations`。默认不开启高频文件监听；普通使用不再需要手工执行迁移、校验及 runtime enable/start。项目存在 `.claude` 时安装其 Hook/MCP 配置，其余宿主通过 `AGENTS.md` 指引及统一 MCP/API 入口接入。MCP 新增 `context_inject`、`context_import`；API 新增 `injectContext`、`importMemory`、`setupProject`。
+
+`inject` 根据任务词推断场景，复用确定性编译器；`--max-chars` 限制正文字符，不是模型真实 token 或 JSON 包装长度。导入只扫描项目内支持的文本，跳过符号链接、忽略路径、超预算文件及疑似密钥行，不执行任何导入内容。导入记录必须验证后才进入普通知识检索；自动发现冲突、结构化多段知识提取仍属于后续工作。
+
+报告现在计入输入与输出成本，并展示日志字节数、事件类型分布和语义事件占比。`chars / 4` 仍是粗估；提供 window baseline 仅产生估算比较，不证明任务收益，不再推算回本日期。
 
 ```text
 checkpoint → orient → compile → expand → feedback → Agent continues
@@ -53,7 +79,7 @@ ctx --version
 ```bash
 npm install
 npm run build
-npm install --global .
+npm run install:local
 ```
 
 ### 2. 初始化项目
@@ -70,7 +96,7 @@ ctx init
 ctx init --path path/to/project
 ```
 
-初始化会创建本地 `.context/` 存储和 `.contextignored` 规则文件。重复执行是幂等的，不会覆盖已有 Context 或忽略规则。
+初始化会创建本地 `.context/` 存储和 `.contextignored` 规则文件。开发中的 1.0 入口还会迁移并校验认知层、安装项目指引和启动运行时；重复执行保留已有 Context、忽略规则及禁用策略。
 
 ### 3. 保存第一个工作状态
 

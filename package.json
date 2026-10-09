@@ -1,6 +1,6 @@
 {
   "name": "fluffy-context",
-  "version": "0.8.0",
+  "version": "1.0.0-dev.2",
   "description": "Local context management CLI and MCP tools for AI coding agents",
   "license": "MIT",
   "author": "FluffyChi-Xing",
@@ -46,6 +46,7 @@
   "files": [
     "dist/src",
     "README.md",
+    "ROADMAP-1.0.md",
     "LICENSE",
     "skills/fluffy-context/SKILL.md"
   ],
@@ -53,6 +54,7 @@
     "node": ">=20.19.0"
   },
   "scripts": {
+    "install:local": "node scripts/install-local.mjs",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 dist/test/*.test.js",
