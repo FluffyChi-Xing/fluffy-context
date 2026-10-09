@@ -1,6 +1,6 @@
 {
   "name": "fluffy-context",
-  "version": "1.0.0-dev.2",
+  "version": "1.0.0-beta.1",
   "description": "Local context management CLI and MCP tools for AI coding agents",
   "license": "MIT",
   "author": "FluffyChi-Xing",
@@ -47,6 +47,7 @@
     "dist/src",
     "README.md",
     "ROADMAP-1.0.md",
+    "CHANGELOG.md",
     "LICENSE",
     "skills/fluffy-context/SKILL.md"
   ],

@@ -221,30 +221,31 @@ function activityText(record: ContextActivityRecord): string {
 }
 
 function createCandidates(sources: CompilerSources, intent: ContextIntent, notes: Note[], knowledge: Knowledge[], deadends: Deadend[], activities: ContextActivityRecord[]): ContextCandidate[] {
-  if (sources.orientation.status !== 'ready') return [];
-  const { context, snapshot, resumeSummary } = sources.orientation;
   const terms = intent.normalizedTerms;
   const candidates: ContextCandidate[] = [];
-  const contextSource = sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'current-context', context.id, context.id, snapshot.snapshotId, context.status, null, resumeSummary.relatedFiles);
-  const summaryFields: Array<[string, string | null, ContextCandidateSection]> = [
-    ['title', context.title, 'summary'],
-    ['progressSummary', resumeSummary.progressSummary, 'summary'],
-    ['lastError', resumeSummary.lastError, 'risk'],
-  ];
-  for (const [field, value, section] of summaryFields) {
-    const text = textForSummary(field, value);
-    if (text) candidates.push(makeCandidate(section, contextSource, { field, value }, text, terms, [field], field));
-  }
-  const listFields: Array<[string, string[], ContextCandidateSection]> = [
-    ['pendingTasks', resumeSummary.pendingTasks, 'pending'],
-    ['completed', resumeSummary.completed, 'summary'],
-    ['decisions', resumeSummary.decisions, 'decision'],
-    ['risks', resumeSummary.risks, 'risk'],
-    ['relatedFiles', resumeSummary.relatedFiles, 'summary'],
-  ];
-  for (const [field, values, section] of listFields) {
-    for (const [index, value] of values.entries()) {
-      candidates.push(makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field], `${field}:${index}`));
+  if (sources.orientation.status === 'ready') {
+    const { context, snapshot, resumeSummary } = sources.orientation;
+    const contextSource = sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'current-context', context.id, context.id, snapshot.snapshotId, context.status, null, resumeSummary.relatedFiles);
+    const summaryFields: Array<[string, string | null, ContextCandidateSection]> = [
+      ['title', context.title, 'summary'],
+      ['progressSummary', resumeSummary.progressSummary, 'summary'],
+      ['lastError', resumeSummary.lastError, 'risk'],
+    ];
+    for (const [field, value, section] of summaryFields) {
+      const text = textForSummary(field, value);
+      if (text) candidates.push(makeCandidate(section, contextSource, { field, value }, text, terms, [field], field));
+    }
+    const listFields: Array<[string, string[], ContextCandidateSection]> = [
+      ['pendingTasks', resumeSummary.pendingTasks, 'pending'],
+      ['completed', resumeSummary.completed, 'summary'],
+      ['decisions', resumeSummary.decisions, 'decision'],
+      ['risks', resumeSummary.risks, 'risk'],
+      ['relatedFiles', resumeSummary.relatedFiles, 'summary'],
+    ];
+    for (const [field, values, section] of listFields) {
+      for (const [index, value] of values.entries()) {
+        candidates.push(makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field], `${field}:${index}`));
+      }
     }
   }
   for (const note of notes) {
@@ -313,8 +314,8 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const orientation = sources.orientation;
   const maxChars = intent.budget.total;
   const notes = orientation.status === 'ready' ? (await listNotes(sources.anchor.projectRoot, { contextId: orientation.context.id, openOnly: true, limit: options.noteLimit ?? 50, maxChars: Number.MAX_SAFE_INTEGER })).filter((note) => orientation.notes.some((selected) => selected.noteId === note.noteId)) : [];
-  const knowledge = orientation.status === 'ready' && intent.query ? await listKnowledge(sources.anchor.projectRoot, true) : [];
-  const deadends = orientation.status === 'ready' && intent.query ? await listDeadends(sources.anchor.projectRoot, true) : [];
+  const knowledge = intent.query ? await listKnowledge(sources.anchor.projectRoot, true) : [];
+  const deadends = intent.query ? await listDeadends(sources.anchor.projectRoot, true) : [];
   const activities = await extractActivity(sources.anchor.projectRoot, sources.events, sources.anchor, sources.workspace, options.activityLimit ?? 20);
   const all = createCandidates(sources, intent, notes, knowledge, deadends, activities);
   const excluded: ContextExclusion[] = [];
@@ -388,8 +389,9 @@ export async function compileContext(startPath?: string, options: ContextCompile
   };
   const tokenEstimate = estimateTokens(manifestText(selected));
   const selectedItemHashes = selected.map((item) => item.itemHash);
+  const status = orientation.status === 'ready' || selected.length > 0 ? 'ready' : 'no_context';
   const manifestHash = rebuildManifestHash({
-    status: orientation.status,
+    status,
     projectRoot: sources.anchor.projectRoot,
     mode: orientation.explanation.mode,
     anchor: sources.anchor,
@@ -404,7 +406,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     schemaVersion: 1,
     compilerVersion: '0.7.7',
     rankingVersion: 'compiler-ranking-v2',
-    status: orientation.status,
+    status,
     projectRoot: sources.anchor.projectRoot,
     mode: orientation.explanation.mode,
     anchor: sources.anchor,
