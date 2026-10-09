@@ -9,6 +9,7 @@ import type { CognitionEvent, CognitionEventSource, CognitionEventType, Cognitio
 import { appendJournalLine, archiveSegment, journalFiles, journalStorage, readSegment } from './journal-segments.js';
 import { loadRuntimePolicy } from './policy.js';
 import { recordAdmissionDrop } from './admission.js';
+import type { ProgressReporter } from './progress.js';
 
 const eventTypes: ReadonlySet<string> = new Set([
   'runtime.enabled', 'runtime.started', 'runtime.stopped', 'host.session.started', 'host.prompt.submitted',
@@ -260,12 +261,14 @@ async function recoverPartialTail(projectRoot: string): Promise<void> {
   }
 }
 
-export async function readJournal(startPath?: string, options: { allowPartialTail?: boolean } = {}): Promise<CognitionEvent[]> {
+export async function readJournal(startPath?: string, options: { allowPartialTail?: boolean; onProgress?: ProgressReporter } = {}): Promise<CognitionEvent[]> {
   const projectRoot = await resolveProjectRoot(startPath);
   const projectId = (await loadManifest(projectRoot)).projectId;
   const events: CognitionEvent[] = [];
   let previousHash: string | null = null;
   const files = await journalFiles(projectRoot);
+  options.onProgress?.({ phase: 'verify-journal', completed: 0, total: files.length, unit: 'segments' });
+  let completed = 0;
   for (const file of files) {
     const content = (await readSegment(projectRoot, file)).toString('utf8');
     const lines = content.split('\n');
@@ -288,6 +291,7 @@ export async function readJournal(startPath?: string, options: { allowPartialTai
       previousHash = event.hash;
       events.push(event);
     }
+    options.onProgress?.({ phase: 'verify-journal', completed: ++completed, total: files.length, unit: 'segments' });
   }
   return events;
 }
@@ -296,22 +300,26 @@ export async function verifyJournal(startPath?: string): Promise<CognitionEvent[
   return readJournal(startPath, { allowPartialTail: false });
 }
 
-export async function compactJournal(startPath?: string, options: { apply?: boolean; minBytes?: number } = {}) {
+export async function compactJournal(startPath?: string, options: { apply?: boolean; minBytes?: number; onProgress?: ProgressReporter } = {}) {
   const root = await resolveProjectRoot(startPath);
   const minBytes = options.minBytes ?? 1;
   if (!Number.isSafeInteger(minBytes) || minBytes < 0) throw new Error('minBytes must be a non-negative integer');
   const operation = async () => {
-    const events = await verifyJournal(root);
+    const events = await readJournal(root, { allowPartialTail: false, onProgress: options.onProgress });
     const before = await journalStorage(root);
     const eligible = [];
     for (const file of await journalFiles(root)) {
       if (!file.endsWith('.gz') && (await readSegment(root, file)).length >= minBytes) eligible.push(file);
     }
     if (options.apply) {
-      for (const file of eligible) await archiveSegment(root, file);
+      options.onProgress?.({ phase: 'archive', completed: 0, total: eligible.length, unit: 'segments' });
+      for (const [index, file] of eligible.entries()) {
+        await archiveSegment(root, file);
+        options.onProgress?.({ phase: 'archive', completed: index + 1, total: eligible.length, unit: 'segments' });
+      }
       // Complete deletion after an interrupted publication, but only after validation.
       for (const file of await journalFiles(root)) if (file.endsWith('.gz')) await archiveSegment(root, file);
-      const replay = await verifyJournal(root);
+      const replay = await readJournal(root, { allowPartialTail: false, onProgress: options.onProgress });
       if (replay.length !== events.length || replay.at(-1)?.hash !== events.at(-1)?.hash) throw new Error('journal replay changed during compaction');
     }
     const after = options.apply ? await journalStorage(root) : before;

@@ -14,6 +14,8 @@ import { readGitWorktreeState } from '../git/git-adapter.js';
 import { inspectClaudeIntegration, installClaudeIntegration } from '../integrations/claude-code.js';
 import { doctor, status } from '../runtime/diagnostics.js';
 import { setupProject } from '../runtime/setup.js';
+import { upgradeProject } from '../runtime/upgrade.js';
+import { consoleProgress } from './progress.js';
 import { importMemory } from '../cognition/import-memory.js';
 import { injectContext } from '../compiler/inject.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionKnowledge, transitionDeadend } from '../runtime/knowledge.js';
@@ -85,6 +87,12 @@ function graphHopsOption(args: string[]): 0 | 1 | 2 | undefined {
 const recipeBudgets = (value: string | undefined): Record<string, number> | undefined => value === undefined ? undefined : Object.fromEntries(value.split(',').map((item) => { const [section, budget] = item.split('=', 2); const parsed = Number(budget); if (!section || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 100_000) throw new Error('--budgets must be section=non-negative-integer up to 100000'); return [section, parsed]; }));
 
 const HELP: Record<string, string> = {
+  upgrade: `usage: ctx upgrade [--path <path>] [--dry-run] [--no-progress]
+
+Back up and upgrade existing project data to the 1.0 beta layout, preserving all history.
+Close other agent/MCP sessions first. Progress goes to stderr; stdout remains JSON.
+--dry-run validates and previews without writing or stopping the runtime.
+--no-progress suppresses progress output. The prior runtime running state is restored on success.`,
   init: `usage: ctx init [path] [--path <path>] [--no-start] [--no-integrations]
 
 Initialize, migrate, verify, install project guidance and start the runtime. Re-running init preserves policy.
@@ -471,7 +479,7 @@ Internal runtime daemon entry point.`,
 };
 
 function usage(): string {
-  return `usage: ctx init|inject|import|report|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|evolution|journal [options]
+  return `usage: ctx init|upgrade|inject|import|report|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|evolution|journal [options]
 
 Run \"ctx <command> --help\" for command details.`;
 }
@@ -535,6 +543,17 @@ async function run(args: string[]): Promise<void> {
   const command = args[0];
   const target = option(args, '--path');
   switch (command) {
+    case 'upgrade': {
+      validateOptions(args.slice(1), ['--path', '--dry-run', '--no-progress'], ['--path']);
+      validatePositionals(positionals(args.slice(1), ['--path']), 0, HELP.upgrade);
+      try {
+        print(await upgradeProject(target, { dryRun: args.includes('--dry-run'), onProgress: args.includes('--no-progress') ? undefined : consoleProgress() }));
+      } catch (error) {
+        if (process.stderr.isTTY && !args.includes('--no-progress')) process.stderr.write('\n');
+        throw error;
+      }
+      return;
+    }
     case 'init': {
       validateOptions(args.slice(1), ['--path', '--no-start', '--no-integrations'], ['--path']);
       const values = positionals(args.slice(1), ['--path']);

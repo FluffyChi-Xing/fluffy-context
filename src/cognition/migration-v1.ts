@@ -27,6 +27,7 @@ import { appendEvent, readJournal } from './journal.js';
 import { rebuildProjections } from './projections.js';
 import { v1Fingerprint } from './v1-bridge.js';
 import { migrationReadiness } from './readiness.js';
+import type { ProgressReporter } from './progress.js';
 import { COGNITION_LAYOUT_VERSION, type CognitionManifest, type CognitionRuntimePolicy, type MigrationReport, type V1ImportReceipt } from './types.js';
 
 interface V1Record {
@@ -59,13 +60,14 @@ async function readOptional(filePath: string): Promise<string | null> {
   try { return await readFile(filePath, 'utf8'); } catch (error) { if (isNotFound(error)) return null; throw error; }
 }
 
-async function sourceRecords(projectRoot: string): Promise<{ records: V1Record[]; sourceHash: string }> {
+async function sourceRecords(projectRoot: string, onProgress?: ProgressReporter): Promise<{ records: V1Record[]; sourceHash: string }> {
   const sources: Array<{ filePath: string; content: string }> = [];
   const records: V1Record[] = [];
   const snapshotAnchors = new Map<string, V1Record['git']>();
   const v1ManifestPath = manifestPath(projectRoot);
   sources.push({ filePath: v1ManifestPath, content: await readFile(v1ManifestPath, 'utf8') });
   const contextIds = (await readdir(contextsRoot(projectRoot))).sort();
+  onProgress?.({ phase: 'scan-contexts', completed: 0, total: contextIds.length, unit: 'contexts' });
   for (const contextId of contextIds) {
     const contextFile = contextMetadataPath(projectRoot, contextId);
     const contextContent = await readFile(contextFile, 'utf8');
@@ -91,6 +93,7 @@ async function sourceRecords(projectRoot: string): Promise<{ records: V1Record[]
         sourceHash: sha256(content),
       });
     }
+    onProgress?.({ phase: 'scan-contexts', completed: contextIds.indexOf(contextId) + 1, total: contextIds.length, unit: 'contexts' });
   }
   const noteFile = path.join(projectRoot, '.context', 'notes.json');
   const knowledgeFile = path.join(projectRoot, '.context', 'knowledge.json');
@@ -122,7 +125,9 @@ async function writeV2Metadata(projectRoot: string): Promise<void> {
   const v1 = await loadManifest(projectRoot);
   const manifest: CognitionManifest = { schemaVersion: 2, layoutVersion: COGNITION_LAYOUT_VERSION, projectId: v1.projectId, createdAt: new Date().toISOString(), policyVersion: 1 };
   const policy: CognitionRuntimePolicy = { schemaVersion: 2, enabled: true, autoStart: true, allowHookStartup: true, inactivityTimeoutMs: 300_000, promptIntentMaxChars: 500, filesystemEventsEnabled: false, retentionMaxBytes: 64 * 1024 * 1024 };
-  await Promise.all([atomicWriteJson(cognitionManifestPath(projectRoot), manifest), atomicWriteJson(cognitionPolicyPath(projectRoot), policy)]);
+  // Interrupted imports must not replace an existing project's opt-out policy.
+  if (await readOptional(cognitionManifestPath(projectRoot)) === null) await atomicWriteJson(cognitionManifestPath(projectRoot), manifest);
+  if (await readOptional(cognitionPolicyPath(projectRoot)) === null) await atomicWriteJson(cognitionPolicyPath(projectRoot), policy);
 }
 
 async function quarantineReadiness(projectRoot: string, readiness: MigrationReport): Promise<void> {
@@ -135,7 +140,7 @@ async function quarantineReadiness(projectRoot: string, readiness: MigrationRepo
   });
 }
 
-export async function importV1(startPath?: string): Promise<MigrationReport> {
+export async function importV1(startPath?: string, onProgress?: ProgressReporter): Promise<MigrationReport> {
   const projectRoot = await resolveProjectRoot(startPath);
   return withLock(`${locksDirectory(projectRoot)}/cognition-migration.lock`, async () => {
     const readiness = await migrationReadiness(projectRoot);
@@ -144,7 +149,7 @@ export async function importV1(startPath?: string): Promise<MigrationReport> {
       await quarantineReadiness(projectRoot, report);
       return report;
     }
-    const { records, sourceHash } = await sourceRecords(projectRoot);
+    const { records, sourceHash } = await sourceRecords(projectRoot, onProgress);
     const existingReceipt = await readOptional(cognitionV1ImportPath(projectRoot));
     if (existingReceipt) {
       const receipt = JSON.parse(existingReceipt) as V1ImportReceipt;
@@ -155,6 +160,7 @@ export async function importV1(startPath?: string): Promise<MigrationReport> {
     }
     await writeV2Metadata(projectRoot);
     const importedEventIds: string[] = [];
+    onProgress?.({ phase: 'import-records', completed: 0, total: records.length, unit: 'records' });
     for (const record of records) {
     const event = await appendEvent(projectRoot, {
       type: eventType(record),
@@ -165,6 +171,7 @@ export async function importV1(startPath?: string): Promise<MigrationReport> {
       payload: { record: record.record, sourcePath: record.sourcePath, sourceHash: record.sourceHash, anchorProvenance: record.git.branch === null && record.git.head === null ? 'global' : 'snapshot' },
     });
     importedEventIds.push(event.event.eventId);
+    onProgress?.({ phase: 'import-records', completed: importedEventIds.length, total: records.length, unit: 'records' });
     }
     await rebuildProjections(projectRoot);
     await atomicWriteJson(cognitionV1SyncPath(projectRoot), { schemaVersion: 2, fingerprint: await v1Fingerprint(projectRoot), updatedAt: new Date().toISOString() });

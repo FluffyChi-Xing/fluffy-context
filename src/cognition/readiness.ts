@@ -7,6 +7,7 @@ import { listNotes } from '../runtime/notes.js';
 import { rebuildSnapshot } from '../runtime/runtime.js';
 import type { ContextMetadata, Manifest } from '../runtime/types.js';
 import type { MigrationReadiness } from './types.js';
+import type { ProgressReporter } from './progress.js';
 
 async function exists(filePath: string): Promise<boolean> {
   try {
@@ -17,7 +18,7 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-export async function migrationReadiness(startPath?: string): Promise<MigrationReadiness> {
+export async function migrationReadiness(startPath?: string, onProgress?: ProgressReporter): Promise<MigrationReadiness> {
   const projectRoot = await resolveProjectRoot(startPath);
   const counts = { contexts: 0, snapshots: 0, notes: 0, knowledge: 0, deadends: 0 };
   const issues: string[] = [];
@@ -45,7 +46,8 @@ export async function migrationReadiness(startPath?: string): Promise<MigrationR
     issues.push(`v1 contexts: ${error instanceof Error ? error.message : 'unavailable'}`);
   }
 
-  for (const contextId of contextIds) {
+  onProgress?.({ phase: 'inspect-contexts', completed: 0, total: contextIds.length, unit: 'contexts' });
+  for (const [index, contextId] of contextIds.entries()) {
     try {
       const context = await readJson<ContextMetadata>(contextMetadataPath(projectRoot, contextId));
       if (context.schemaVersion !== 1 || context.id !== contextId || context.projectRoot !== projectRoot) {
@@ -62,6 +64,7 @@ export async function migrationReadiness(startPath?: string): Promise<MigrationR
     } catch (error) {
       issues.push(`context ${contextId}: ${error instanceof Error ? error.message : 'invalid'}`);
     }
+    onProgress?.({ phase: 'inspect-contexts', completed: index + 1, total: contextIds.length, unit: 'contexts' });
   }
 
   try {

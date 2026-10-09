@@ -10,6 +10,8 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 
 ## 使用原则
 
+- 源码开发包 `1.0.0-beta.2-dev.0` 新增 `ctx upgrade`，用于已有项目数据升级。先关闭其它 agent/MCP 写入会话；用 `--dry-run` 只读检查，再执行 `ctx upgrade` 自动备份、迁移、压缩和验证。阶段进度在 stderr，stdout 为 JSON，可用 `--no-progress` 关闭进度。备份在 `.context/backups/upgrade-*`；重复执行不重复导入，但会新增备份。已发布 beta.1 不包含此命令。
+
 - 当前 beta 为 1.0.0-beta.1。每批通过测试后执行 `npm run install:local` 从 tarball 更新全局 ctx，查看 `.context/builds/install-*.json` 哈希核验回执。不要以源码链接安装代替这一验收。
 - knowledge discover 的诊断只覆盖符合当前状态、scope 和 query 的记录，最多 10 组；不要将 possibleConflicts 当成已确认矛盾。默认查询不能通过诊断字段泄漏候选内容。
 - `ctx journal compact` 默认预览；`--apply` 保留完整事件和哈希链进行 gzip 归档。约 1 MiB 的段也会在追加或 init 时自动维护。归档项目不能再用 0.8.0 读取或写入，常驻 MCP 连接升级后需要重启。
