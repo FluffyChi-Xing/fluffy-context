@@ -163,6 +163,7 @@ export interface ContextBudgetReport {
   usedChars: number;
   remainingChars: number;
   sections: Partial<Record<ContextCandidateSection, { allocated: number; consumed: number; truncated: boolean }>>;
+  groups?: Record<'task' | 'evidence', { allocated: number; consumed: number }>;
 }
 
 export interface ContextManifestProvenance {
@@ -250,7 +251,7 @@ export interface ContextExpandResult {
 export interface ContextManifest {
   schemaVersion: 1;
   compilerVersion: '0.7.7';
-  rankingVersion: 'compiler-ranking-v2';
+  rankingVersion: 'compiler-ranking-v3';
   status: 'ready' | 'no_context';
   projectRoot: string;
   mode: 'v2' | 'v1-fallback';

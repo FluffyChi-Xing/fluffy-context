@@ -1,5 +1,42 @@
 # 发布说明
 
+## 1.0.0-beta.6（beta 通道）
+
+包含此前 beta.3–beta.5 的本地开发成果；这些版本未单独发布 npm。AI 工具自主调用、上下文智能注入的完善、宿主自动事件覆盖及效果评估转入 1.0.0 正式版核心特性待办，不作为本次 beta 发布前置条件，详见 `ROADMAP-1.0.md`。
+
+- 新增 `knowledge review`，按状态、精确来源和待复核条件筛选；提供分页、条数限制和跨条目的 JSON 正文预算。
+- 新增 `knowledge batch verify/reject/deprecate/keep`：默认预览，显式 ID、原因和预览 token 才能执行；verify/keep 要求证据，过期预览拒绝执行。知识状态一次原子保存，日志同步失败显式返回 pending，可原请求幂等重试。
+- `keep` 对仍有效的已验证知识完成来源复核，绑定来源指纹；来源再次改变重新提醒。部分扫描不能结案，候选不会自动验证，退役知识通过会话替换撤回。
+- CLI、MCP 与 Agent API 提供同一治理能力；MCP 新增 `context_knowledge_review` / `context_knowledge_batch`。
+- 修复显式运行时观察与 ping 共用 1 秒超时导致慢 Git 扫描误报失败的问题：观察等待上限为 10 秒，轻量探活仍为 1 秒；增加延迟观察回归，并补齐 CLI 生命周期测试的退出清理。
+- 接入验收载体为 Zcode 和当前 Codex；各宿主实际调用与采用证据单独记录，不以协议测试代替。
+- Windows 本地全量回归 154/154 通过。Zcode 的 GLM-5.3 真实调用 MCP 注入与有界知识审阅并引用返回 ID；当前 Codex 真实验证会话交付模式。宿主验收范围和模型判断偏差见 `HOST-ACCEPTANCE.md`。
+
+## 1.0.0-beta.5（开发中，未发布 npm）
+
+- `import` 改为按段落、列表项和完整表格提取，保留标题及起止行号；跳过 YAML front matter、代码围栏和生成指引，含疑似秘密的整个段落不导入。
+- `import --apply` 保存来源指纹与知识 ID 对照；`changes` 区分新增、修改、删除、未变、部分扫描和不可用来源，`reviewRequired` 持续提醒待复核旧记录。默认预览仍零写入。
+- 来源变化不自动改变知识状态，拒绝/退役记录不被重复导入激活；重复内容返回已有知识 ID。部分扫描和忽略规则不会清空来源基线。
+- 真实仓库预览发现旧工作树文档混入候选；现跳过 `.claude/worktrees` 及带 `.git` 边界的嵌套仓库，避免导入其它 checkout 的材料。
+- 接入验收目标于 2026-10-11 调整为 Zcode 和当前使用的 Codex，分别验证实际工作流；Claude CLI 模型验收暂缓，通用 MCP 协议测试不宣称等同宿主自动触发。
+
+## 1.0.0-beta.4（开发中，未发布 npm）
+
+- CLI / MCP / API 提供可选 session/task 身份、显式 reset 与 full/delta/unchanged 交付。默认调用保留完整输出；变更或撤回证据时返回替换包，任务/分支/范围变化使缓存失效。
+- 哈希回执限制会话数、条目数、读取字节及过期时间；缓存故障回退完整包。派生缓存不进入升级备份，不是宿主确认协议。
+- Claude Hook 自动读取会话及子 agent 身份、支持 prompt_id，在 SessionStart 重置；兼容 Claude 2.1.12 的 shell 命令配置。
+- `doctor --integrations` 展示项目 Hook/MCP 配置检查、最近本地调用和后续操作，明确区分配置、本地调用与宿主接受。
+- 修复 runtime 先删除租约再写停止事件的竞争：现在最终日志写入结束后才报告完全停止，避免立即升级或重启时争抢日志锁。
+- 本机 Claude 2.1.12 隔离项目验收已触发 Hook；模型调用因 API key 无效失败，未确认模型接受/采用。未改变登录配置，未产生模型费用。
+
+## 1.0.0-beta.3（开发中，未发布 npm）
+
+- 默认编译先按关键词相关性排序；恢复和交接优先保留进度、待办。正文预算在任务内容和已验证知识/失败经验之间分配，空余预算可借用；显式 Recipe 保留控制权。
+- 修复长 checkpoint 挤掉相关知识的问题；无查询的 inject 按恢复场景处理。CLI 支持 `inject --scenario`，`--explain` 增加按原因汇总的遗漏数量、分类用量和截断统计，不返回被过滤内容。
+- 默认帮助收敛到五个日常入口及四个按需入口，`ctx --help --all` 提供高级与兼容命令。
+- 新增 `knowledge add/list` 和 `knowledge deadend add/list/verify/obsolete/reject` 分组；原 learn、deadend、deadends 和 MCP 工具继续兼容。新项目指引使用分组入口，已有项目指引不被覆盖。
+- 编译排序标识更新为 `compiler-ranking-v3`；升级前的 manifest 需重新编译后展开。
+
 ## 1.0.0-beta.2
 
 - 新增 `ctx upgrade`：已有项目数据预检、带 SHA-256 清单的流式备份、v1 导入或状态对齐、完整日志无损归档、投影重建及历史哈希验证。

@@ -12,12 +12,50 @@ import { saveContext } from '../src/agent/api.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { enableRuntime, runtimeStatus, serveRuntime, stopRuntime } from '../src/cognition/runtime.js';
 import { readJournal } from '../src/cognition/journal.js';
+import { learnKnowledge, verifyKnowledge, transitionKnowledge } from '../src/runtime/knowledge.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-claude-'));
 }
+
+test('Claude session IDs deduplicate across processes, isolate subagents, and reset after compact', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const candidate = await learnKnowledge(root, 'Payment idempotency prevents duplicate charges.');
+    await verifyKnowledge(root, candidate.knowledgeId);
+    const prompt = { cwd: root, session_id: 'claude-session', prompt_id: 'prompt-one', prompt: 'payment' };
+    const call = async (event: string, input: object) => {
+      const response = await runCli(['hook', 'claude-code', event], root, JSON.stringify(input));
+      assert.equal(response.code, 0, response.stderr);
+      return JSON.parse(response.stdout);
+    };
+    const first = await call('user-prompt', prompt);
+    assert.match(first.hookSpecificOutput.additionalContext, /idempotency/);
+    assert.deepEqual(await call('user-prompt', { ...prompt, prompt_id: 'prompt-two' }), {});
+    const subagent = await call('user-prompt', { ...prompt, agent_id: 'worker' });
+    assert.match(subagent.hookSpecificOutput.additionalContext, /idempotency/);
+    await call('session-start', { cwd: root, session_id: 'claude-session', source: 'compact' });
+    assert.match((await call('user-prompt', prompt)).hookSpecificOutput.additionalContext, /idempotency/);
+    const longPrompt = 'payment '.repeat(80);
+    await call('user-prompt', { ...prompt, prompt: `${longPrompt}task-A` });
+    assert.ok((await call('user-prompt', { ...prompt, prompt: `${longPrompt}task-B` })).hookSpecificOutput);
+    await transitionKnowledge(root, candidate.knowledgeId, 'deprecated', 'Revised invariant');
+    const retracted = await call('user-prompt', { ...prompt, prompt: `${longPrompt}task-B` });
+    assert.match(retracted.hookSpecificOutput.additionalContext, /替代先前/);
+    assert.doesNotMatch(retracted.hookSpecificOutput.additionalContext, /idempotency/);
+    // Official prompt_id can be captured without the nonstandard event_id field.
+    await importV1(root);
+    await enableRuntime(root);
+    await call('user-prompt', prompt);
+    assert.ok((await readJournal(root)).some((event) => event.type === 'host.prompt.submitted' && event.payload.eventId === 'prompt-one'));
+  } finally {
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
 
 function runCli(args: string[], cwd: string, input = ''): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -205,6 +243,20 @@ test('Claude integration previews, applies idempotently, and preserves unrelated
     assert.equal(upgradedSettings.hooks.SessionStart.length, 1);
     assert.equal(upgradedSettings.hooks.UserPromptSubmit.length, 1);
     assert.deepEqual(upgradedMcp.mcpServers['fluffy-context'], { command: process.execPath, args: [cli, 'agent', 'serve'] });
+
+    // Repair an exec-form hook only when its path is attested by our MCP install.
+    upgradedSettings.hooks.UserPromptSubmit[0].hooks = [
+      { type: 'command', command: process.execPath, args: [cli, 'hook', 'claude-code', 'user-prompt'], timeout: 12 },
+      { type: 'command', command: 'custom-user-hook' },
+    ];
+    await writeFile(path.join(root, '.claude', 'settings.json'), JSON.stringify(upgradedSettings));
+    assert.equal((await installClaudeIntegration(root, true)).applied, true);
+    const repaired = JSON.parse(await readFile(path.join(root, '.claude', 'settings.json'), 'utf8'));
+    const repairedHooks = repaired.hooks.UserPromptSubmit[0].hooks;
+    assert.equal(repaired.hooks.UserPromptSubmit.length, 1);
+    assert.equal(repairedHooks[0].args, undefined);
+    assert.equal(repairedHooks[0].timeout, 12);
+    assert.equal(repairedHooks[1].command, 'custom-user-hook');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -221,6 +273,49 @@ test('Claude integration refuses malformed and conflicting configuration', async
 
     await writeFile(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: [] }), 'utf8');
     await assert.rejects(() => installClaudeIntegration(root, true), /MCP servers must be an object/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('integration diagnostics distinguish configuration from delivery and generated hooks use the legacy shell contract', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await installClaudeIntegration(root, true);
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8'));
+    const handler = settings.hooks.UserPromptSubmit[0].hooks[0];
+    assert.equal(handler.command, `"${process.execPath}" "${cli}" hook claude-code user-prompt`);
+    assert.equal(handler.args, undefined, 'Claude 2.1.12 does not support exec-form args');
+    const configured = await inspectClaudeIntegration(root);
+    assert.ok(configured.checks.every((check) => check.ok));
+    assert.equal(configured.observation?.lastLocalInvocation, null);
+    assert.equal(configured.observation?.hostAcceptance, 'not-observed');
+    const result = await new Promise<{ code: number; output: string }>((resolve, reject) => {
+      const child = spawn(handler.command, [], { cwd: root, windowsHide: true, shell: true });
+      let output = '';
+      child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code: code ?? -1, output }));
+      child.stdin.end(JSON.stringify({ cwd: root, session_id: 'generated-config', prompt: 'work' }));
+    });
+    assert.equal(result.code, 0);
+    assert.equal(JSON.parse(result.output).hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    assert.ok((await inspectClaudeIntegration(root)).observation?.lastLocalInvocation);
+    settings.disableAllHooks = true;
+    settings.hooks.SessionStart[0].matcher = 'startup';
+    settings.hooks.UserPromptSubmit[0].hooks[0].async = true;
+    await writeFile(settingsPath, JSON.stringify(settings));
+    const before = await readFile(settingsPath, 'utf8');
+    const blocked = await inspectClaudeIntegration(root);
+    assert.equal(blocked.installationNeeded, false);
+    assert.deepEqual(blocked.checks.filter((check) => !check.ok).map((check) => check.name), ['project-hooks-enabled', 'session-start', 'user-prompt']);
+    await installClaudeIntegration(root, true);
+    assert.equal(await readFile(settingsPath, 'utf8'), before, 'custom disable/matcher/async settings remain user-owned');
+    const diagnostic = await runCli(['doctor', '--integrations'], root);
+    assert.equal(diagnostic.code, 0);
+    assert.equal(JSON.parse(diagnostic.stdout).integrations.claude.observation.hostAcceptance, 'not-observed');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

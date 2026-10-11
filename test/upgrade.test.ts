@@ -10,7 +10,7 @@ import { initProject } from '../src/runtime/init.js';
 import { checkpoint } from '../src/runtime/runtime.js';
 import { upgradeProject } from '../src/runtime/upgrade.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
-import { appendEvent, verifyJournal } from '../src/cognition/journal.js';
+import { appendEvent, readJournal, verifyJournal } from '../src/cognition/journal.js';
 import { cognitionJournalDirectory, cognitionV1ImportPath } from '../src/storage/layout.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.js';
 import { runtimeStatus, startRuntime, stopRuntime } from '../src/cognition/runtime.js';
@@ -99,9 +99,14 @@ test('upgrade restores a previously running runtime after successful verificatio
   const root = await fixture(t);
   await importV1(root);
   await startRuntime(root);
+  const previous = (await runtimeStatus(root)).lease;
   const result = await upgradeProject(root);
   assert.ok('runtime' in result);
   assert.equal(result.runtime.running, true);
+  const events = await readJournal(root);
+  const stopped = events.findIndex((event) => event.type === 'runtime.stopped' && event.source.instanceId === previous?.instanceId);
+  const restarted = events.findIndex((event) => event.type === 'runtime.started' && event.source.instanceId === result.runtime.lease?.instanceId);
+  assert.ok(stopped >= 0 && restarted > stopped, 'shutdown must finish its journal write before the replacement runtime starts');
 });
 
 test('upgrade failure keeps the verified backup and leaves runtime stopped for inspection', async (t) => {

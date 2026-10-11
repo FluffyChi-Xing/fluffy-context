@@ -27,6 +27,12 @@ function isKnowledge(value: unknown): value is Knowledge {
     && Array.isArray(value.sourceContextIds) && value.sourceContextIds.every((item) => typeof item === 'string')
     && Array.isArray(value.sourceSnapshotIds) && value.sourceSnapshotIds.every((item) => typeof item === 'string')
     && Array.isArray(value.supportingEvidence) && value.supportingEvidence.every((item) => typeof item === 'string')
+    && (value.memoryReview === undefined || isRecord(value.memoryReview)
+      && Array.isArray(value.memoryReview.sources) && value.memoryReview.sources.length <= 2000
+      && value.memoryReview.sources.every((source) => isRecord(source) && typeof source.source === 'string'
+        && (source.sourceHash === null || typeof source.sourceHash === 'string' && /^[a-f0-9]{64}$/.test(source.sourceHash)))
+      && typeof value.memoryReview.reason === 'string' && typeof value.memoryReview.reviewedAt === 'string'
+      && Array.isArray(value.memoryReview.evidence) && value.memoryReview.evidence.every((item) => typeof item === 'string'))
     && typeof value.createdAt === 'string'
     && typeof value.updatedAt === 'string';
 }
@@ -91,7 +97,7 @@ async function validateSource(projectRoot: string, contextId?: string, snapshotI
   if (context.projectRoot !== projectRoot) throw new Error(`source context belongs to another project: ${contextId}`);
 }
 
-async function loadKnowledge(projectRoot: string): Promise<KnowledgeFile> {
+export async function loadKnowledge(projectRoot: string): Promise<KnowledgeFile> {
   try { return await readJson<KnowledgeFile>(knowledgePath(projectRoot), isKnowledgeFile); }
   catch (error) { if (isNotFound(error)) return { schemaVersion: 1, items: [] }; throw error; }
 }

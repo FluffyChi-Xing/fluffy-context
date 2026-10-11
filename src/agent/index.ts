@@ -1,6 +1,10 @@
 export * from './api.js';
 export { injectContext } from '../compiler/inject.js';
+export type { InjectionOptions } from '../compiler/inject.js';
+export type { InjectionDelivery } from '../compiler/session.js';
 export { importMemory } from '../cognition/import-memory.js';
+export { reviewKnowledge, batchKnowledge } from '../cognition/knowledge-review.js';
+export type { KnowledgeReviewOptions, KnowledgeBatchOptions } from '../cognition/knowledge-review.js';
 export { setupProject } from '../runtime/setup.js';
 export { upgradeProject } from '../runtime/upgrade.js';
 export type {

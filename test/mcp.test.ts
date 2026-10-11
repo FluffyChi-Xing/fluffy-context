@@ -14,6 +14,7 @@ import { appendEvent, readJournal } from '../src/cognition/journal.js';
 import { acceptEvolutionCandidate, proposeEvolution } from '../src/cognition/evolution.js';
 import { materializeRecipe, transitionRecipe } from '../src/cognition/recipes.js';
 import { runtimeStatus, stopRuntime, enableRuntime } from '../src/cognition/runtime.js';
+import { learnKnowledge, listKnowledge } from '../src/runtime/knowledge.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
@@ -44,6 +45,29 @@ async function connectInMemory() {
   return { client, server };
 }
 
+test('MCP knowledge governance requires preview and evidence and exposes bounded reviews', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const item = await learnKnowledge(root, 'Payment MCP governance invariant.');
+    const review = await client.callTool({ name: 'context_knowledge_review', arguments: { path: root, maxChars: 1000 } });
+    assert.notEqual(review.isError, true);
+    assert.equal((review.structuredContent as { total: number }).total, 1);
+    const args = { path: root, ids: [item.knowledgeId], action: 'verify', reason: 'Checked test', evidence: ['test/mcp.test.ts'] };
+    const preview = await client.callTool({ name: 'context_knowledge_batch', arguments: args });
+    assert.notEqual(preview.isError, true);
+    assert.equal((await listKnowledge(root)).length, 0);
+    const missingToken = await client.callTool({ name: 'context_knowledge_batch', arguments: { ...args, apply: true } });
+    assert.equal(missingToken.isError, true);
+    const applied = await client.callTool({ name: 'context_knowledge_batch', arguments: { ...args, apply: true, expectedToken: (preview.structuredContent as { token: string }).token } });
+    assert.notEqual(applied.isError, true);
+    assert.equal((await listKnowledge(root)).length, 1);
+  } finally {
+    await client.close(); await server.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('MCP context_orient exposes bounded orientation and keeps serving after tool errors', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
@@ -57,6 +81,8 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
 
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'context_knowledge_review',
+      'context_knowledge_batch',
       'context_inject',
       'context_import',
       'context_orient',
@@ -468,6 +494,8 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
     await client.connect(transport);
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'context_knowledge_review',
+      'context_knowledge_batch',
       'context_inject',
       'context_import',
       'context_orient',
@@ -497,6 +525,21 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
     const result = await client.callTool({ name: 'context_orient', arguments: { path: root } });
     assert.notEqual(result.isError, true);
     assert.equal(orientPayload(result).status, 'no_context');
+    const saved = await client.callTool({ name: 'context_checkpoint', arguments: { path: root, title: 'Session transport', progressSummary: 'Check MCP session delivery' } });
+    assert.notEqual(saved.isError, true);
+    const inject = async (resetSession = false) => {
+      const result = await client.callTool({ name: 'context_inject', arguments: { path: root, query: 'session', sessionId: 'stdio-conversation', taskId: 'session-task', resetSession } });
+      assert.notEqual(result.isError, true);
+      return result.structuredContent as { text: string; delivery: { mode: string; reason: string } };
+    };
+    assert.equal((await inject()).delivery.mode, 'full');
+    const repeat = await inject();
+    assert.equal(repeat.delivery.mode, 'unchanged');
+    assert.equal(repeat.text, '');
+    assert.equal((await inject(true)).delivery.reason, 'reset');
+    const invalidSession = await client.callTool({ name: 'context_inject', arguments: { path: root, sessionId: '' } });
+    assert.equal(invalidSession.isError, true);
+    assert.equal((await inject()).delivery.mode, 'unchanged');
     assert.equal(stderr, '');
   } finally {
     await client.close();

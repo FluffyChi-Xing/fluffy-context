@@ -157,8 +157,8 @@ function applicable(candidate: ContextCandidate, intent: ContextIntent): { ok: b
 }
 
 function sortCandidates(left: ContextCandidate, right: ContextCandidate): number {
-  return right.priority - left.priority
-    || right.score - left.score
+  return right.score - left.score
+    || right.priority - left.priority
     || right.matchedTerms.length - left.matchedTerms.length
     || stableCompare(left.candidateId, right.candidateId);
 }
@@ -198,11 +198,30 @@ function recipeApplicable(recipe: ContextRecipeParticipation, sources: CompilerS
   return recipe.recipeId === sources.recipe!.recipe.recipeId;
 }
 
-function sortWithRecipe(recipe: ContextRecipeParticipation | undefined): (left: ContextCandidate, right: ContextCandidate) => number {
-  if (!recipe) return sortCandidates;
+function sortWithRecipe(recipe: ContextRecipeParticipation | undefined, scenario: ContextScenario): (left: ContextCandidate, right: ContextCandidate) => number {
+  const compare = scenario === 'resume' || scenario === 'handoff'
+    ? (left: ContextCandidate, right: ContextCandidate) => right.priority - left.priority || sortCandidates(left, right)
+    : sortCandidates;
+  if (!recipe) return compare;
   return (left, right) => sourcePreference(left, recipe) - sourcePreference(right, recipe)
     || sectionPreference(left, recipe) - sectionPreference(right, recipe)
-    || sortCandidates(left, right);
+    || compare(left, right);
+}
+
+function budgetGroup(candidate: ContextCandidate): 'task' | 'evidence' {
+  return candidate.section === 'knowledge' || candidate.section === 'deadend' ? 'evidence' : 'task';
+}
+
+function groupBudgets(candidates: ContextCandidate[], total: number, scenario: ContextScenario) {
+  const demand = { task: 0, evidence: 0 };
+  for (const candidate of candidates) demand[budgetGroup(candidate)] += candidate.text.length + 1;
+  // Reserve progress for resume/handoff, and evidence for other tasks. Unused
+  // reservations are lent to the other group instead of wasting the budget.
+  const taskShare = scenario === 'resume' || scenario === 'handoff' ? 0.7 : 0.4;
+  let task = Math.min(demand.task, Math.floor(total * taskShare));
+  const evidence = Math.min(demand.evidence, total - task);
+  task = Math.min(demand.task, total - evidence);
+  return { task, evidence };
 }
 
 function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
@@ -233,7 +252,11 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
     ];
     for (const [field, value, section] of summaryFields) {
       const text = textForSummary(field, value);
-      if (text) candidates.push(makeCandidate(section, contextSource, { field, value }, text, terms, [field], field));
+      if (text) {
+        const candidate = makeCandidate(section, contextSource, { field, value }, text, terms, [field], field);
+        candidate.priority = field === 'progressSummary' ? 104 : field === 'title' ? 102 : candidate.priority;
+        candidates.push(candidate);
+      }
     }
     const listFields: Array<[string, string[], ContextCandidateSection]> = [
       ['pendingTasks', resumeSummary.pendingTasks, 'pending'],
@@ -244,7 +267,9 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
     ];
     for (const [field, values, section] of listFields) {
       for (const [index, value] of values.entries()) {
-        candidates.push(makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field], `${field}:${index}`));
+        const candidate = makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field], `${field}:${index}`);
+        if (field === 'pendingTasks') candidate.priority = 103;
+        candidates.push(candidate);
       }
     }
   }
@@ -323,7 +348,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     const check = applicable(candidate, intent);
     if (!check.ok) excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: check.reason ?? 'query_no_match' });
     return check.ok;
-  }).sort(sortWithRecipe(recipe));
+  }).sort(sortWithRecipe(recipe, intent.scenario));
   const graph = options.graphHops === undefined ? undefined : graphOrdering(sources.evidenceGraph, options.graphHops, sources.anchor, eligible);
   if (graph) {
     eligible.sort((left, right) => {
@@ -340,12 +365,19 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const selected: ContextCandidate[] = [];
   const truncation = emptyTruncation();
   const sectionStats: ContextManifest['budget']['sections'] = {};
+  const groups = recipe ? null : groupBudgets(eligible, maxChars, intent.scenario);
+  const groupUsed = { task: 0, evidence: 0 };
+  const taskDemand = eligible.filter((item) => budgetGroup(item) === 'task').reduce((sum, item) => sum + item.text.length + 1, 0);
+  const reservePending = groups && taskDemand > groups.task && eligible.some((item) => item.section === 'pending');
   let usedChars = 0;
   for (const candidate of eligible) {
     const separator = selected.length > 0 ? 1 : 0;
     const sectionBudget = recipe?.sectionBudgets[candidate.section] ?? maxChars;
     const consumedInSection = sectionStats[candidate.section]?.consumed ?? 0;
-    const available = Math.min(maxChars - usedChars - separator, sectionBudget - consumedInSection - separator);
+    const group = budgetGroup(candidate);
+    const groupAvailable = groups ? groups[group] - groupUsed[group] - separator : maxChars;
+    const itemLimit = reservePending && candidate.matchedFields.includes('progressSummary') ? Math.ceil(groups!.task * 0.6) : maxChars;
+    const available = Math.min(maxChars - usedChars - separator, sectionBudget - consumedInSection - separator, groupAvailable, itemLimit);
     if (available <= 0) {
       excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: 'budget' });
       truncation.candidatesOmittedByBudget += 1;
@@ -362,6 +394,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     const item = { ...candidate, text: limited.text, selectedChars: limited.text.length, selected: true, truncated: limited.truncated };
     selected.push(item);
     usedChars += separator + item.selectedChars;
+    groupUsed[group] += separator + item.selectedChars;
     const prior = sectionStats[item.section] ?? { allocated: recipe?.sectionBudgets[item.section] ?? maxChars, consumed: 0, truncated: false };
     sectionStats[item.section] = { ...prior, consumed: prior.consumed + item.selectedChars + separator, truncated: prior.truncated || limited.truncated };
     if (limited.truncated) {
@@ -390,6 +423,13 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const tokenEstimate = estimateTokens(manifestText(selected));
   const selectedItemHashes = selected.map((item) => item.itemHash);
   const status = orientation.status === 'ready' || selected.length > 0 ? 'ready' : 'no_context';
+  const budget = {
+    requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats,
+    ...(groups ? { groups: {
+      task: { allocated: groups.task, consumed: groupUsed.task },
+      evidence: { allocated: groups.evidence, consumed: groupUsed.evidence },
+    } } : {}),
+  };
   const manifestHash = rebuildManifestHash({
     status,
     projectRoot: sources.anchor.projectRoot,
@@ -397,7 +437,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
     anchor: sources.anchor,
     intent,
     selected,
-    budget: { requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats },
+    budget,
     truncation,
     ...(recipe ? { recipe } : {}),
     ...(graph ? { graph: graph.participation } : {}),
@@ -405,7 +445,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
   return {
     schemaVersion: 1,
     compilerVersion: '0.7.7',
-    rankingVersion: 'compiler-ranking-v2',
+    rankingVersion: 'compiler-ranking-v3',
     status,
     projectRoot: sources.anchor.projectRoot,
     mode: orientation.explanation.mode,
@@ -422,7 +462,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
       selectedItemHashes,
       tokenEstimate: { input: tokenEstimate, output: tokenEstimate, unit: 'estimated-tokens', method: 'chars-div-four' },
     },
-    budget: { requested: intent.budget, usedChars, remainingChars: Math.max(0, maxChars - usedChars), sections: sectionStats },
+    budget,
     truncation,
     provenance: {
       journalRead: sources.events.length > 0,

@@ -5,6 +5,7 @@ import { loadRuntimePolicy } from '../cognition/policy.js';
 import { readGitWorktreeState } from '../git/git-adapter.js';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { injectContext } from '../compiler/inject.js';
+import { contentHash } from '../compiler/identity.js';
 
 interface ClaudeCodeHookInput {
   cwd?: unknown;
@@ -13,6 +14,8 @@ interface ClaudeCodeHookInput {
   sessionId?: unknown;
   event_id?: unknown;
   eventId?: unknown;
+  prompt_id?: unknown;
+  agent_id?: unknown;
 }
 
 const HOOK_RESPONSE = '{}\n';
@@ -27,7 +30,7 @@ function compact(value: string, maxChars: number): string {
 }
 
 function stableId(input: ClaudeCodeHookInput, name: 'session' | 'event'): string | undefined {
-  return name === 'session' ? text(input.session_id) ?? text(input.sessionId) : text(input.event_id) ?? text(input.eventId);
+  return name === 'session' ? text(input.session_id) ?? text(input.sessionId) : text(input.prompt_id) ?? text(input.event_id) ?? text(input.eventId);
 }
 
 function redactIntent(value: string): { intent: string; redactionCount: number } {
@@ -81,18 +84,26 @@ export async function runClaudeCodeHook(event: 'session-start' | 'user-prompt', 
     await capture(event, input).catch(() => undefined);
     await touchRuntime(text(input.cwd)).catch(() => false);
     const cwd = text(input.cwd);
+    const rawSessionId = stableId(input, 'session')?.trim();
+    const sessionId = rawSessionId ? contentHash({ session: rawSessionId, agent: text(input.agent_id) ?? null }) : undefined;
     const result = await injectContext(cwd, {
         query: compact(text(input.prompt) ?? '', 500) || undefined,
         scenario: event === 'session-start' ? 'resume' : undefined,
         trigger: event === 'session-start' ? 'session-start' : 'prompt',
         adapter: 'claude-code',
+        sessionId,
+        taskId: sessionId ? contentHash(text(input.prompt) ?? '') : undefined,
+        resetSession: Boolean(sessionId) && event === 'session-start',
         maxChars: event === 'session-start' ? 1200 : 1800,
         knowledgeLimit: 5,
         deadendLimit: 3,
         noteLimit: 8,
       }, 'hook');
+    if (result.delivery.mode === 'unchanged') return HOOK_RESPONSE;
     const guidance = event === 'session-start' ? 'Orient → Plan → Implement → Verify → Handoff' : 'Implement → Verify → Handoff';
-    const additionalContext = `${guidance}\n将项目上下文作为证据；重要发现用 ctx note，阶段结束用 ctx checkpoint。\n${result.status === 'no_context' ? '当前没有可恢复的 Context。\n' : ''}${result.text}`;
+    const update = result.delivery.replacePrevious ? '本次证据包替代先前的项目上下文；未再出现的旧证据不应继续作为当前依据。\n'
+      : result.delivery.mode === 'delta' ? '以下是当前任务的新增项目证据。\n' : '';
+    const additionalContext = `${guidance}\n将项目上下文作为证据；重要发现用 ctx note，阶段结束用 ctx checkpoint。\n${update}${result.status === 'no_context' ? '当前没有可恢复的 Context。\n' : ''}${result.text}`;
     return `${JSON.stringify({ hookSpecificOutput: {
       hookEventName: event === 'session-start' ? 'SessionStart' : 'UserPromptSubmit',
       additionalContext,

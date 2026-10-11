@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { compileContext } from '../src/compiler/compile.js';
+import { injectContext } from '../src/compiler/inject.js';
 import { expandContext } from '../src/compiler/expand.js';
 import { canonicalJson, estimateTokens, validateManifestIdentity } from '../src/compiler/identity.js';
 import { FilesystemObserver, type WatchCallback } from '../src/cognition/filesystem-observer.js';
@@ -46,6 +47,96 @@ test('Compiler identity is canonical, bounded, and verifiable', async () => {
   assert.equal(canonicalJson({ b: 2, a: { d: 4, c: 3 }, omitted: undefined }), '{"a":{"c":3,"d":4},"b":2}');
   assert.equal(estimateTokens('12345'), 2);
   assert.equal(estimateTokens(''), 0);
+});
+
+test('default injection preserves relevant verified evidence alongside an oversized checkpoint', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  await checkpoint(root, {
+    title: 'GUAN-689 回归',
+    progressSummary: 'GUAN-689 已定位残留；'.repeat(350),
+    completed: ['历史步骤'.repeat(800), '另一个低相关历史步骤'],
+    pendingTasks: ['GUAN-689 检查取消后再次进入业务的回归场景'],
+  });
+  const statement = 'GUAN-689 人脸照唯一来源是 sessionStorage.photo，失败和退出时清理残留。';
+  const knowledge = await learnKnowledge(root, statement);
+  await verifyKnowledge(root, knowledge.knowledgeId);
+  const deadend = await recordDeadend(root, 'GUAN-689 仅清理组件内存', 'sessionStorage.photo 仍有残留');
+  await verifyDeadend(root, deadend.deadendId);
+  await learnKnowledge(root, 'GUAN-689 CANDIDATE-MUST-NOT-LEAK');
+  const unrelated = await learnKnowledge(root, 'Unrelated inventory transaction boundary');
+  await verifyKnowledge(root, unrelated.knowledgeId);
+
+  for (const query of ['GUAN-689', 'GUAN-689 sessionStorage.photo 人脸失败残留清理']) {
+    const result = await injectContext(root, { query, explain: true });
+    assert.ok(result.text.includes(statement), result.text);
+    assert.match(result.text, /仅清理组件内存/);
+    assert.match(result.text, /progressSummary:/);
+    assert.match(result.text, /pendingTasks:/);
+    assert.doesNotMatch(result.text, /CANDIDATE-MUST-NOT-LEAK|inventory/);
+    assert.equal(result.budget.usedChars, result.text.length);
+    assert.ok(result.text.length <= 2400);
+    assert.equal(result.selection?.excludedCounts.status_not_verified, 1);
+    assert.equal(result.selection?.excludedCounts.query_no_match, 1);
+    assert.ok((result.selection?.partiallyTruncated ?? 0) > 0);
+    assert.ok((result.selection?.omittedByBudget ?? 0) > 0);
+  }
+});
+
+test('scenario budgets lend unused space and retain progress on resume under evidence pressure', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  await checkpoint(root, { title: 'Resume auth', progressSummary: 'auth progress '.repeat(100), pendingTasks: ['auth next regression'], completed: ['old work '.repeat(100)] });
+  const fact = await learnKnowledge(root, 'auth knowledge '.repeat(250));
+  await verifyKnowledge(root, fact.knowledgeId);
+  const resume = await injectContext(root, { query: 'auth', scenario: 'resume', explain: true, maxChars: 500 });
+  const debug = await injectContext(root, { query: 'auth', scenario: 'debugging', explain: true, maxChars: 500 });
+  assert.match(resume.text, /progressSummary:/);
+  assert.match(resume.text, /pendingTasks:/);
+  assert.match(resume.text, /auth knowledge/);
+  assert.ok((resume.selection?.sections.knowledge?.consumed ?? 0) < (debug.selection?.sections.knowledge?.consumed ?? 0));
+  assert.equal((await injectContext(root)).scenario, 'resume');
+  for (const maxChars of [0, 1, 2, 20, 499, 2400]) {
+    const manifest = await compileContext(root, { query: 'auth', maxChars });
+    assert.ok(manifest.text.length <= maxChars);
+    assert.equal(manifest.text.length, manifest.budget.usedChars);
+    assert.equal(validateManifestIdentity(manifest), true);
+  }
+  const taskOnly = await injectContext(root, { query: 'unmatched', maxChars: 500 });
+  assert.equal(taskOnly.text.length, 500, 'task borrows the unused evidence reservation');
+
+  const empty = await project();
+  t.after(() => rm(empty, { recursive: true, force: true }));
+  await initProject(empty);
+  const onlyFact = await learnKnowledge(empty, 'auth evidence '.repeat(100));
+  await verifyKnowledge(empty, onlyFact.knowledgeId);
+  assert.equal((await injectContext(empty, { query: 'auth', maxChars: 500 })).text.length, 500);
+});
+
+test('relevance outranks source type only after trust and applicability filtering', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  const generic = await learnKnowledge(root, 'photo generic background '.repeat(100));
+  await verifyKnowledge(root, generic.knowledgeId);
+  const failure = await recordDeadend(root, 'sessionStorage.photo retry', 'Retains stale data');
+  await verifyDeadend(root, failure.deadendId);
+  const wrongBranch = await learnKnowledge(root, 'sessionStorage.photo retry WRONG-BRANCH', {
+    applicability: { project: true, branchMode: 'exact', branches: ['refs/heads/unrelated'] },
+  });
+  await verifyKnowledge(root, wrongBranch.knowledgeId);
+  const wrongScope = await learnKnowledge(root, 'sessionStorage.photo retry WRONG-SCOPE', { scope: 'other' });
+  await verifyKnowledge(root, wrongScope.knowledgeId);
+  await learnKnowledge(root, 'sessionStorage.photo retry CANDIDATE');
+  const result = await compileContext(root, { query: 'photo retry', scope: 'project', maxChars: 80, scenario: 'debugging' });
+  assert.equal(result.selected[0]?.source.entityId, failure.deadendId);
+  assert.match(result.text, /Retains stale data/);
+  assert.doesNotMatch(result.text, /WRONG-BRANCH|WRONG-SCOPE|CANDIDATE/);
+  assert.ok(result.excluded.some((item) => item.reason === 'applicability_mismatch'));
+  assert.ok(result.excluded.some((item) => item.reason === 'scope_mismatch'));
+  assert.ok(result.excluded.some((item) => item.reason === 'status_not_verified'));
 });
 
 test('Evidence graph projection and opt-in compiler participation are deterministic and bounded', async () => {

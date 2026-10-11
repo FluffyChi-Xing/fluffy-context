@@ -45,7 +45,7 @@ async function enabled(projectRoot: string): Promise<boolean> {
   }
 }
 
-async function mirror(projectRoot: string, type: 'context.state.recorded' | 'note.recorded' | 'note.absorbed' | 'knowledge.proposed' | 'knowledge.verified' | 'knowledge.deprecated' | 'knowledge.rejected' | 'deadend.proposed' | 'deadend.verified' | 'deadend.obsoleted' | 'deadend.rejected', record: Record<string, unknown>, identity: string): Promise<void> {
+async function mirror(projectRoot: string, type: 'context.state.recorded' | 'note.recorded' | 'note.absorbed' | 'knowledge.proposed' | 'knowledge.verified' | 'knowledge.deprecated' | 'knowledge.rejected' | 'deadend.proposed' | 'deadend.verified' | 'deadend.obsoleted' | 'deadend.rejected', record: Record<string, unknown>, identity: string, strict = false): Promise<void> {
   if (!await enabled(projectRoot)) return;
   try {
     const state = await readGitWorktreeState(projectRoot);
@@ -56,9 +56,11 @@ async function mirror(projectRoot: string, type: 'context.state.recorded' | 'not
       git: { worktreeId: state.worktreeId, branch: state.branch, ref: state.ref, head: state.commit },
       payload: { record, anchorProvenance: 'live' },
     });
-    if (appended) await rebuildProjections(projectRoot);
-    await atomicWriteJson(cognitionV1SyncPath(projectRoot), { schemaVersion: 2, fingerprint: await v1Fingerprint(projectRoot), updatedAt: new Date().toISOString() });
-  } catch {
+    if (appended || strict) await rebuildProjections(projectRoot);
+    // A batch must not mark the whole store synchronized after its first item.
+    if (!strict) await atomicWriteJson(cognitionV1SyncPath(projectRoot), { schemaVersion: 2, fingerprint: await v1Fingerprint(projectRoot), updatedAt: new Date().toISOString() });
+  } catch (error) {
+    if (strict) throw error;
     // v1 remains authoritative when v2 mirroring is unavailable.
   }
 }
@@ -71,12 +73,12 @@ export async function mirrorNote(projectRoot: string, note: Note, absorbed = fal
   await mirror(projectRoot, absorbed ? 'note.absorbed' : 'note.recorded', note as unknown as Record<string, unknown>, note.noteId);
 }
 
-export async function mirrorKnowledge(projectRoot: string, knowledge: Knowledge): Promise<void> {
+export async function mirrorKnowledge(projectRoot: string, knowledge: Knowledge, strict = false): Promise<void> {
   const type = knowledge.status === 'verified' ? 'knowledge.verified'
     : knowledge.status === 'deprecated' ? 'knowledge.deprecated'
       : knowledge.status === 'rejected' ? 'knowledge.rejected'
         : 'knowledge.proposed';
-  await mirror(projectRoot, type, knowledge as unknown as Record<string, unknown>, knowledge.knowledgeId);
+  await mirror(projectRoot, type, knowledge as unknown as Record<string, unknown>, knowledge.knowledgeId, strict);
 }
 
 export async function mirrorDeadend(projectRoot: string, deadend: Deadend): Promise<void> {

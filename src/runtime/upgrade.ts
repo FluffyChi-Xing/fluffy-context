@@ -21,7 +21,7 @@ import { COGNITION_LAYOUT_VERSION } from '../cognition/types.js';
 import type { ProgressReporter } from '../cognition/progress.js';
 import { VERSION } from '../version.js';
 
-const excluded = new Set(['backups', 'builds', 'locks', 'cognition/runtime/lease.json', 'cognition/runtime/secret', 'cognition/runtime/startup.json']);
+const excluded = new Set(['backups', 'builds', 'locks', 'injection-cache.json', 'injection-cache.lock', 'cognition/runtime/lease.json', 'cognition/runtime/secret', 'cognition/runtime/startup.json']);
 
 async function exists(file: string): Promise<boolean> {
   try { await lstat(file); return true; }

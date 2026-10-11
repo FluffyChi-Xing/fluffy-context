@@ -10,9 +10,18 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 
 ## 使用原则
 
+- 命令入口以 `ctx --help` 的日常流程为准；高级、维护和实验命令在 `ctx --help --all`。知识操作集中到 `ctx knowledge add/list/verify/discover` 和 `ctx knowledge deadend add/list/verify/obsolete/reject`；旧 learn/deadend/deadends 继续兼容，MCP 工具名不变。
+- 默认注入在进度和已验证知识/失败经验之间保留预算，空余可互借；恢复/交接偏重进度。可用 `--scenario` 明确场景；`--explain` 的 `selection.excludedCounts` 区分未命中、状态/范围过滤和预算遗漏，不要把未命中当成知识不存在。显式 Recipe 保持其预算控制；升级到 ranking-v3 后须重新 compile 再 expand。
+
 - `1.0.0-beta.2` 新增 `ctx upgrade`，用于已有项目数据升级。先关闭其它 agent/MCP 写入会话；用 `--dry-run` 只读检查，再执行 `ctx upgrade` 自动备份、迁移、压缩和验证。阶段进度在 stderr，stdout 为 JSON，可用 `--no-progress` 关闭进度。备份在 `.context/backups/upgrade-*`；重复执行不重复导入，但会新增备份。已发布 beta.1 不包含此命令。
 
-- 当前 beta 为 1.0.0-beta.2。每批通过测试后执行 `npm run install:local` 从 tarball 更新全局 ctx，查看 `.context/builds/install-*.json` 哈希核验回执。不要以源码链接安装代替这一验收。
+- 当前源码版本为 1.0.0-beta.6（本批未发布 npm，公开 beta 仍为 beta.2）。每批通过测试后执行 `npm run install:local` 从 tarball 更新全局 ctx，查看 `.context/builds/install-*.json` 哈希核验回执。不要以源码链接安装代替这一验收。
+- 持续会话可用 `inject --session-id <id> --task-id <id>`；无变化时正文为空，`delivery.replacePrevious` 要求替换旧证据。压缩、清空或丢失输出后加 `--reset-session`，不要跨宿主/子 agent 共用身份。回执只证明本地调用，不能证明模型采用。
+- 用 `doctor --integrations` 诊断项目 Claude Hook/MCP 配置与本地调用；用户级配置、工作区信任及宿主接受需另行验收。生成 Hook 使用兼容 Claude 2.1.12 的 shell 命令格式。
+- 用户指定 Zcode 和当前 Codex 为真实接入验收载体，替代 WebStorm CC GUI；暂缓 Claude CLI 模型验收。分别验证可用接入路径、触发与采用，不得将 MCP 协议测试或配置存在宣称为宿主自动触发成功。
+- beta.6 用 `knowledge review` 有界审阅候选和已验证知识，`--review-required` 过滤来源复核，`--source` 为精确项目相对路径；按 nextOffset 分页。预算包含条目 JSON 的所有字段但不含响应外壳，条目截断时须补读证据再做决定。
+- 批量治理使用 `knowledge batch verify/reject/deprecate/keep --ids ... --reason ...`，默认预览；执行必须保留相同请求并追加 `--apply --expected-token <token>`。verify/keep 必须给出 `--evidence`，核验由操作者负责。keep 仅结案已验证知识的当前来源修订，后续变更重新提醒；partial/unavailable 不能结案。日志同步 pending 时状态已保存，按相同请求及 token 重试，不把 pending 当作完成。MCP 对应 context_knowledge_review/context_knowledge_batch。
+- beta.5 的 import 按段落、续行列表和表格提取，跳过 front matter。先检查 `changes` 和 `reviewRequired`；来源修改/删除只提示复核，不自动改变知识状态。重复 apply 保留未处理提醒，partial/unavailable 不覆盖来源基线。首次 apply 才建立来源基线，旧版本按行与新版按段的差异需审阅。
 - knowledge discover 的诊断只覆盖符合当前状态、scope 和 query 的记录，最多 10 组；不要将 possibleConflicts 当成已确认矛盾。默认查询不能通过诊断字段泄漏候选内容。
 - `ctx journal compact` 默认预览；`--apply` 保留完整事件和哈希链进行 gzip 归档。约 1 MiB 的段也会在追加或 init 时自动维护。归档项目不能再用 0.8.0 读取或写入，常驻 MCP 连接升级后需要重启。
 - `retentionMaxBytes` 限制可选观察事件，不限制重要语义写入；在 report 查看 admission.dropped。默认 inject 只返回精简证据包，需要候选来源详情时使用 `--explain`。
@@ -40,7 +49,7 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。
-- 每周或每月复盘时使用 `ctx usage report`，不要为每条 prompt 运行；它只读 journal 和 v1 数据，不创建事件或修改项目状态。
+- 每周或每月复盘时使用 `ctx report`，不要为每条 prompt 运行；它只读 journal 和 v1 数据，不创建事件或修改项目状态。
 - Report 中的 `chars / 4` 是明确标注的 estimated token，不是真实 Provider token；Provider token 和计费金额当前 unavailable。
 - 只有显式 `record.used` 才算 Knowledge/Deadend reuse；compile 命中或 orient 返回不等于复用。
 - 没有显式 baseline 时，report 不生成 savings、ROI 或 payback 数字；report 不能替代 `doctor`、`journal verify` 或人工治理。
@@ -50,7 +59,7 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 ```text
 ctx init
   ↓
-ctx orient "当前任务" --max-chars 4000 / contextOrient(...)
+ctx inject "当前任务" / context_inject
   ↓
 Plan：先形成实现计划
   ↓
@@ -60,7 +69,7 @@ Verify：执行适用检查并记录重要失败
   ↓
 Handoff：ctx checkpoint --title ... --progress ...
   ↓
-ctx learn ... / ctx deadend ... → 显式 verify
+ctx knowledge add ... / ctx knowledge deadend add ... → 显式 verify
 ```
 
 `ctx orient` 不带查询时也有效，用于恢复当前任务和 open Note。带查询时只发现已验证的 Knowledge 与 Deadend；不要以候选项驱动普通实现。
@@ -70,10 +79,10 @@ ctx learn ... / ctx deadend ... → 显式 verify
 在阶段性复盘、周报或月报时运行只读观测报告：
 
 ```bash
-ctx usage report --days 30
-ctx usage report --month 2026-08 --granularity week
-ctx usage report --since 2026-08-01T00:00:00.000Z --until 2026-09-01T00:00:00.000Z --baseline-tokens 12000 --baseline-source manual
-ctx usage report --format ascii
+ctx report --days 30
+ctx report --month 2026-08 --granularity week
+ctx report --since 2026-08-01T00:00:00.000Z --until 2026-09-01T00:00:00.000Z --baseline-tokens 12000 --baseline-source manual
+ctx report --format ascii
 ```
 
 JSON 是默认输出；`--format ascii` 仅用于终端展示。报告分别统计 v1 文件资产和 v2 journal 事件，展示 Knowledge、Deadend、Note、Context、Snapshot、显式 reuse、操作趋势与 estimated token 投入。`record.used` 是唯一的 reuse 信号，候选项命中、compile 选择和普通检索都不算复用。
@@ -222,7 +231,7 @@ ctx activity --since 2026-08-21T00:00:00.000Z
 Knowledge 默认是 `candidate`，不会进入普通查询，也不会自动替代人工确认：
 
 ```bash
-ctx learn "订单取消后不能再次进入支付中状态" \
+ctx knowledge add "订单取消后不能再次进入支付中状态" \
   --scope project \
   --context <context-id> \
   --snapshot <snapshot-id> \
@@ -246,7 +255,7 @@ ctx knowledge verify <knowledge-id>
 Deadend 用来阻止后续会话重复尝试明确失败的方案，默认也是 `candidate`：
 
 ```bash
-ctx deadend \
+ctx knowledge deadend add \
   --attempt "使用共享可变单例保存订单状态" \
   --reason "并发测试出现跨用例状态泄漏" \
   --scope project \
@@ -258,9 +267,9 @@ ctx deadend \
 查询和确认：
 
 ```bash
-ctx deadends
-ctx deadends --all
-ctx deadend verify <deadend-id>
+ctx knowledge deadend list
+ctx knowledge deadend list --all
+ctx knowledge deadend verify <deadend-id>
 ```
 
 提供 `--context` 或 `--snapshot` 时，来源必须真实存在；不存在的来源会拒绝写入。不要为了让命令成功而删除来源参数，除非该知识确实没有可追溯来源。
@@ -371,7 +380,7 @@ ctx status | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>con
 
 ```bash
 ctx checkpoint --title "支付回调修复" --progress "已定位签名校验失败原因"
-ctx learn "订单取消后不能再次进入支付中状态"
+ctx knowledge add "订单取消后不能再次进入支付中状态"
 ```
 
 列表项用逗号分隔，但逗号本身不适合作为单个列表项内容。
@@ -401,7 +410,7 @@ ctx learn "订单取消后不能再次进入支付中状态"
 [ ] 只调用 published Skill，且 invocation 不保存原始输入、每次仅一个 outcome
 [ ] MCP 25 个工具可调用，read-only 工具不逻辑创建认知记录，单次错误不会终止 server
 [ ] 显式 Recipe 与 graphHops 编译/展开保持 Manifest identity 校验和 lexical fallback
-[ ] ctx usage report 的 JSON/ASCII 输出、baseline 边界和只读性符合预期
+[ ] ctx report 的 JSON/ASCII 输出、baseline 边界和只读性符合预期
 [ ] MCP 只读工具不写入 Context；Note add 和 checkpoint 仅在显式调用时写入
 [ ] Claude 集成预览不写文件，--apply 幂等且拒绝冲突
 [ ] Hook 失败时 fail open，且不会自动 checkpoint

@@ -14,6 +14,29 @@ async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-cli-'));
 }
 
+test('knowledge review and batch CLI preserve preview, token and status boundaries', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  const added = await runCli(['knowledge', 'add', 'Payment CLI governance invariant.'], root);
+  assert.equal(added.code, 0, added.stderr);
+  const id = JSON.parse(added.stdout).knowledgeId;
+  const reviewed = await runCli(['knowledge', 'review', '--status', 'candidate', '--max-chars', '1000'], root);
+  assert.equal(reviewed.code, 0, reviewed.stderr);
+  assert.equal(JSON.parse(reviewed.stdout).items[0].knowledgeId, id);
+  const args = ['knowledge', 'batch', 'verify', '--ids', id, '--reason', 'Checked CLI test', '--evidence', 'test/cli.test.ts'];
+  const preview = await runCli(args, root);
+  assert.equal(preview.code, 0, preview.stderr);
+  assert.deepEqual(JSON.parse((await runCli(['knowledge', 'list'], root)).stdout), []);
+  assert.notEqual((await runCli([...args, '--apply'], root)).code, 0);
+  const applied = await runCli([...args, '--apply', '--expected-token', JSON.parse(preview.stdout).token], root);
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).applied, true);
+  assert.equal(JSON.parse((await runCli(['knowledge', 'list'], root)).stdout)[0].knowledgeId, id);
+  assert.notEqual((await runCli(['knowledge', 'review', '--typo'], root)).code, 0);
+  for (const action of ['review', 'batch']) assert.equal((await runCli(['knowledge', action, '--help'], root)).code, 0);
+});
+
 function runCli(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], { cwd, windowsHide: true });
@@ -31,12 +54,82 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '1.0.0-beta.2');
+    assert.equal(JSON.parse(result.stdout), '1.0.0-beta.6');
     assert.equal(result.stderr, '');
   } finally {
     await stopRuntime(root).catch(() => undefined);
     await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
+});
+
+test('default help is focused and advanced help preserves command discovery without writes', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const help = await runCli(['--help'], root);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /Daily workflow:/);
+  assert.match(help.stdout, /checkpoint/);
+  assert.doesNotMatch(help.stdout, /evolution|filesystem|recipe|deadends/);
+  const all = await runCli(['--help', '--all'], root);
+  assert.equal(all.code, 0);
+  assert.match(all.stdout, /evolution/);
+  assert.match(all.stdout, /Compatibility names:/);
+  for (const args of [['knowledge', 'add'], ['knowledge', 'list'], ['knowledge', 'deadend'], ...['add', 'list', 'verify', 'obsolete', 'reject'].map((action) => ['knowledge', 'deadend', action])]) {
+    const result = await runCli([...args, '--help'], root);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`usage: ctx ${args.join(' ')}`));
+  }
+  assert.notEqual((await runCli(['knowledge', 'deadend', 'typo'], root)).code, 0);
+  assert.notEqual((await runCli(['--help', '--typo'], root)).code, 0);
+  assert.deepEqual(await readdir(root), []);
+});
+
+test('inject CLI supports cross-process session delivery and rejects orphan reset options', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  const saved = await runCli(['checkpoint', '--title', 'Session CLI', '--progress', 'Check cross-process delivery'], root);
+  assert.equal(saved.code, 0, saved.stderr);
+  const args = ['inject', 'session', '--session-id', 'cli-chat', '--task-id', 'current-task'];
+  assert.equal(JSON.parse((await runCli(args, root)).stdout).delivery.mode, 'full');
+  const repeat = JSON.parse((await runCli(args, root)).stdout);
+  assert.equal(repeat.delivery.mode, 'unchanged');
+  assert.equal(repeat.text, '');
+  assert.equal(JSON.parse((await runCli([...args, '--reset-session'], root)).stdout).delivery.reason, 'reset');
+  assert.equal((await runCli(['inject', 'session', '--reset-session'], root)).code, 1);
+  assert.equal((await runCli(['inject', 'session', '--task-id', 'orphan'], root)).code, 1);
+});
+
+test('grouped knowledge commands preserve candidate isolation and legacy interoperability', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  const added = await runCli(['knowledge', 'add', 'Payment writes require a transaction', '--evidence', 'src/payment.ts'], root);
+  assert.equal(added.code, 0, added.stderr);
+  const fact = JSON.parse(added.stdout);
+  assert.equal(fact.status, 'candidate');
+  assert.deepEqual(JSON.parse((await runCli(['knowledge', 'list'], root)).stdout), []);
+  assert.equal(JSON.parse((await runCli(['knowledge', 'verify', fact.knowledgeId], root)).stdout).status, 'verified');
+  assert.equal(JSON.parse((await runCli(['knowledge'], root)).stdout)[0].knowledgeId, fact.knowledgeId);
+  const failed = await runCli(['knowledge', 'deadend', 'add', 'Payment retry without idempotency', '--reason', 'Duplicates the charge'], root);
+  assert.equal(failed.code, 0, failed.stderr);
+  const deadend = JSON.parse(failed.stdout);
+  assert.deepEqual(JSON.parse((await runCli(['knowledge', 'deadend'], root)).stdout), []);
+  assert.equal(JSON.parse((await runCli(['deadends', '--all'], root)).stdout)[0].deadendId, deadend.deadendId);
+  assert.equal((await runCli(['knowledge', 'deadend', 'verify', deadend.deadendId], root)).code, 0);
+  assert.equal(JSON.parse((await runCli(['knowledge', 'deadend', 'list'], root)).stdout)[0].status, 'verified');
+  assert.equal((await runCli(['deadend', 'obsolete', deadend.deadendId, '--reason', 'Implementation replaced'], root)).code, 0);
+  assert.deepEqual(JSON.parse((await runCli(['knowledge', 'deadend'], root)).stdout), []);
+  const injection = await runCli(['inject', 'Payment', '--scenario', 'resume', '--explain'], root);
+  assert.equal(injection.code, 0, injection.stderr);
+  assert.equal(JSON.parse(injection.stdout).scenario, 'resume');
+  assert.match(JSON.parse(injection.stdout).text, /transaction/);
+  assert.equal((await runCli(['inject', 'Payment', '--scenario', 'typo'], root)).code, 1);
+  assert.equal((await runCli(['knowledge', 'add', 'Bad option', '--typo'], root)).code, 1);
+  const keywordAttempt = await runCli(['knowledge', 'deadend', 'add', 'verify', '--reason', 'A command failed'], root);
+  assert.equal(keywordAttempt.code, 0, keywordAttempt.stderr);
+  assert.equal(JSON.parse(keywordAttempt.stdout).attempt, 'verify');
+  assert.equal(JSON.parse(keywordAttempt.stdout).status, 'candidate');
 });
 
 test('default init starts the runtime and exposes simplified task and report commands', async () => {
@@ -236,6 +329,7 @@ test('runtime lifecycle CLI starts and stops its loopback service', async () => 
       }
     }
   } finally {
+    await stopRuntime(root).catch(() => undefined);
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

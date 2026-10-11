@@ -43,6 +43,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
       'README.md',
       'CHANGELOG.md',
       'ROADMAP-1.0.md',
+      'HOST-ACCEPTANCE.md',
       'LICENSE',
       'skills/fluffy-context/SKILL.md',
       'dist/src/cli/main.js',
@@ -64,7 +65,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     const cli = path.join(packageRoot, 'dist', 'src', 'cli', 'main.js');
     const version = await run(process.execPath, [cli, '--version'], consumer);
     assert.equal(version.code, 0, version.stderr);
-    assert.equal(JSON.parse(version.stdout), '1.0.0-beta.2');
+    assert.equal(JSON.parse(version.stdout), '1.0.0-beta.6');
 
     for (const args of [
       [cli, 'orient', '--help'],
@@ -78,13 +79,16 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
 
     const imports = await run(
       process.execPath,
-      ['--input-type=module', '-e', "import { VERSION } from 'fluffy-context/version'; import { compileContext, contextExpand, contextOrient, proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient, proposeContextEvolution as agentPropose, listContextEvolutionProposals as agentList, inspectContextEvolutionProposal as agentInspect, acceptContextEvolutionCandidate as agentAccept, transitionContextEvolutionProposal as agentTransition } from 'fluffy-context/agent'; if (VERSION !== '1.0.0-beta.2' || typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || [proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal].some((value) => typeof value !== 'function') || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand || proposeContextEvolution !== agentPropose || listContextEvolutionProposals !== agentList || inspectContextEvolutionProposal !== agentInspect || acceptContextEvolutionCandidate !== agentAccept || transitionContextEvolutionProposal !== agentTransition) process.exit(1);"],
+      ['--input-type=module', '-e', "import { VERSION } from 'fluffy-context/version'; import { compileContext, contextExpand, contextOrient, proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient, proposeContextEvolution as agentPropose, listContextEvolutionProposals as agentList, inspectContextEvolutionProposal as agentInspect, acceptContextEvolutionCandidate as agentAccept, transitionContextEvolutionProposal as agentTransition } from 'fluffy-context/agent'; if (VERSION !== '1.0.0-beta.6' || typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || [proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal].some((value) => typeof value !== 'function') || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand || proposeContextEvolution !== agentPropose || listContextEvolutionProposals !== agentList || inspectContextEvolutionProposal !== agentInspect || acceptContextEvolutionCandidate !== agentAccept || transitionContextEvolutionProposal !== agentTransition) process.exit(1);"],
       consumer,
     );
     assert.equal(imports.code, 0, imports.stderr);
+    const governanceImports = await run(process.execPath, ['--input-type=module', '-e',
+      "import { reviewKnowledge, batchKnowledge } from 'fluffy-context'; import { reviewKnowledge as review, batchKnowledge as batch } from 'fluffy-context/agent'; if (typeof review !== 'function' || typeof batch !== 'function' || review !== reviewKnowledge || batch !== batchKnowledge) process.exit(1);"], consumer);
+    assert.equal(governanceImports.code, 0, governanceImports.stderr);
 
     const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    assert.equal(manifest.version, '1.0.0-beta.2');
+    assert.equal(manifest.version, '1.0.0-beta.6');
     assert.equal(await readdir(path.join(packageRoot, 'skills', 'fluffy-context')).then((files) => files.includes('SKILL.md')), true);
 
     // Exercise the shipped package's cognition loop, not source imports.
@@ -107,11 +111,22 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     assert.equal((await command('import', '--apply')).results[0].status, 'duplicate');
     const unverified = await command('inject', 'inventory transaction', '--max-chars', '800');
     assert.equal(unverified.text.includes(statement), false);
-    await command('knowledge', 'verify', id);
+    assert.equal((await command('knowledge', 'review', '--source', 'MEMORY.md')).items[0].knowledgeId, id);
+    const batchArgs = ['knowledge', 'batch', 'verify', '--ids', id, '--reason', 'Verified package fixture', '--evidence', 'test/package-smoke.test.ts'];
+    const batchPreview = await command(...batchArgs);
+    assert.equal(batchPreview.applied, false);
+    assert.equal((await command(...batchArgs, '--apply', '--expected-token', batchPreview.token)).applied, true);
     const verified = await command('inject', 'inventory transaction', '--max-chars', '800');
     assert.equal(verified.status, 'ready');
     assert.ok(verified.text.includes(statement));
     assert.ok(verified.budget.usedChars <= 800);
+    assert.equal((await command('knowledge', 'list'))[0].knowledgeId, id);
+    const candidate = await command('knowledge', 'add', 'A newly reviewed package finding remains a candidate.');
+    assert.equal(candidate.status, 'candidate');
+    const help = await run(process.execPath, [cli, '--help'], consumer);
+    assert.equal(help.code, 0);
+    assert.match(help.stdout, /Daily workflow:/);
+    assert.doesNotMatch(help.stdout, /evolution|filesystem/);
     await command('report');
     await command('journal', 'verify');
   } finally {

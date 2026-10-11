@@ -174,7 +174,8 @@ export interface Knowledge {
   sourceSnapshotIds: string[];
   supportingEvidence: string[];
   applicability?: RecordApplicability;
-  governance?: { reason: string; transitionedAt: string };
+  governance?: { reason: string; transitionedAt: string; batchToken?: string; action?: string };
+  memoryReview?: { sources: Array<{ source: string; sourceHash: string | null }>; reason: string; evidence: string[]; reviewedAt: string };
   createdAt: string;
   updatedAt: string;
 }

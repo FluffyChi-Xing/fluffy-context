@@ -6,6 +6,7 @@ import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 import { injectContext } from '../compiler/inject.js';
 import { importMemory } from '../cognition/import-memory.js';
+import { reviewKnowledge, batchKnowledge } from '../cognition/knowledge-review.js';
 
 const orientInput = z.object({
   path: z.string().optional(),
@@ -150,17 +151,33 @@ function failureResponse(tool: string, error: unknown) {
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'fluffy-context', version: VERSION });
+  server.registerTool('context_knowledge_review', {
+    title: 'Review project knowledge',
+    description: 'Read-only bounded review of candidates and verified knowledge, sources, evidence and source-change reminders. Use exact source/status filters and nextOffset pagination. This does not verify knowledge.',
+    inputSchema: z.object({ path: z.string().optional(), statuses: z.array(z.enum(['candidate', 'verified', 'deprecated', 'rejected'])).optional(), source: z.string().optional(), reviewRequired: z.boolean().optional(), limit: z.int().min(0).max(100).optional(), offset: z.int().nonnegative().optional(), maxChars: z.int().min(0).max(50000).optional() }),
+  }, async ({ path, ...options }) => {
+    try { return successResponse(await reviewKnowledge(path, options)); }
+    catch (error) { return failureResponse('context_knowledge_review', error); }
+  });
+  server.registerTool('context_knowledge_batch', {
+    title: 'Govern selected knowledge',
+    description: 'Preview explicit knowledge IDs before applying a verify, reject, deprecate or keep decision. Apply requires the preview token, unchanged request and evidence for verify/keep. Keep acknowledges source review without changing trust. Retry the identical request/token if journal synchronization is pending.',
+    inputSchema: z.object({ path: z.string().optional(), ids: z.array(z.string()).min(1).max(50), action: z.enum(['verify', 'reject', 'deprecate', 'keep']), reason: z.string(), evidence: z.array(z.string()).optional(), apply: z.boolean().optional(), expectedToken: z.string().optional() }),
+  }, async ({ path, ...options }) => {
+    try { return successResponse(await batchKnowledge(path, options)); }
+    catch (error) { return failureResponse('context_knowledge_batch', error); }
+  });
   server.registerTool('context_inject', {
     title: 'Prepare task context',
-    description: 'Use at task start, context reset, task change or a new failure. Returns bounded project evidence with automatic scenario selection. Expand only when more detail is needed.',
-    inputSchema: compileInput.extend({ explain: z.boolean().optional() }),
+    description: 'Use at task start, context reset, task change or a new failure. Optional sessionId enables full/delta/unchanged delivery; use unique IDs per conversation and resetSession after compaction. A full packet with replacePrevious replaces earlier evidence. Without a session ID always returns full context. Expand only when more detail is needed.',
+    inputSchema: compileInput.extend({ explain: z.boolean().optional(), sessionId: z.string().trim().min(1).max(256).optional(), taskId: z.string().trim().min(1).max(256).optional(), resetSession: z.boolean().optional() }),
   }, async ({ path, ...options }) => {
     try { return successResponse(await injectContext(path, options, 'mcp')); }
     catch (error) { return failureResponse('context_inject', error); }
   });
   server.registerTool('context_import', {
     title: 'Import project memories',
-    description: 'Scan project agent instructions and memory files. Defaults to preview; apply stores source-linked unverified candidates, never trusted instructions.',
+    description: 'Preview project memory paragraphs, lists and tables; skip front matter and code fences. Apply stores source-linked unverified candidates and a source baseline. Inspect changes and reviewRequired IDs for modified or removed sources; trust status never changes automatically. Partial scans do not replace the baseline.',
     inputSchema: z.object({ path: z.string().optional(), apply: z.boolean().optional() }),
   }, async ({ path, apply }) => {
     try { return successResponse(await importMemory(path, apply)); }

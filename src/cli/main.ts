@@ -17,6 +17,7 @@ import { setupProject } from '../runtime/setup.js';
 import { upgradeProject } from '../runtime/upgrade.js';
 import { consoleProgress } from './progress.js';
 import { importMemory } from '../cognition/import-memory.js';
+import { reviewKnowledge, batchKnowledge, type KnowledgeBatchOptions } from '../cognition/knowledge-review.js';
 import { injectContext } from '../compiler/inject.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionKnowledge, transitionDeadend } from '../runtime/knowledge.js';
 import { addNote, listActivity, listNotes } from '../runtime/notes.js';
@@ -104,10 +105,19 @@ Options:
   import: `usage: ctx import [--path <path>] [--apply]
 
 Preview project memory, .claude, .zcode, .cursor, .curcor, .codex and AGENTS.md.
---apply imports deduplicated, source-linked candidates; verification remains explicit.`,
-  inject: `usage: ctx inject [query] [--path <path>] [--max-chars <number>] [--paths <paths>] [--explain]
+Paragraphs, lists and tables retain source ranges; front matter and code fences are skipped.
+--apply imports deduplicated candidates and saves the source baseline; verification remains explicit.
+changes and reviewRequired identify changed/removed evidence. Partial scans retain the baseline.
+Knowledge status is never changed automatically; review affected IDs before deprecating/rejecting.`,
+  inject: `usage: ctx inject [query] [--path <path>] [--max-chars <number>] [--paths <paths>] [--scenario <scenario>] [--explain]
 
-Select bounded task context; --explain includes detailed source provenance.`,
+Select bounded task context. --explain includes source provenance and omission counts.
+--scenario: resume|implementation|debugging|verification|handoff|exploration|unknown.
+Progress and verified evidence share the budget; unused space is borrowed automatically.
+--session-id <id>  Opt into session delivery: full, delta, or unchanged (hash-only local receipt).
+--task-id <id>     Stable task identity within a session; otherwise the query identifies the task.
+--reset-session   Send a full replacement after context reset/compaction (requires session ID).
+Keep session IDs unique per conversation. No session ID always returns full context.`,
   report: `usage: ctx report [options]
 
 Alias of ctx usage report; supports its window, format and baseline options.`,
@@ -246,9 +256,11 @@ Preview configuration changes by default. Pass --apply to merge project-local .c
   status: `usage: ctx status [--path <path>]
 
 Show the initialized project and context index.`,
-  doctor: `usage: ctx doctor [--path <path>]
+  doctor: `usage: ctx doctor [--path <path>] [--integrations]
 
-Check runtime files and snapshot integrity without modifying them.`,
+Check runtime files and snapshot integrity without modifying them.
+--integrations also inspects project Claude Hook/MCP configuration, executable paths,
+capabilities and local invocation receipts. Configuration does not prove host acceptance.`,
   learn: `usage: ctx learn <statement> [options]
 
 Record a candidate project knowledge item.
@@ -260,12 +272,17 @@ Options:
   --context <id>         Source context ID
   --snapshot <id>        Source snapshot ID
   --evidence <items>     Comma-separated evidence references`,
-  knowledge: `usage: ctx knowledge [--all] [--path <path>]
+  knowledge: `usage: ctx knowledge [list] [--all] [--path <path>]
+       ctx knowledge review [--status <items>] [--source <path>] [--review-required] [--limit <n>] [--offset <n>] [--max-chars <n>]
+       ctx knowledge batch <verify|reject|deprecate|keep> --ids <items> --reason <text> [--evidence <items>] [--apply --expected-token <token>]
+       ctx knowledge add <statement> [--evidence <items>] [--path <path>]
        ctx knowledge verify <knowledge-id> [--path <path>]
        ctx knowledge deprecate|reject <knowledge-id> --reason <text> [--path <path>]
        ctx knowledge discover <query> [options]
+       ctx knowledge deadend [list|add|verify|obsolete|reject] [options]
 
-List, govern, or discover project knowledge.
+Record, review, and retrieve knowledge and failed approaches. New records remain candidates.
+Run "ctx knowledge add --help" or "ctx knowledge deadend --help" for details.
 
 Options:
   --all                  Include unverified items
@@ -273,6 +290,15 @@ Options:
   'knowledge verify': `usage: ctx knowledge verify <knowledge-id> [--path <path>]
 
 Mark a candidate knowledge item as verified.`,
+  'knowledge review': `usage: ctx knowledge review [--path <path>] [--status <items>] [--source <path>] [--review-required] [--limit <n>] [--offset <n>] [--max-chars <n>]
+
+Read-only candidate and verified knowledge review. Default: 20 items, 6000 serialized item characters.
+Source is an exact project-relative path. Use nextOffset for pagination; increase maxChars if no item fits.`,
+  'knowledge batch': `usage: ctx knowledge batch <verify|reject|deprecate|keep> --ids <items> --reason <text> [--evidence <items>] [--path <path>] [--apply --expected-token <token>]
+
+Preview at most 50 explicit IDs. Apply requires the token returned by the same preview.
+Verify and keep require evidence. Keep closes source review for verified knowledge without changing trust.
+State changes commit together; retry the same request and token if journal synchronization is pending.`,
   'knowledge deprecate': `usage: ctx knowledge deprecate <knowledge-id> --reason <text> [--path <path>]
 
 Retire a verified knowledge item with an explicit governance reason.`,
@@ -478,11 +504,58 @@ Stop the local runtime through authenticated loopback IPC.`,
 Internal runtime daemon entry point.`,
 };
 
-function usage(): string {
-  return `usage: ctx init|upgrade|inject|import|report|checkpoint|resume|orient|compile|expand|usage|agent|hook|integrate|status|doctor|learn|knowledge|deadend|deadends|note|activity|migrate|runtime|filesystem|feedback|skill|recipe|evolution|journal [options]
+HELP.report = HELP['usage report'].replaceAll('ctx usage report', 'ctx report');
 
-Run \"ctx <command> --help\" for command details.`;
+function usage(advanced = false): string {
+  const everyday = `usage: ctx <command> [options]
+
+Daily workflow:
+  init          Set up this project once
+  inject        Get relevant context for a task
+  checkpoint    Save progress, decisions, and pending work
+  import        Preview existing memories; --apply imports candidates
+  report        Review storage, usage, and explicit reuse
+
+When needed:
+  knowledge     Add, review, verify, and find knowledge or failed approaches
+  upgrade       Back up and upgrade an existing project
+  status        Show project state
+  doctor        Diagnose data integrity
+
+Run "ctx <command> --help" for details; "ctx --help --all" for advanced commands.`;
+  if (!advanced) return everyday;
+  return `${everyday}
+
+Advanced commands (existing names remain supported):
+  Retrieval     resume, orient, compile, expand
+  Work notes    note, activity
+  Integration   agent, hook, integrate
+  Maintenance   runtime, filesystem, migrate, journal
+  Evaluation    feedback, usage
+  Experimental  skill, recipe, evolution
+
+Compatibility names:
+  learn         knowledge add
+  deadend       knowledge deadend add (verify/obsolete/reject also supported)
+  deadends      knowledge deadend list
+  usage report  report`;
 }
+
+const knowledgeRoutes = [
+  { from: ['knowledge', 'add'], to: ['learn'], help: 'learn' },
+  { from: ['knowledge', 'list'], to: ['knowledge'], help: 'knowledge' },
+  { from: ['knowledge', 'deadend', 'add'], to: ['deadend'], help: 'deadend' },
+  { from: ['knowledge', 'deadend', 'list'], to: ['deadends'], help: 'deadends' },
+  ...['verify', 'obsolete', 'reject'].map((action) => ({ from: ['knowledge', 'deadend', action], to: ['deadend', action], help: `deadend ${action}` })),
+];
+
+const deadendGroupHelp = `usage: ctx knowledge deadend [list] [--all] [--path <path>]
+       ctx knowledge deadend add <attempt> --reason <text> [--evidence <items>] [--path <path>]
+       ctx knowledge deadend verify <id> [--path <path>]
+       ctx knowledge deadend obsolete|reject <id> --reason <text> [--path <path>]
+
+Keep reproducible failed approaches as candidates until explicitly verified.
+Run "ctx knowledge deadend <action> --help" for details.`;
 
 function print(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -503,7 +576,7 @@ function printHelp(args: string[]): boolean {
   const nested = (command === 'agent' && args[1] === 'serve')
     || (command === 'hook' && args[1] === 'claude-code')
     || (command === 'integrate' && args[1] === 'claude')
-    || (command === 'knowledge' && ['verify', 'discover', 'deprecate', 'reject'].includes(args[1]))
+    || (command === 'knowledge' && ['verify', 'discover', 'deprecate', 'reject', 'review', 'batch'].includes(args[1]))
     || (command === 'deadend' && ['verify', 'obsolete', 'reject'].includes(args[1]))
     || (command === 'feedback' && args[1] === 'use')
     || (command === 'journal' && ['verify', 'compact'].includes(args[1]))
@@ -529,13 +602,41 @@ function validatePositionals(values: string[], max: number, usageText: string): 
 }
 
 async function run(args: string[]): Promise<void> {
+  if (args.length === 0 || args[0] === '--help') {
+    validateOptions(args, ['--help', '--all']);
+    validatePositionals(positionals(args, []), 0, usage());
+    process.stdout.write(`${usage(args.includes('--all'))}\n`);
+    return;
+  }
+  if (args[0] === 'knowledge' && args[1] === 'deadend' && (!args[2] || args[2].startsWith('-'))) {
+    if (args.includes('--help')) {
+      process.stdout.write(`${deadendGroupHelp}\n`);
+      return;
+    }
+    args = ['knowledge', 'deadend', 'list', ...args.slice(2)];
+  }
+  const route = knowledgeRoutes.find(({ from }) => from.every((part, index) => args[index] === part));
+  const addingDeadend = route?.from.join(' ') === 'knowledge deadend add';
+  if (route) {
+    if (args.includes('--help')) {
+      if (route.from.join(' ') === 'knowledge list') {
+        process.stdout.write('usage: ctx knowledge list [--all] [--path <path>]\n\nList verified knowledge; --all includes candidates and retired records.\n');
+        return;
+      }
+      const help = route.help === 'deadend' ? HELP.deadend.split('\n\n').slice(1).join('\n\n') : HELP[route.help];
+      const text = route.help === 'deadend'
+        ? `usage: ctx knowledge deadend add [attempt] [options]\n\n${help}`
+        : help.replaceAll(`ctx ${route.to.join(' ')}`, `ctx ${route.from.join(' ')}`);
+      process.stdout.write(`${text}\n`);
+      return;
+    }
+    args = [...route.to, ...args.slice(route.from.length)];
+  } else if (args[0] === 'knowledge' && args[1] === 'deadend') {
+    throw new Error(deadendGroupHelp);
+  }
   if (args[0] === 'report' && !args.includes('--help')) args = ['usage', 'report', ...args.slice(1)];
   if (args.includes('--version')) {
     print(VERSION);
-    return;
-  }
-  if (args.length === 0 || args[0] === '--help') {
-    printHelp([]);
     return;
   }
   if (args.includes('--help') && printHelp(args)) return;
@@ -568,11 +669,11 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'inject': {
-      const valueOptions = ['--path', '--max-chars', '--paths'];
-      validateOptions(args.slice(1), [...valueOptions, '--explain'], valueOptions);
+      const valueOptions = ['--path', '--max-chars', '--paths', '--scenario', '--session-id', '--task-id'];
+      validateOptions(args.slice(1), [...valueOptions, '--explain', '--reset-session'], valueOptions);
       const values = positionals(args.slice(1), valueOptions);
       validatePositionals(values, 1, HELP.inject);
-      print(await injectContext(target, { query: values[0], paths: listOption(args, '--paths'), maxChars: numericOption(args, '--max-chars', 2400), explain: args.includes('--explain') }, 'cli'));
+      print(await injectContext(target, { query: values[0], paths: listOption(args, '--paths'), scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const), maxChars: numericOption(args, '--max-chars', 2400), explain: args.includes('--explain'), sessionId: option(args, '--session-id'), taskId: option(args, '--task-id'), resetSession: args.includes('--reset-session') }, 'cli'));
       return;
     }
     case 'checkpoint': {
@@ -715,11 +816,19 @@ async function run(args: string[]): Promise<void> {
       validatePositionals(positionals(args.slice(1), ['--path']), 0, HELP.status);
       print(await status(target));
       return;
-    case 'doctor':
-      validateOptions(args.slice(1), ['--path'], ['--path']);
+    case 'doctor': {
+      validateOptions(args.slice(1), ['--path', '--integrations'], ['--path']);
       validatePositionals(positionals(args.slice(1), ['--path']), 0, HELP.doctor);
-      print(await doctor(target));
+      const health = await doctor(target);
+      if (!args.includes('--integrations')) print(health);
+      else {
+        let claude;
+        try { claude = await inspectClaudeIntegration(target); }
+        catch (error) { claude = { error: error instanceof Error ? error.message : String(error), nextSteps: ['Correct the project Claude configuration, then retry ctx doctor --integrations.'] }; }
+        print({ ...health, integrations: { claude } });
+      }
       return;
+    }
     case 'learn': {
       const valueOptions = ['--path', '--kind', '--scope', '--context', '--snapshot', '--evidence', '--branch-mode', '--paths'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
@@ -998,7 +1107,22 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'knowledge': {
-      if (args[1] === 'discover') {
+      if (args[1] === 'review') {
+        const values = ['--path', '--status', '--source', '--limit', '--offset', '--max-chars'];
+        validateOptions(args.slice(2), [...values, '--review-required'], values);
+        validatePositionals(positionals(args.slice(2), values), 0, HELP['knowledge review']);
+        print(await reviewKnowledge(target, { statuses: listOption(args, '--status') as import('../runtime/types.js').KnowledgeStatus[] | undefined,
+          source: option(args, '--source'), reviewRequired: args.includes('--review-required'),
+          limit: numericOption(args, '--limit', 20), offset: numericOption(args, '--offset', 0), maxChars: numericOption(args, '--max-chars', 6000) }));
+      } else if (args[1] === 'batch') {
+        const values = ['--path', '--ids', '--reason', '--evidence', '--expected-token'];
+        validateOptions(args.slice(2), [...values, '--apply'], values);
+        const actions = positionals(args.slice(2), values);
+        validatePositionals(actions, 1, HELP['knowledge batch']);
+        print(await batchKnowledge(target, { ids: listOption(args, '--ids') ?? [], action: actions[0] as KnowledgeBatchOptions['action'],
+          reason: option(args, '--reason') ?? '', evidence: listOption(args, '--evidence'),
+          apply: args.includes('--apply'), expectedToken: option(args, '--expected-token') }));
+      } else if (args[1] === 'discover') {
         const valueOptions = ['--path', '--scope', '--status', '--limit', '--max-chars'];
         validateOptions(args.slice(2), [...valueOptions, '--all'], valueOptions);
         const query = positionals(args.slice(2), valueOptions);
@@ -1029,12 +1153,12 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'deadend':
-      if (args[1] === 'verify') {
+      if (!addingDeadend && args[1] === 'verify') {
         validateOptions(args.slice(2), ['--path'], ['--path']);
         const values = positionals(args.slice(2), ['--path']);
         if (values.length !== 1) throw new Error(HELP['deadend verify']);
         print(await verifyDeadend(target, values[0]));
-      } else if (args[1] === 'obsolete' || args[1] === 'reject') {
+      } else if (!addingDeadend && (args[1] === 'obsolete' || args[1] === 'reject')) {
         validateOptions(args.slice(2), ['--path', '--reason'], ['--path', '--reason']);
         const values = positionals(args.slice(2), ['--path', '--reason']);
         if (values.length !== 1) throw new Error(HELP[`deadend ${args[1]}`]);

@@ -11,6 +11,7 @@ import { readJournal } from '../src/cognition/journal.js';
 import { disableRuntime, enableRuntime, ensureRuntimeForSession, observeRuntime, runtimeStatus, serveRuntime, setFilesystemEvents, stopRuntime, touchRuntime } from '../src/cognition/runtime.js';
 import { cognitionRuntimeSecretPath } from '../src/storage/layout.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.js';
+import { GitObserver } from '../src/cognition/git-observer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +28,24 @@ async function initializedRuntime(root: string): Promise<void> {
   await importV1(root);
   await enableRuntime(root);
 }
+
+test('explicit observation waits for slow Git work beyond the ping deadline', async (t) => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initializedRuntime(root);
+    runtime = await serveRuntime(root, { pollIntervalMs: 60_000 });
+    const original = GitObserver.prototype.observeNow;
+    t.mock.method(GitObserver.prototype, 'observeNow', async function (this: GitObserver) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      return original.call(this);
+    });
+    assert.equal(await observeRuntime(root), true);
+  } finally {
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('migrated projects auto-start one runtime and reuse concurrent ensure calls', async () => {
   const root = await project();

@@ -106,8 +106,8 @@ async function loadStartupMarker(projectRoot: string): Promise<StartupMarker | n
 async function removeOwnedRuntimeFiles(projectRoot: string, instanceId: string): Promise<void> {
   const current = await loadLease(projectRoot);
   if (current?.instanceId !== instanceId) return;
-  await rm(cognitionRuntimeLeasePath(projectRoot), { force: true });
   await rm(cognitionRuntimeSecretPath(projectRoot), { force: true });
+  await rm(cognitionRuntimeLeasePath(projectRoot), { force: true });
 }
 
 async function request(projectRoot: string, lease: RuntimeLease, method: RuntimeRequest['method']): Promise<RuntimeResponse | null> {
@@ -117,7 +117,9 @@ async function request(projectRoot: string, lease: RuntimeLease, method: Runtime
   return new Promise((resolve) => {
     const socket = createConnection({ host, port: lease.port });
     let buffer = '';
-    const timeout = setTimeout(() => { socket.destroy(); resolve(null); }, 1_000);
+    // Observation can queue Git/filesystem scans and projection synchronization;
+    // it needs a longer deadline than a lightweight liveness probe.
+    const timeout = setTimeout(() => { socket.destroy(); resolve(null); }, method === 'observe' ? 10_000 : 1_000);
     socket.setEncoding('utf8');
     socket.once('error', () => { clearTimeout(timeout); resolve(null); });
     socket.on('data', (chunk: string) => {
@@ -164,7 +166,6 @@ async function closeServer(projectRoot: string, server: Server, observer: GitObs
       server.close(() => resolve());
     });
     await new Promise((resolve) => setImmediate(resolve));
-    await removeOwnedRuntimeFiles(projectRoot, lease.instanceId);
   }
   try {
     await appendEvent(projectRoot, {
@@ -175,6 +176,11 @@ async function closeServer(projectRoot: string, server: Server, observer: GitObs
     });
   } catch (error) {
     failure ??= error;
+  } finally {
+    // Removing the lease signals stopRuntime that all writes are complete.
+    // Keep it until the final journal write releases its lock, otherwise an
+    // immediate upgrade/restart can race the outgoing runtime's last event.
+    await removeOwnedRuntimeFiles(projectRoot, lease.instanceId);
   }
   if (failure) throw failure;
 }
