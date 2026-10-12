@@ -9,7 +9,7 @@ import { cognitionManifestPath, knowledgePath, locksDirectory } from '../storage
 import { withLock } from '../storage/lock.js';
 import { importMemory } from './import-memory.js';
 import { readMemoryReceipts } from './memory-receipts.js';
-import { mirrorKnowledge } from './v1-bridge.js';
+import { mirrorKnowledgeBatch } from './v1-bridge.js';
 import { reconcileV1State } from './migration-v1.js';
 import { loadRuntimePolicy } from './policy.js';
 
@@ -128,10 +128,8 @@ export async function batchKnowledge(startPath: string | undefined, options: Kno
       try {
         if (!(await loadRuntimePolicy(root)).enabled) return { status: 'not-enabled', errors };
       } catch (error) { return { status: 'pending', errors: [{ knowledgeId: '*', error: String(error).slice(0, 300) }] }; }
-      for (const item of selected) {
-        try { await mirrorKnowledge(root, item, true); }
-        catch (error) { errors.push({ knowledgeId: item.knowledgeId, error: String(error).slice(0, 300) }); }
-      }
+      try { await mirrorKnowledgeBatch(root, selected); }
+      catch (error) { errors.push({ knowledgeId: '*', error: String(error).slice(0, 300) }); }
       if (!errors.length) {
         try { await reconcileV1State(root); }
         catch (error) { errors.push({ knowledgeId: '*', error: String(error).slice(0, 300) }); }

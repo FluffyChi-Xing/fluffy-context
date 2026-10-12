@@ -6,7 +6,7 @@ import os from 'node:os';
 import { initProject } from '../src/runtime/init.js';
 import { checkpoint } from '../src/runtime/runtime.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
-import { appendEvent, compactJournal, readJournal, verifyJournal } from '../src/cognition/journal.js';
+import { appendEvent, appendEvents, compactJournal, readJournal, verifyJournal } from '../src/cognition/journal.js';
 import { projectEvents } from '../src/cognition/projections.js';
 import { cognitionJournalDirectory, locksDirectory } from '../src/storage/layout.js';
 import { JOURNAL_SEGMENT_BYTES, journalStorage } from '../src/cognition/journal-segments.js';
@@ -21,6 +21,19 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   await initProject(root);
   return root;
 }
+
+test('batch append preserves hash links, duplicate semantics and partial retry recovery', async (t) => {
+  const root = await fixture(t);
+  const a = { type: 'runtime.enabled' as const, idempotencyKey: 'batch-a', payload: { value: 1 } };
+  const b = { ...a, idempotencyKey: 'batch-b' };
+  const result = await appendEvents(root, [a, a, b]);
+  assert.deepEqual(result.map((item) => item.appended), [true, false, true]);
+  assert.equal(result[2].event.previousHash, result[0].event.hash);
+  await assert.rejects(appendEvents(root, [{ ...a, idempotencyKey: 'batch-c' }, { ...a, payload: { value: 2 } }]), /idempotency key conflict/);
+  const retry = await appendEvents(root, [{ ...a, idempotencyKey: 'batch-c' }, a]);
+  assert.ok(retry.every((item) => !item.appended));
+  assert.equal((await verifyJournal(root)).length, 3);
+});
 
 test('archive preview is read-only; gzip replay preserves identities, projections and idempotency', async (t) => {
   const root = await fixture(t);

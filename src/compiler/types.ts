@@ -1,6 +1,6 @@
 import type { CognitionGitAnchor, CompilerRecipeSection, CompilerRecipeSource, WorkspacePathChange } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
-import type { Deadend, Knowledge, Note, ResumeSummary, StructuredContext } from '../runtime/types.js';
+import type { Deadend, Knowledge, KnowledgeConflictGroup, Note, ResumeSummary, StructuredContext } from '../runtime/types.js';
 
 export type ContextScenario = 'resume' | 'implementation' | 'debugging' | 'verification' | 'handoff' | 'exploration' | 'unknown';
 export type ContextLevel = 'signal' | 'summary' | 'structured' | 'evidence';
@@ -174,6 +174,14 @@ export interface ContextManifestProvenance {
   fallbackReason: string | null;
 }
 
+export interface ContextDiagnostics {
+  knowledge: {
+    duplicateIds: string[][];
+    possibleConflicts: KnowledgeConflictGroup[];
+    freshness: Array<{ knowledgeId: string; score: number }>;
+  };
+}
+
 export interface ContextManifestIdentity {
   manifestHash: string;
   selectedItemHashes: string[];
@@ -275,6 +283,7 @@ export interface ContextManifest {
   identity: ContextManifestIdentity;
   budget: ContextBudgetReport;
   truncation: ContextTruncation;
+  diagnostics: ContextDiagnostics;
   provenance: ContextManifestProvenance;
   recipe?: ContextRecipeParticipation;
   graph?: ContextGraphParticipation;

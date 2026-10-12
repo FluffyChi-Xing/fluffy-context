@@ -6,7 +6,7 @@
 
 它是 LLM 与项目之间的一层本地记忆：保存工作进度，积累经过验证的项目知识，按当前任务提供有长度预算的上下文。CLI 命令是 `ctx`，也提供 MCP 和 JavaScript / TypeScript API。
 
-> 本文对应 **1.0.0-beta.6**，面向 npm **beta** 通道，稳定通道仍为 0.8.0。AI 工具自主调用、上下文智能注入的完善与完整宿主验收列为 **1.0.0 正式版核心特性待办**；当前提供相关基础工具与协议。[升级说明与已知限制](CHANGELOG.md) · [1.0 后续计划](ROADMAP-1.0.md)
+> 本文对应 **1.0.0-beta.7**（本地开发，尚未发布 npm），面向 npm **beta** 通道，稳定通道仍为 0.8.0。AI 工具自主调用、上下文智能注入的完善与完整宿主验收列为 **1.0.0 正式版核心特性待办**；当前提供相关基础工具与协议。[升级说明与已知限制](CHANGELOG.md) · [1.0 后续计划](ROADMAP-1.0.md)
 
 **beta.2 新增 `ctx upgrade`**，用于已有项目的数据升级与日志归档；beta.1 不含这个命令。
 
@@ -160,7 +160,7 @@ ctx integrate claude inspect
 
 将服务的工作目录设为项目目录，或在调用工具时传入项目的绝对 `path`。如果客户端找不到 `ctx`，使用其支持的绝对可执行路径配置方式。
 
-先接入三个工具就能形成日常闭环：`context_inject` 取得上下文，`context_checkpoint` 保存进度，`context_import` 导入已有记忆。工具列表和输入参数由 MCP 服务提供。
+日常使用 `context_inject` 取得上下文，`context_checkpoint` 保存进度，`context_learn` 记录候选知识；仅在项目中已有记忆文件时按需使用 `context_import`。工具列表和输入参数由 MCP 服务提供。
 
 ## 让工作经验变成可复用的知识
 
@@ -216,6 +216,14 @@ ctx knowledge --all
 支持项目内的 `memory/`、`.memory/`、`.claude/`、`.zcode/`、`.cursor/`、`.curcor/`、`.codex/`，以及 `AGENTS.md`、`CLAUDE.md`、`MEMORY.md`、`.cursorrules` 等文本来源。它会记录来源并去重；重复导入相同内容不会创建新知识。
 
 导入的内容保持候选状态，核验后才进入普通检索。beta.5 按段落、列表项（含缩进续行）和完整 Markdown 表格提取，保留 `headings`、`line`、`endLine`、正文指纹与来源文件指纹。开头的 YAML front matter 作为元数据跳过，不推断其中的 scope 或自动验证；代码围栏、生成指引和疑似敏感段落不进入候选。
+
+`import` 只扫描目标项目，`--path` 是项目路径，不是待导入文件。用户目录或系统目录中的 `.zcode` 不会被自动扫描。没有来源文件时会返回 `discovery.status: no-source-files`、扫描范围和下一步指引；这不要求 agent 创建、复制或移动文件，也不应对相同输入反复重试。可把已读取且与本项目相关的结论直接保存为候选：
+
+```sh
+ctx learn "与本项目相关的结论" --path "项目目录" --evidence "原始记忆路径或代码证据"
+```
+
+MCP 对应 `context_learn`，接收 `path`、`statement`、`evidence` 和可选 `scope`。记录后仍须核验；导入不是必经步骤。
 
 再次执行 `ctx import` 时，`changes` 展示相对上次 apply 的 `new / modified / removed / unchanged / partial / unavailable` 状态；`reviewRequired` 列出来源内容已变化或消失的旧知识 ID。核对代码后再决定是否退役或拒绝旧记录；来源变化不会自动改变已验证知识，旧结论在明确治理前仍可能被注入。新内容只作为候选保存，重复内容返回已有 ID 和状态，不会重新激活 rejected / deprecated 记录。
 

@@ -191,9 +191,59 @@ function limitText(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
+function contradiction(left: string, right: string): boolean {
+  const a = normalized(left).replace(/[.!。！]+$/, '');
+  const b = normalized(right).replace(/[.!。！]+$/, '');
+  const negative = (text: string) => /\b(?:not|never|no)\b|不能|不应|禁止|不要|无需/.test(text);
+  const proposition = (text: string) => text
+    .replace(/\b(?:must|should|does|do|is|are|be|not|never|no|always|the|a|an)\b/g, '')
+    .replace(/不能|不应|禁止|不要|无需|必须|应该|应当/g, '').replace(/\s+/g, ' ').trim();
+  if (negative(a) !== negative(b) && proposition(a).length > 3 && proposition(a) === proposition(b)) return true;
+  const existing = /^(?:use|reuse) (?:the )?existing (.+)$/;
+  const replacement = /^(?:build|create) (?:a )?new (.+)$/;
+  return Boolean(existing.exec(a)?.[1] && existing.exec(a)?.[1] === replacement.exec(b)?.[1])
+    || Boolean(existing.exec(b)?.[1] && existing.exec(b)?.[1] === replacement.exec(a)?.[1]);
+}
+
+function knowledgeDiagnostics(hits: Array<{ knowledge: Knowledge }>, maxChars: number, limit: number): Pick<KnowledgeDiscoveryResult, 'duplicateIds' | 'possibleConflicts'> {
+  const duplicateMap = new Map<string, string[]>();
+  for (const { knowledge } of hits.slice(0, 100)) {
+    const key = `${normalized(knowledge.kind)}|${normalized(knowledge.scope)}|${normalized(knowledge.statement)}`;
+    duplicateMap.set(key, [...(duplicateMap.get(key) ?? []), knowledge.knowledgeId]);
+  }
+  const duplicateIds = [...duplicateMap.values()].filter((ids) => ids.length > 1).slice(0, Math.min(limit, 10)).map((ids) => ids.slice(0, 10));
+  const possibleConflicts: KnowledgeDiscoveryResult['possibleConflicts'] = [];
+  const budget = { remaining: maxChars };
+  outer: for (let index = 0; index < hits.length && index < 100; index += 1) {
+    const left = hits[index].knowledge;
+    for (const { knowledge: right } of hits.slice(index + 1, 100)) {
+      if (normalized(left.scope) !== normalized(right.scope) || normalized(left.kind) !== normalized(right.kind) || !contradiction(left.statement, right.statement)) continue;
+      if (possibleConflicts.length >= Math.min(limit, 10)) break outer;
+      const statements = [left.statement, right.statement].map((value) => limitText(value, Math.max(0, budget.remaining)));
+      budget.remaining -= statements.reduce((sum, value) => sum + value.length, 0);
+      possibleConflicts.push({ scope: left.scope, knowledgeIds: [left.knowledgeId, right.knowledgeId], statements });
+    }
+  }
+  return { duplicateIds, possibleConflicts };
+}
+
+/**
+ * Deterministic source freshness relative to the newest event in this
+ * projection.  The reference is deliberately projection-local so replaying
+ * the same journal produces the same ranking regardless of wall-clock time.
+ */
+function freshnessScore(occurredAt: string, referenceAt: string): number {
+  const source = Date.parse(occurredAt);
+  const reference = Date.parse(referenceAt);
+  if (!Number.isFinite(source) || !Number.isFinite(reference)) return 0;
+  const ageDays = Math.max(0, reference - source) / 86_400_000;
+  return Math.max(0, Math.round(100 * (1 - Math.min(ageDays, 180) / 180)));
+}
+
 export function discoverV2Knowledge(index: CognitionRetrievalProjection, query: string, current: CognitionEvent['git'], options: { scope?: string; limit: number; maxChars: number }): V2Discovery<KnowledgeDiscoveryResult> {
   const exclusions = emptyExclusions();
   const terms = queryTerms(query);
+  const referenceAt = Object.values(index.entries).reduce((latest, entry) => entry.provenance.occurredAt > latest ? entry.provenance.occurredAt : latest, '');
   const hits = Object.values(index.entries).flatMap((entry) => {
     if (entry.entity !== 'knowledge') return [];
     if (entry.status !== 'verified') { exclusions.status_not_verified += 1; return []; }
@@ -202,12 +252,14 @@ export function discoverV2Knowledge(index: CognitionRetrievalProjection, query: 
     if (options.scope && normalized(knowledge.scope) !== normalized(options.scope)) { exclusions.scope_mismatch += 1; return []; }
     const matched = match(entry, terms, 'knowledge');
     if (matched.matchedTerms.length === 0) { exclusions.query_no_match += 1; return []; }
-    return [{ entry, knowledge, ...matched }];
+    return [{ entry, knowledge, freshnessScore: freshnessScore(entry.provenance.occurredAt, referenceAt), ...matched }];
   }).sort((left, right) => right.score - left.score
     || Math.min(right.entry.feedback.usedCount, 5) - Math.min(left.entry.feedback.usedCount, 5)
     || right.knowledge.confidence - left.knowledge.confidence
+    || right.freshnessScore - left.freshnessScore
     || right.entry.provenance.occurredAt.localeCompare(left.entry.provenance.occurredAt)
     || left.knowledge.knowledgeId.localeCompare(right.knowledge.knowledgeId));
+  const diagnostics = knowledgeDiagnostics(hits, options.maxChars, options.limit);
   const selected = hits.slice(0, options.limit);
   exclusions.result_limit = hits.length - selected.length;
   return {
@@ -215,15 +267,15 @@ export function discoverV2Knowledge(index: CognitionRetrievalProjection, query: 
       query,
       total: hits.length,
       truncated: hits.length > selected.length,
-      hits: selected.map(({ knowledge, score, matchedTerms, matchedFields, entry }) => ({
+      hits: selected.map(({ knowledge, score, freshnessScore: sourceFreshness, matchedTerms, matchedFields, entry }) => ({
         knowledge: { ...knowledge, statement: limitText(knowledge.statement, options.maxChars), supportingEvidence: knowledge.supportingEvidence.map((value) => limitText(value, options.maxChars)) },
         score,
+        freshnessScore: sourceFreshness,
         matchedTerms,
         matchedFields,
-        why: [...matchedFields.map((field) => `matched ${field}`), ...(entry.feedback.usedCount > 0 ? ['prior recorded use'] : [])],
+        why: [...matchedFields.map((field) => `matched ${field}`), `source freshness ${sourceFreshness}/100`, ...(entry.feedback.usedCount > 0 ? ['prior recorded use'] : [])],
       })),
-      duplicateIds: [],
-      possibleConflicts: [],
+      ...diagnostics,
     },
     exclusions,
   };

@@ -8,8 +8,8 @@ import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { readJournal } from '../src/cognition/journal.js';
-import { disableRuntime, enableRuntime, ensureRuntimeForSession, observeRuntime, runtimeStatus, serveRuntime, setFilesystemEvents, stopRuntime, touchRuntime } from '../src/cognition/runtime.js';
-import { cognitionRuntimeSecretPath } from '../src/storage/layout.js';
+import { disableRuntime, enableRuntime, ensureRuntimeForSession, observeRuntime, runtimeStatus, serveRuntime, setFilesystemEvents, startRuntime, stopRuntime, touchRuntime } from '../src/cognition/runtime.js';
+import { cognitionRuntimeSecretPath, cognitionRuntimeStartupPath } from '../src/storage/layout.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.js';
 import { GitObserver } from '../src/cognition/git-observer.js';
 
@@ -41,6 +41,28 @@ test('explicit observation waits for slow Git work beyond the ping deadline', as
       return original.call(this);
     });
     assert.equal(await observeRuntime(root), true);
+  } finally {
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('stop waits for pending writes beyond the old two second deadline', async (t) => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initializedRuntime(root);
+    runtime = await serveRuntime(root, { pollIntervalMs: 60_000 });
+    const original = GitObserver.prototype.drain;
+    t.mock.method(GitObserver.prototype, 'drain', async function (this: GitObserver) {
+      await new Promise((resolve) => setTimeout(resolve, 2300));
+      return original.call(this);
+    });
+    const stopped = await stopRuntime(root);
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.lease, null);
+    assert.equal((await runtimeStatus(root)).running, false);
+    assert.ok((await readJournal(root)).some((event) => event.type === 'runtime.stopped'));
   } finally {
     await runtime?.close('test');
     await rm(root, { recursive: true, force: true });

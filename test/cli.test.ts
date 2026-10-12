@@ -54,7 +54,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '1.0.0-beta.6');
+    assert.equal(JSON.parse(result.stdout), '1.0.0-beta.7');
     assert.equal(result.stderr, '');
   } finally {
     await stopRuntime(root).catch(() => undefined);

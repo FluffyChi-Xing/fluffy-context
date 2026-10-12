@@ -65,7 +65,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     const cli = path.join(packageRoot, 'dist', 'src', 'cli', 'main.js');
     const version = await run(process.execPath, [cli, '--version'], consumer);
     assert.equal(version.code, 0, version.stderr);
-    assert.equal(JSON.parse(version.stdout), '1.0.0-beta.6');
+    assert.equal(JSON.parse(version.stdout), '1.0.0-beta.7');
 
     for (const args of [
       [cli, 'orient', '--help'],
@@ -79,7 +79,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
 
     const imports = await run(
       process.execPath,
-      ['--input-type=module', '-e', "import { VERSION } from 'fluffy-context/version'; import { compileContext, contextExpand, contextOrient, proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient, proposeContextEvolution as agentPropose, listContextEvolutionProposals as agentList, inspectContextEvolutionProposal as agentInspect, acceptContextEvolutionCandidate as agentAccept, transitionContextEvolutionProposal as agentTransition } from 'fluffy-context/agent'; if (VERSION !== '1.0.0-beta.6' || typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || [proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal].some((value) => typeof value !== 'function') || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand || proposeContextEvolution !== agentPropose || listContextEvolutionProposals !== agentList || inspectContextEvolutionProposal !== agentInspect || acceptContextEvolutionCandidate !== agentAccept || transitionContextEvolutionProposal !== agentTransition) process.exit(1);"],
+      ['--input-type=module', '-e', "import { VERSION } from 'fluffy-context/version'; import { compileContext, contextExpand, contextOrient, proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal, recordContextUse } from 'fluffy-context'; import { compileContext as agentCompile, contextExpand as agentExpand, contextOrient as agentOrient, proposeContextEvolution as agentPropose, listContextEvolutionProposals as agentList, inspectContextEvolutionProposal as agentInspect, acceptContextEvolutionCandidate as agentAccept, transitionContextEvolutionProposal as agentTransition } from 'fluffy-context/agent'; if (VERSION !== '1.0.0-beta.7' || typeof compileContext !== 'function' || typeof agentCompile !== 'function' || typeof contextExpand !== 'function' || typeof agentExpand !== 'function' || typeof contextOrient !== 'function' || typeof recordContextUse !== 'function' || [proposeContextEvolution, listContextEvolutionProposals, inspectContextEvolutionProposal, acceptContextEvolutionCandidate, transitionContextEvolutionProposal].some((value) => typeof value !== 'function') || contextOrient !== agentOrient || compileContext !== agentCompile || contextExpand !== agentExpand || proposeContextEvolution !== agentPropose || listContextEvolutionProposals !== agentList || inspectContextEvolutionProposal !== agentInspect || acceptContextEvolutionCandidate !== agentAccept || transitionContextEvolutionProposal !== agentTransition) process.exit(1);"],
       consumer,
     );
     assert.equal(imports.code, 0, imports.stderr);
@@ -88,7 +88,7 @@ test('packed package exposes the CLI, Agent API, declarations, and shipped skill
     assert.equal(governanceImports.code, 0, governanceImports.stderr);
 
     const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
-    assert.equal(manifest.version, '1.0.0-beta.6');
+    assert.equal(manifest.version, '1.0.0-beta.7');
     assert.equal(await readdir(path.join(packageRoot, 'skills', 'fluffy-context')).then((files) => files.includes('SKILL.md')), true);
 
     // Exercise the shipped package's cognition loop, not source imports.

@@ -24,6 +24,7 @@ import { addNote, listActivity, listNotes } from '../runtime/notes.js';
 import type { ActivityQuery, CheckpointInput, DeadendInput, KnowledgeInput, NoteInput, NoteKind, NoteStatus, NoteActor } from '../runtime/types.js';
 import type { ContextExpandLevel } from '../compiler/types.js';
 import { VERSION } from '../version.js';
+import { withProjectResolution } from '../project/project-resolver.js';
 
 function option(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -105,6 +106,9 @@ Options:
   import: `usage: ctx import [--path <path>] [--apply]
 
 Preview project memory, .claude, .zcode, .cursor, .curcor, .codex and AGENTS.md.
+Only project-local sources are scanned. --path selects the target project, not a memory file.
+For user/system .zcode memory, use ctx learn "<fact>" --path "<project>" --evidence "<source>".
+Import is optional. Do not create/copy/move files or repeat unchanged scans to satisfy it.
 Paragraphs, lists and tables retain source ranges; front matter and code fences are skipped.
 --apply imports deduplicated candidates and saves the source baseline; verification remains explicit.
 changes and reviewRequired identify changed/removed evidence. Partial scans retain the baseline.
@@ -1190,7 +1194,10 @@ async function run(args: string[]): Promise<void> {
   }
 }
 
-run(process.argv.slice(2)).catch((error: unknown) => {
+// Persistent servers must create a fresh scope per request, not retain one
+// for their entire lifetime (including future worktree changes).
+const args = process.argv.slice(2);
+(args[1] === 'serve' ? run(args) : withProjectResolution(() => run(args))).catch((error: unknown) => {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

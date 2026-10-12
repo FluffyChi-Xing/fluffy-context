@@ -330,62 +330,78 @@ export async function compactJournal(startPath?: string, options: { apply?: bool
 }
 
 export async function appendEvent<T>(startPath: string | undefined, input: AppendEventInput<T>): Promise<{ event: CognitionEvent<T>; appended: boolean }> {
-  validatePayloadBoundary(input as AppendEventInput);
+  return (await appendEvents(startPath, [input]))[0];
+}
+
+// One validation replay and one lock for a batch; every published line remains
+// independently recoverable and retries retain the same idempotency semantics.
+export async function appendEvents<T>(startPath: string | undefined, inputs: AppendEventInput<T>[]): Promise<Array<{ event: CognitionEvent<T>; appended: boolean }>> {
+  for (const input of inputs) validatePayloadBoundary(input as AppendEventInput);
+  if (!inputs.length) return [];
   const projectRoot = await resolveProjectRoot(startPath);
   return withLock(`${locksDirectory(projectRoot)}/cognition-journal.lock`, async () => {
     await recoverPartialTail(projectRoot);
     const existing = await readJournal(projectRoot);
-    const duplicate = existing.find((event) => event.idempotencyKey === input.idempotencyKey);
-    if (duplicate) {
-      const candidate = {
+    const byKey = new Map(existing.map((event) => [event.idempotencyKey, event]));
+    const projectId = (await loadManifest(projectRoot)).projectId;
+    const results: Array<{ event: CognitionEvent<T>; appended: boolean }> = [];
+    for (const input of inputs) {
+      const duplicate = byKey.get(input.idempotencyKey);
+      if (duplicate) {
+        const candidate = {
+          type: input.type,
+          source: input.source ?? { kind: 'cli' },
+          correlationId: input.correlationId,
+          idempotencyKey: input.idempotencyKey,
+          git: input.git ?? { worktreeId: null, branch: null, ref: null, head: null },
+          privacy: input.privacy ?? { classification: 'metadata', redactionCount: 0 },
+          payload: input.payload,
+        };
+        const existingSemantic = {
+          type: duplicate.type,
+          source: duplicate.source,
+          correlationId: duplicate.correlationId,
+          idempotencyKey: duplicate.idempotencyKey,
+          git: duplicate.git,
+          privacy: duplicate.privacy,
+          payload: duplicate.payload,
+        };
+        if (canonical(candidate) !== canonical(existingSemantic)) throw new Error(`idempotency key conflict: ${input.idempotencyKey}`);
+        results.push({ event: duplicate as CognitionEvent<T>, appended: false });
+        continue;
+      }
+      const now = new Date().toISOString();
+      const eventWithoutHash: Omit<CognitionEvent<T>, 'hash'> = {
+        eventId: input.eventId ?? eventId(),
+        schemaVersion: 2,
         type: input.type,
+        occurredAt: input.occurredAt ?? now,
+        observedAt: now,
+        projectId,
         source: input.source ?? { kind: 'cli' },
-        correlationId: input.correlationId,
+        ...(input.correlationId ? { correlationId: input.correlationId } : {}),
         idempotencyKey: input.idempotencyKey,
         git: input.git ?? { worktreeId: null, branch: null, ref: null, head: null },
         privacy: input.privacy ?? { classification: 'metadata', redactionCount: 0 },
         payload: input.payload,
+        previousHash: existing.at(-1)?.hash ?? null,
       };
-      const existingSemantic = {
-        type: duplicate.type,
-        source: duplicate.source,
-        correlationId: duplicate.correlationId,
-        idempotencyKey: duplicate.idempotencyKey,
-        git: duplicate.git,
-        privacy: duplicate.privacy,
-        payload: duplicate.payload,
-      };
-      if (canonical(candidate) !== canonical(existingSemantic)) throw new Error(`idempotency key conflict: ${input.idempotencyKey}`);
-      return { event: duplicate as CognitionEvent<T>, appended: false };
-    }
-    const now = new Date().toISOString();
-    const eventWithoutHash: Omit<CognitionEvent<T>, 'hash'> = {
-      eventId: input.eventId ?? eventId(),
-      schemaVersion: 2,
-      type: input.type,
-      occurredAt: input.occurredAt ?? now,
-      observedAt: now,
-      projectId: (await loadManifest(projectRoot)).projectId,
-      source: input.source ?? { kind: 'cli' },
-      ...(input.correlationId ? { correlationId: input.correlationId } : {}),
-      idempotencyKey: input.idempotencyKey,
-      git: input.git ?? { worktreeId: null, branch: null, ref: null, head: null },
-      privacy: input.privacy ?? { classification: 'metadata', redactionCount: 0 },
-      payload: input.payload,
-      previousHash: existing.at(-1)?.hash ?? null,
-    };
-    const event = { ...eventWithoutHash, hash: eventHash(eventWithoutHash) };
-    const line = `${JSON.stringify(event)}\n`;
-    if (['workspace.paths.changed', 'host.prompt.submitted', 'usage.operation.completed'].includes(input.type)) {
-      let limit: number | undefined;
-      try { limit = (await loadRuntimePolicy(projectRoot)).retentionMaxBytes; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      if (limit !== undefined && (await journalStorage(projectRoot)).bytes + Buffer.byteLength(line) > limit) {
-        await recordAdmissionDrop(projectRoot, input.type);
-        throw new Error('observation budget exceeded; semantic records remain writable');
+      const event = { ...eventWithoutHash, hash: eventHash(eventWithoutHash) };
+      const line = `${JSON.stringify(event)}\n`;
+      if (['workspace.paths.changed', 'host.prompt.submitted', 'usage.operation.completed'].includes(input.type)) {
+        let limit: number | undefined;
+        try { limit = (await loadRuntimePolicy(projectRoot)).retentionMaxBytes; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        if (limit !== undefined && (await journalStorage(projectRoot)).bytes + Buffer.byteLength(line) > limit) {
+          await recordAdmissionDrop(projectRoot, input.type);
+          throw new Error('observation budget exceeded; semantic records remain writable');
+        }
       }
+      await appendJournalLine(projectRoot, line);
+      existing.push(event as CognitionEvent);
+      byKey.set(event.idempotencyKey, event as CognitionEvent);
+      results.push({ event, appended: true });
     }
-    await appendJournalLine(projectRoot, line);
-    return { event, appended: true };
+    return results;
   });
 }

@@ -8,6 +8,10 @@ import { checkpoint, resume } from '../src/runtime/runtime.js';
 import { addNote, listActivity, listNotes } from '../src/runtime/notes.js';
 import { doctor, status } from '../src/runtime/diagnostics.js';
 import { discoverKnowledge, learnKnowledge, listKnowledge, verifyKnowledge, recordDeadend, listDeadends, verifyDeadend, transitionDeadend, transitionKnowledge } from '../src/runtime/knowledge.js';
+import { buildRetrievalProjection, discoverV2Knowledge } from '../src/cognition/retrieval.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
+import { readJournal } from '../src/cognition/journal.js';
+import { compileContext } from '../src/compiler/compile.js';
 
 async function project(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'context-runtime-'));
@@ -206,6 +210,34 @@ test('knowledge discovery filters, orders and diagnoses duplicates and conflicts
     assert.equal(await readFile(path.join(root, '.context', 'knowledge.json'), 'utf8'), before);
     assert.deepEqual((await discoverKnowledge(root, 'applicant authentication', { statuses: ['candidate'] })).hits.map((hit) => hit.knowledge.knowledgeId), []);
     assert.equal((await discoverKnowledge(root, 'applicant authentication', { statuses: ['candidate', 'verified'] })).total, 3);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('v2 retrieval reports duplicate and contradictory verified evidence before injection', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await importV1(root);
+    const first = await learnKnowledge(root, 'Use the existing applicant authentication flow', { scope: 'web', kind: 'workflow' });
+    const duplicate = await learnKnowledge(root, ' use the existing applicant authentication flow ', { scope: 'web', kind: 'workflow' });
+    const conflict = await learnKnowledge(root, 'Build a new applicant authentication flow', { scope: 'web', kind: 'workflow' });
+    await verifyKnowledge(root, first.knowledgeId);
+    await verifyKnowledge(root, duplicate.knowledgeId);
+    await verifyKnowledge(root, conflict.knowledgeId);
+    const current = { worktreeId: null, branch: null, ref: null, head: null } as const;
+    const result = discoverV2Knowledge(buildRetrievalProjection(await readJournal(root)), 'applicant authentication', current, { limit: 10, maxChars: 200 });
+    assert.ok(result.result.hits.every((hit) => hit.freshnessScore >= 0 && hit.freshnessScore <= 100));
+    assert.ok(result.result.hits.every((hit) => hit.why.some((reason) => reason.startsWith('source freshness '))));
+    assert.deepEqual(result.result.duplicateIds.map((group) => [...group].sort()), [[first.knowledgeId, duplicate.knowledgeId].sort()]);
+    assert.ok(result.result.possibleConflicts.some((group) => group.knowledgeIds.includes(conflict.knowledgeId)));
+    await checkpoint(root, { title: 'Retrieval diagnostics', progressSummary: 'Compile conflict diagnostics.' });
+    const manifest = await compileContext(root, { query: 'applicant authentication', maxChars: 200 });
+    assert.deepEqual(manifest.diagnostics.knowledge.duplicateIds.map((group) => [...group].sort()), [[first.knowledgeId, duplicate.knowledgeId].sort()]);
+    assert.ok(manifest.diagnostics.knowledge.possibleConflicts.some((group) => group.knowledgeIds.includes(conflict.knowledgeId)));
+    assert.ok(manifest.diagnostics.knowledge.freshness.every((item) => item.score >= 0 && item.score <= 100));
+    assert.equal(manifest.identity.manifestHash.length, 64);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

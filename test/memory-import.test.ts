@@ -7,6 +7,11 @@ import { memoryBlocks } from '../src/cognition/memory-blocks.js';
 import { importMemory } from '../src/cognition/import-memory.js';
 import { initProject } from '../src/runtime/init.js';
 import { listKnowledge, verifyKnowledge, transitionKnowledge } from '../src/runtime/knowledge.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
+import { readJournal } from '../src/cognition/journal.js';
+import { v1Synced } from '../src/cognition/v1-bridge.js';
+import { withLock } from '../src/storage/lock.js';
+import { locksDirectory } from '../src/storage/layout.js';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ctx-memory-'));
@@ -15,6 +20,53 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   await mkdir(path.join(root, 'memory'));
   return root;
 }
+
+test('empty import explains project boundaries and the direct knowledge alternative', async (t) => {
+  const root = await fixture(t);
+  const result = await importMemory(root);
+  assert.equal(result.discovery.status, 'no-source-files');
+  assert.equal(result.discovery.scope, 'project-only');
+  assert.ok(result.discovery.searchedSources.includes('.zcode'));
+  assert.match(result.guidance, /ctx learn/);
+  assert.match(result.guidance, /context_learn/);
+  assert.match(result.guidance, /Do not create, copy or move/);
+  await assert.rejects(importMemory(path.join(root, 'missing')), /target project.*ctx learn/);
+});
+
+test('forty imported records preserve journal parity, source evidence and retry deduplication', async (t) => {
+  const root = await fixture(t);
+  await importV1(root);
+  const text = Array.from({ length: 40 }, (_, i) => `- Rule ${i}: preserve the payment request identifier.`).join('\n');
+  await writeFile(path.join(root, 'memory', 'rules.md'), text);
+  const applied = await importMemory(root, true);
+  assert.equal(applied.results.length, 40);
+  assert.equal(applied.synchronization, 'complete');
+  assert.equal(await v1Synced(root), true);
+  const knowledge = await listKnowledge(root, true);
+  assert.equal(knowledge.length, 40);
+  assert.ok(knowledge.every((item) => item.status === 'candidate' && item.supportingEvidence.some((value) => value.startsWith('memory/rules.md:'))));
+  const journal = await readJournal(root);
+  assert.equal(journal.filter((event) => event.type === 'knowledge.proposed').length, 40);
+  assert.ok((await importMemory(root, true)).results.every((item) => item.status === 'duplicate'));
+  assert.equal((await readJournal(root)).length, journal.length);
+});
+
+test('import retry repairs pending journal synchronization without duplicate knowledge', async (t) => {
+  const root = await fixture(t);
+  await importV1(root);
+  await writeFile(path.join(root, 'memory', 'rules.md'), '- First payment rule preserves its request identifier.\n- Second payment rule preserves its original currency.');
+  await withLock(path.join(locksDirectory(root), 'cognition-journal.lock'), async () => {
+    const applied = await importMemory(root, true);
+    assert.equal(applied.synchronization, 'pending');
+    assert.equal((await listKnowledge(root, true)).length, 2);
+  });
+  const retry = await importMemory(root, true);
+  assert.equal(retry.synchronization, 'complete');
+  assert.ok(retry.results.every((item) => item.status === 'duplicate'));
+  assert.equal((await listKnowledge(root, true)).length, 2);
+  assert.equal(await v1Synced(root), true);
+  assert.equal((await readJournal(root)).filter((event) => event.type === 'knowledge.proposed').length, 2);
+});
 
 test('memory blocks preserve wrapped paragraphs, list continuations, tables and source ranges', () => {
   const result = memoryBlocks([

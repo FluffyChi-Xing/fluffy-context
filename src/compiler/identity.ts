@@ -16,7 +16,7 @@ export function estimateTokens(value: string): number {
   return value.length === 0 ? 0 : Math.ceil(value.length / 4);
 }
 
-export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | 'projectRoot' | 'mode' | 'anchor' | 'intent' | 'selected' | 'budget' | 'truncation' | 'recipe' | 'graph'>): string {
+export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | 'projectRoot' | 'mode' | 'anchor' | 'intent' | 'selected' | 'budget' | 'truncation' | 'recipe' | 'graph' | 'diagnostics'>): string {
   return contentHash({
     schemaVersion: 1,
     compilerVersion: '0.7.7',

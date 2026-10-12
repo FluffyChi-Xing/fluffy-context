@@ -19,6 +19,7 @@ After a meaningful milestone, use \`ctx checkpoint\` with progress, decisions, p
 Record reusable findings with \`ctx knowledge add\` and evidence; verify against code or tests before \`ctx knowledge verify\`.
 Record a reproducible failed approach with \`ctx knowledge deadend add\`; do not save routine chatter or tool transcripts.
 Use \`ctx import\` to preview existing agent memories, and \`ctx import --apply\` to store candidates.
+Import is optional and only scans project-local files. For user/system .zcode memories, use \`ctx learn\` with original source evidence; do not create/copy files or retry unchanged scans just to satisfy import.
 <!-- fluffy-context:end -->\n`;
 
 export async function setupProject(startPath?: string, options: { start?: boolean; integrations?: boolean } = {}) {

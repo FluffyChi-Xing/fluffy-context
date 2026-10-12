@@ -199,6 +199,7 @@ export interface KnowledgeDiscoverOptions {
 export interface KnowledgeDiscoveryHit {
   knowledge: Knowledge;
   score: number;
+  freshnessScore: number;
   matchedTerms: string[];
   matchedFields: string[];
   why: string[];

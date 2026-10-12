@@ -1,14 +1,16 @@
 import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { resolveProjectRoot } from '../project/project-resolver.js';
+import { resolveProjectRoot, withProjectResolution } from '../project/project-resolver.js';
 import { filterPaths } from '../capture/context-filter.js';
-import { learnKnowledge, listKnowledge } from '../runtime/knowledge.js';
+import { learnKnowledgeBatch, listKnowledge } from '../runtime/knowledge.js';
 import { loadManifest } from '../runtime/init.js';
 import { withLock } from '../storage/lock.js';
 import { locksDirectory } from '../storage/layout.js';
 import { memoryBlocks, type MemoryBlock } from './memory-blocks.js';
 import { readMemoryReceipts, writeMemoryReceipts, type MemorySourceReceipt } from './memory-receipts.js';
+import { reconcileV1State } from './migration-v1.js';
+import { v2Enabled } from './orient.js';
 
 const sources = ['memory', '.memory', '.claude', '.zcode', '.cursor', '.curcor', '.codex', 'AGENTS.md', 'agents.md', 'CLAUDE.md', 'MEMORY.md', '.cursorrules'];
 const hash = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -19,8 +21,21 @@ async function hasGitBoundary(directory: string): Promise<boolean> {
 }
 
 export async function importMemory(startPath?: string, apply = false) {
-  const root = await resolveProjectRoot(startPath);
-  await loadManifest(root);
+  return withProjectResolution(() => importMemoryInScope(startPath, apply));
+}
+
+async function importMemoryInScope(startPath: string | undefined, apply: boolean) {
+  let root: string;
+  try { root = await resolveProjectRoot(startPath); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    throw new Error('Import path does not exist. --path must identify the target project, not a memory file. Import only scans project-local sources; for user/system .zcode memories use ctx learn "<project-relevant fact>" --path "<project>" --evidence "<original source>". Do not create or copy files merely to satisfy import.');
+  }
+  try { await loadManifest(root); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    throw new Error(`No initialized project at ${root}. Import --path selects the target project, not a memory source. User/system .zcode memory should be recorded with ctx learn "<fact>" --path "<initialized project>" --evidence "<original source>". Do not create or copy files merely to satisfy import.`);
+  }
   await readMemoryReceipts(root);
   const candidates: Array<MemoryBlock & { source: string; sourceHash: string; fingerprint: string }> = [];
   const scanned = new Map<string, { sourceHash: string; complete: boolean }>();
@@ -75,12 +90,25 @@ export async function importMemory(startPath?: string, apply = false) {
     const knowledge = await listKnowledge(root, true);
     const byId = new Map(knowledge.map((item) => [item.knowledgeId, item]));
     const known = new Map<string, string | null>(knowledge.map((item) => [hash(item.statement.replace(/\s+/g, ' ').toLowerCase()), item.knowledgeId]));
+    const seen = new Set(known.keys());
+    const unique = candidates.filter((item) => {
+      if (seen.has(item.fingerprint)) return false;
+      seen.add(item.fingerprint);
+      return true;
+    });
+    const batch = apply ? await learnKnowledgeBatch(root, unique.map((candidate) => ({ statement: candidate.statement, input: {
+      kind: 'imported-memory', evidence: [`${candidate.source}:${candidate.line}`, `lines:${candidate.line}-${candidate.endLine}`, `sha256:${candidate.fingerprint}`, `source-sha256:${candidate.sourceHash}`],
+    } }))) : null;
+    if (batch && await v2Enabled(root)) {
+      // Also repairs an earlier partial mirror when a retry imports no new IDs.
+      try { await reconcileV1State(root); batch.synchronization = 'complete'; }
+      catch { batch.synchronization = 'pending'; }
+    }
+    const imported = new Map(unique.map((item, index) => [item.fingerprint, batch?.items[index]]));
     const results = [];
     for (const candidate of candidates) {
       const duplicate = known.has(candidate.fingerprint);
-      const record = apply && !duplicate ? await learnKnowledge(root, candidate.statement, {
-        kind: 'imported-memory', evidence: [`${candidate.source}:${candidate.line}`, `lines:${candidate.line}-${candidate.endLine}`, `sha256:${candidate.fingerprint}`, `source-sha256:${candidate.sourceHash}`],
-      }) : null;
+      const record = apply && !duplicate ? imported.get(candidate.fingerprint) : null;
       const knowledgeId = record?.knowledgeId ?? known.get(candidate.fingerprint) ?? null;
       known.set(candidate.fingerprint, knowledgeId);
       if (record) byId.set(record.knowledgeId, record);
@@ -120,6 +148,10 @@ export async function importMemory(startPath?: string, apply = false) {
     }
     if (apply) await writeMemoryReceipts(root, { schemaVersion: 1, sources: [...updates.values()] });
     return { projectRoot: root, applied: apply, scannedBytes: bytes, results, skipped,
+      synchronization: batch?.synchronization ?? 'not-requested',
+      discovery: { scope: 'project-only', searchedSources: sources, scannedFiles: scanned.size,
+        status: scanned.size === 0 ? 'no-source-files' : candidates.length === 0 ? 'no-candidates' : 'found' },
+      guidance: 'Import is optional and scans only the target project. --path selects the project, not a source file. User/system .zcode directories are not scanned. If relevant memory lives there, use ctx learn "<fact>" --path "<project>" --evidence "<original source>" (MCP: context_learn). Review relevance and verify against code. Do not create, copy or move files just to satisfy import; do not retry unchanged discovery.',
       changes, reviewRequired: [...new Set(changes.flatMap((item) => item.reviewKnowledgeIds))],
       reviewPolicy: 'Source changes never alter knowledge status. Inspect affected IDs and explicitly deprecate/reject outdated records. Partial or unavailable scans do not replace the source baseline.',
       trust: 'Imported text is unverified evidence; inspect and verify against the project before injection.' };

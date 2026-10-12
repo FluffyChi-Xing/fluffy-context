@@ -439,6 +439,13 @@ export async function compileContext(startPath?: string, options: ContextCompile
     selected,
     budget,
     truncation,
+    diagnostics: {
+      knowledge: {
+        duplicateIds: orientation.knowledge.duplicateIds,
+        possibleConflicts: orientation.knowledge.possibleConflicts,
+        freshness: orientation.knowledge.hits.map((hit) => ({ knowledgeId: hit.knowledge.knowledgeId, score: hit.freshnessScore })),
+      },
+    },
     ...(recipe ? { recipe } : {}),
     ...(graph ? { graph: graph.participation } : {}),
   });
@@ -464,6 +471,13 @@ export async function compileContext(startPath?: string, options: ContextCompile
     },
     budget,
     truncation,
+    diagnostics: {
+      knowledge: {
+        duplicateIds: orientation.knowledge.duplicateIds,
+        possibleConflicts: orientation.knowledge.possibleConflicts,
+        freshness: orientation.knowledge.hits.map((hit) => ({ knowledgeId: hit.knowledge.knowledgeId, score: hit.freshnessScore })),
+      },
+    },
     provenance: {
       journalRead: sources.events.length > 0,
       journalEventCount: sources.events.length,

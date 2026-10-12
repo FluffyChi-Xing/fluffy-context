@@ -6,7 +6,7 @@ import { cognitionManifestPath, cognitionV1SyncPath, contextsRoot, deadendsPath,
 import { readJson } from '../storage/json-store.js';
 import { atomicWriteJson } from '../storage/atomic-write.js';
 import type { ContextMetadata, Deadend, Knowledge, Note, Snapshot } from '../runtime/types.js';
-import { appendEvent } from './journal.js';
+import { appendEvent, appendEvents } from './journal.js';
 import { rebuildProjections } from './projections.js';
 import { loadRuntimePolicy } from './policy.js';
 
@@ -79,6 +79,22 @@ export async function mirrorKnowledge(projectRoot: string, knowledge: Knowledge,
       : knowledge.status === 'rejected' ? 'knowledge.rejected'
         : 'knowledge.proposed';
   await mirror(projectRoot, type, knowledge as unknown as Record<string, unknown>, knowledge.knowledgeId, strict);
+}
+
+export async function mirrorKnowledgeBatch(projectRoot: string, items: Knowledge[]): Promise<void> {
+  if (!items.length || !await enabled(projectRoot)) return;
+  const state = await readGitWorktreeState(projectRoot);
+  await appendEvents(projectRoot, items.map((record) => {
+    const type = record.status === 'verified' ? 'knowledge.verified' as const
+      : record.status === 'deprecated' ? 'knowledge.deprecated' as const
+        : record.status === 'rejected' ? 'knowledge.rejected' as const : 'knowledge.proposed' as const;
+    return { type, source: { kind: 'cli' as const },
+      idempotencyKey: `v1-live:${type}:${record.knowledgeId}:${digest(record)}`,
+      git: { worktreeId: state.worktreeId, branch: state.branch, ref: state.ref, head: state.commit },
+      payload: { record, anchorProvenance: 'live' } };
+  }));
+  await rebuildProjections(projectRoot);
+  // Do not mark unrelated v1 writes synchronized. Reconciliation owns that cursor.
 }
 
 export async function mirrorDeadend(projectRoot: string, deadend: Deadend): Promise<void> {

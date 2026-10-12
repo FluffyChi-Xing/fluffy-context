@@ -210,7 +210,7 @@ function attachProtocol(server: Server, secret: string, lease: RuntimeLease, tou
       }
       if (request.method === 'stop') {
         socket.end('{"ok":true}\n');
-        void close('ipc');
+        void close('ipc').catch(() => undefined);
         return;
       }
       socket.end('{"ok":false,"error":"unknown_method"}\n');
@@ -250,6 +250,8 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   let leaseWrite = Promise.resolve();
   let filesystemEventPending = false;
   let closing: Promise<void> | null = null;
+  let finishInitialization!: () => void;
+  const initialized = new Promise<void>((resolve) => { finishInitialization = resolve; });
   const enqueueObservation = (operation: () => Promise<{ changed: boolean }>): Promise<{ changed: boolean }> => {
     const next = background.then(operation, operation);
     background = next.then(() => undefined, () => undefined);
@@ -257,7 +259,9 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   };
   const close = async (reason: string): Promise<void> => {
     if (closing) return closing;
-    closing = closeServer(projectRoot, server, observer, filesystem, heartbeat, poller, inactivity, background, leaseWrite, lease, reason);
+    // A caller can see a live endpoint before the first observation finishes.
+    // Drain initialization too, so it cannot recreate the lease after shutdown.
+    closing = initialized.then(() => closeServer(projectRoot, server, observer, filesystem, heartbeat, poller, inactivity, background, leaseWrite, lease, reason));
     return closing;
   };
   const touch = (): void => {
@@ -299,6 +303,7 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
       await writeLease(projectRoot, lease);
     });
   } catch (error) {
+    finishInitialization();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     throw error;
   }
@@ -309,12 +314,23 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   poller = setInterval(() => {
     void observe().catch(() => undefined);
   }, runtimePollIntervalMs);
-  await appendEvent(projectRoot, { type: 'runtime.started', source: { kind: 'cli', instanceId: lease.instanceId }, idempotencyKey: `runtime:started:${lease.instanceId}`, payload: {} });
-  if (currentPolicy.filesystemEventsEnabled) filesystem.start();
-  await observe();
-  await writeLease(projectRoot, lease);
-  await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
+  // Start the inactivity window as soon as the lease is published. A slow
+  // first observation must not keep an otherwise idle runtime alive forever.
   touch();
+  try {
+    await appendEvent(projectRoot, { type: 'runtime.started', source: { kind: 'cli', instanceId: lease.instanceId }, idempotencyKey: `runtime:started:${lease.instanceId}`, payload: {} });
+    if (currentPolicy.filesystemEventsEnabled) filesystem.start();
+    await observe();
+    await writeLease(projectRoot, lease);
+    await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
+    touch();
+  } catch (error) {
+    finishInitialization();
+    await close('startup-failed').catch(() => undefined);
+    throw error;
+  } finally {
+    finishInitialization();
+  }
   return { lease, close };
 }
 
@@ -366,12 +382,19 @@ async function waitForRuntime(projectRoot: string, timeoutMs: number): Promise<R
     if (status.running && !await loadStartupMarker(projectRoot)) return status;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return null;
+  const status = await runtimeStatus(projectRoot);
+  return status.running ? status : null;
 }
 
 async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): Promise<RuntimeStatus> {
   const existing = await liveLease(projectRoot);
-  if (existing) return runtimeStatus(projectRoot);
+  if (existing) {
+    // A published lease can answer ping before serveRuntime has finished its
+    // first semantic observation and startup event. Do not report completion
+    // until the marker is removed; only the timeout path may use status as a
+    // best-effort fallback.
+    return (await waitForRuntime(projectRoot, timeoutMs)) ?? runtimeStatus(projectRoot);
+  }
   const attemptId = createInstanceId();
   let owner = false;
   try {
@@ -391,19 +414,19 @@ async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): 
     child.unref();
   }
   const status = await waitForRuntime(projectRoot, timeoutMs);
-  const marker = await loadStartupMarker(projectRoot);
-  if (marker?.attemptId === attemptId) await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
   if (status) return status;
-  throw new Error('runtime failed to start');
+  // A timeout does not cancel the detached child. Preserve its startup marker
+  // so another caller cannot launch a competing instance while it initializes.
+  throw new Error('runtime startup is not yet confirmed; run ctx runtime status before retrying. The background process may still be starting.');
 }
 
-export async function startRuntime(startPath?: string): Promise<RuntimeStatus> {
+export async function startRuntime(startPath?: string, options: { timeoutMs?: number } = {}): Promise<RuntimeStatus> {
   const projectRoot = await resolveProjectRoot(startPath);
   const current = await loadPolicy(projectRoot);
   if (!current.enabled) throw new Error('runtime is disabled; run ctx runtime enable first');
   const pending = startupPromises.get(projectRoot);
   if (pending) return pending;
-  const operation = startRuntimeCoordinated(projectRoot, 1_500).finally(() => startupPromises.delete(projectRoot));
+  const operation = startRuntimeCoordinated(projectRoot, options.timeoutMs ?? 10_000).finally(() => startupPromises.delete(projectRoot));
   startupPromises.set(projectRoot, operation);
   return operation;
 }
@@ -413,7 +436,10 @@ export async function ensureRuntimeForSession(startPath?: string, options: Ensur
   if (!await exists(cognitionManifestPath(projectRoot))) return { projectRoot, started: false, running: false, skipped: 'not-migrated' };
   const current = await loadPolicy(projectRoot);
   if (!current.enabled || !current.autoStart || (options.source === 'claude-hook' && !current.allowHookStartup)) return { projectRoot, started: false, running: false, skipped: 'disabled' };
-  if (await liveLease(projectRoot)) return { projectRoot, started: false, running: true, skipped: 'already-running' };
+  if (await liveLease(projectRoot)) {
+    const status = (await waitForRuntime(projectRoot, options.timeoutMs ?? 1_000)) ?? await runtimeStatus(projectRoot);
+    return { projectRoot, started: false, running: status.running, skipped: 'already-running' };
+  }
   const pending = startupPromises.get(projectRoot);
   if (pending) {
     try {
@@ -439,12 +465,15 @@ export async function stopRuntime(startPath?: string): Promise<RuntimeStatus> {
   const lease = await liveLease(projectRoot);
   if (!lease) return runtimeStatus(projectRoot);
   await request(projectRoot, lease, 'stop');
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50));
     const status = await runtimeStatus(projectRoot);
     if (!status.running && !status.lease) return status;
   }
-  throw new Error('runtime failed to stop');
+  const status = await runtimeStatus(projectRoot);
+  if (!status.running && !status.lease) return status;
+  throw new Error(`runtime shutdown is not yet confirmed (running: ${status.running}); run ctx runtime status before retrying. Pending writes may still be draining.`);
 }
 
 export async function observeRuntime(startPath?: string): Promise<boolean> {

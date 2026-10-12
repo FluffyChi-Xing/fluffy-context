@@ -45,6 +45,25 @@ async function connectInMemory() {
   return { client, server };
 }
 
+test('MCP empty import leads to direct candidate recording without an import file', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const empty = await client.callTool({ name: 'context_import', arguments: { path: root } });
+    assert.notEqual(empty.isError, true);
+    assert.match(textContent(empty), /context_learn/);
+    const learned = await client.callTool({ name: 'context_learn', arguments: {
+      path: root, statement: 'Callbacks require a stable request identifier.', evidence: ['user .zcode memory; checked src/payments.ts'],
+    } });
+    assert.notEqual(learned.isError, true);
+    assert.equal((await listKnowledge(root, true)).length, 1);
+    assert.equal((await listKnowledge(root)).length, 0);
+  } finally {
+    await client.close(); await server.close(); await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('MCP knowledge governance requires preview and evidence and exposes bounded reviews', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
@@ -85,6 +104,7 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'context_knowledge_batch',
       'context_inject',
       'context_import',
+      'context_learn',
       'context_orient',
       'context_expand',
       'context_compile',
@@ -498,6 +518,7 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
       'context_knowledge_batch',
       'context_inject',
       'context_import',
+      'context_learn',
       'context_orient',
       'context_expand',
       'context_compile',

@@ -134,12 +134,12 @@ function percentile(values: number[], fraction: number): number | null {
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)];
 }
 
-function operationStats(events: CognitionEvent[]): Record<string, unknown> {
+function groupedOperationStats(events: CognitionEvent[], keyFor: (payload: UsageOperationCompletedPayload) => string): Record<string, unknown> {
   const groups = new Map<string, UsageOperationCompletedPayload[]>();
   for (const event of events) {
     const payload = usagePayload(event);
     if (!payload) continue;
-    const key = payload.operation;
+    const key = keyFor(payload);
     groups.set(key, [...(groups.get(key) ?? []), payload]);
   }
   const byOperation: Record<string, unknown> = {};
@@ -161,6 +161,13 @@ function operationStats(events: CognitionEvent[]): Record<string, unknown> {
     };
   }
   return byOperation;
+}
+
+function operationStats(events: CognitionEvent[]): { byOperation: Record<string, unknown>; byInterface: Record<string, unknown> } {
+  return {
+    byOperation: groupedOperationStats(events, (payload) => payload.operation),
+    byInterface: groupedOperationStats(events, (payload) => payload.interface),
+  };
 }
 
 export async function buildUsageReport(startPath: string | undefined, options: UsageReportOptions = {}): Promise<UsageReport> {
@@ -256,7 +263,7 @@ export async function buildUsageReport(startPath: string | undefined, options: U
       paybackAt: null,
       paybackPeriodDays: null,
     },
-    operations: { available: usageEvents.length > 0, byOperation: operationStats(scoped), reason: usageEvents.length > 0 ? null : 'operation output telemetry is not yet recorded' },
+    operations: { available: usageEvents.length > 0, ...operationStats(scoped), reason: usageEvents.length > 0 ? null : 'operation output telemetry is not yet recorded' },
     trends,
     warnings: [...(!journalVerified ? ['v2 journal unavailable; lifecycle metrics may be incomplete'] : []), 'Provider token usage is unavailable', 'chars-div-four is a rough estimate, especially for CJK; context compression is not proven task savings', ...(baseline !== null ? ['Window baseline is unpaired; no causal savings or payback date can be established'] : []), ...(usageEvents.length === 0 ? ['Token investment is unavailable until operation output telemetry is recorded'] : [])],
   };

@@ -6,7 +6,7 @@ import { withLock } from '../storage/lock.js';
 import { contextMetadataPath, deadendsPath, knowledgePath, locksDirectory, snapshotPath } from '../storage/layout.js';
 import { rebuildSnapshot } from './runtime.js';
 import type { Deadend, DeadendDiscoverOptions, DeadendDiscoveryResult, DeadendFile, DeadendInput, Knowledge, KnowledgeDiscoverOptions, KnowledgeDiscoveryResult, KnowledgeFile, KnowledgeInput, KnowledgeStatus, RecordApplicability } from './types.js';
-import { mirrorDeadend, mirrorKnowledge } from '../cognition/v1-bridge.js';
+import { mirrorDeadend, mirrorKnowledge, mirrorKnowledgeBatch } from '../cognition/v1-bridge.js';
 
 function id(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -108,17 +108,20 @@ async function loadDeadends(projectRoot: string): Promise<DeadendFile> {
 }
 
 export async function learnKnowledge(startPath: string | undefined, statement: string, scopeOrInput: string | KnowledgeInput = 'project'): Promise<Knowledge> {
+  return (await learnKnowledgeBatch(startPath, [{ statement, input: typeof scopeOrInput === 'string' ? { scope: scopeOrInput } : scopeOrInput }])).items[0];
+}
+
+export async function learnKnowledgeBatch(startPath: string | undefined, entries: Array<{ statement: string; input: KnowledgeInput }>) {
   const projectRoot = await resolveProjectRoot(startPath);
-  const input: KnowledgeInput = typeof scopeOrInput === 'string' ? { scope: scopeOrInput } : scopeOrInput;
-  const cleanStatement = statement.trim();
-  const cleanScope = (input.scope ?? 'project').trim();
-  const cleanKind = (input.kind ?? 'fact').trim();
-  if (!cleanStatement) throw new Error('knowledge statement must not be empty');
-  if (!cleanScope) throw new Error('knowledge scope must not be empty');
-  if (!cleanKind) throw new Error('knowledge kind must not be empty');
-  await validateSource(projectRoot, input.sourceContextId, input.sourceSnapshotId);
-  return withLock(`${locksDirectory(projectRoot)}/knowledge.lock`, async () => {
-    const file = await loadKnowledge(projectRoot);
+  const items: Knowledge[] = [];
+  for (const { statement, input } of entries) {
+    const cleanStatement = statement.trim();
+    const cleanScope = (input.scope ?? 'project').trim();
+    const cleanKind = (input.kind ?? 'fact').trim();
+    if (!cleanStatement) throw new Error('knowledge statement must not be empty');
+    if (!cleanScope) throw new Error('knowledge scope must not be empty');
+    if (!cleanKind) throw new Error('knowledge kind must not be empty');
+    await validateSource(projectRoot, input.sourceContextId, input.sourceSnapshotId);
     const now = new Date().toISOString();
     const item: Knowledge = {
       knowledgeId: id('know'),
@@ -134,9 +137,20 @@ export async function learnKnowledge(startPath: string | undefined, statement: s
       createdAt: now,
       updatedAt: now,
     };
-    await atomicWriteJson(knowledgePath(projectRoot), { schemaVersion: 1, items: [...file.items, item] });
-    await mirrorKnowledge(projectRoot, item);
-    return item;
+    items.push(item);
+  }
+  if (!items.length) return { items, synchronization: 'complete' as const };
+  return withLock(`${locksDirectory(projectRoot)}/knowledge.lock`, async () => {
+    const file = await loadKnowledge(projectRoot);
+    await atomicWriteJson(knowledgePath(projectRoot), { schemaVersion: 1, items: [...file.items, ...items] });
+    try {
+      if (items.length === 1) await mirrorKnowledge(projectRoot, items[0]);
+      else await mirrorKnowledgeBatch(projectRoot, items);
+      return { items, synchronization: 'complete' as const };
+    } catch {
+      // v1 is committed; reconciliation retries the mirror without duplicating knowledge.
+      return { items, synchronization: 'pending' as const };
+    }
   });
 }
 
@@ -207,6 +221,14 @@ function possibleContradiction(left: string, right: string): boolean {
     || Boolean(existing.exec(b)?.[1] && existing.exec(b)?.[1] === replacement.exec(a)?.[1]);
 }
 
+function knowledgeFreshnessScore(updatedAt: string, referenceAt: string): number {
+  const source = Date.parse(updatedAt);
+  const reference = Date.parse(referenceAt);
+  if (!Number.isFinite(source) || !Number.isFinite(reference)) return 0;
+  const ageDays = Math.max(0, reference - source) / 86_400_000;
+  return Math.max(0, Math.round(100 * (1 - Math.min(ageDays, 180) / 180)));
+}
+
 export async function discoverKnowledge(startPath: string | undefined, query: string, options: KnowledgeDiscoverOptions = {}): Promise<KnowledgeDiscoveryResult> {
   for (const [name, value] of Object.entries({ limit: options.limit, maxChars: options.maxChars })) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error(`${name} must be a non-negative safe integer`);
@@ -217,6 +239,7 @@ export async function discoverKnowledge(startPath: string | undefined, query: st
   const file = await loadKnowledge(projectRoot);
   const statuses = options.statuses ?? ['verified'];
   const terms = queryTerms(cleanQuery);
+  const referenceAt = file.items.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, '');
   const matches = file.items
     .filter((item) => statuses.includes(item.status))
     .filter((item) => !options.scope || normalized(item.scope) === normalized(options.scope))
@@ -242,7 +265,8 @@ export async function discoverKnowledge(startPath: string | undefined, query: st
     const statement = takeText(item.knowledge.statement, budget);
     const supportingEvidence = item.knowledge.supportingEvidence.map((text) => takeText(text, budget)).filter(Boolean);
     textTruncated ||= budget.truncated;
-    return { knowledge: { ...item.knowledge, statement, supportingEvidence }, score: item.score, matchedTerms: item.matchedTerms, matchedFields: item.fields, why: item.fields.map((field) => `matched ${field}`) };
+    const freshnessScore = knowledgeFreshnessScore(item.knowledge.updatedAt, referenceAt);
+    return { knowledge: { ...item.knowledge, statement, supportingEvidence }, score: item.score, freshnessScore, matchedTerms: item.matchedTerms, matchedFields: item.fields, why: [...item.fields.map((field) => `matched ${field}`), `source freshness ${freshnessScore}/100`] };
   });
   const possibleConflicts: KnowledgeDiscoveryResult['possibleConflicts'] = [];
   const diagnosticBudget = { remaining: maxChars, truncated: false };
