@@ -50,7 +50,7 @@ test('Claude session IDs deduplicate across processes, isolate subagents, and re
     await importV1(root);
     await enableRuntime(root);
     await call('user-prompt', prompt);
-    assert.ok((await readJournal(root)).some((event) => event.type === 'host.prompt.submitted' && event.payload.eventId === 'prompt-one'));
+    assert.ok((await readJournal(root)).some((event) => event.type === 'host.prompt.submitted' && typeof event.payload.eventId === 'string' && event.payload.eventId !== 'prompt-one'));
   } finally {
     await stopRuntime(root).catch(() => undefined);
     await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -150,6 +150,10 @@ test('Claude Code hooks capture redacted host events with stable identifiers', a
     assert.equal(captured[0].privacy.redactionCount, 1);
     assert.match(JSON.stringify(captured[0].payload), /\[REDACTED\]/);
     assert.doesNotMatch(JSON.stringify(captured[0].payload), /secret-value/);
+    assert.doesNotMatch(JSON.stringify(captured[0]), /session-1|event-1/);
+    const triggers = events.filter((event) => event.type === 'host.trigger.observed');
+    assert.equal(triggers.length, 1);
+    assert.doesNotMatch(JSON.stringify(triggers), /session-1|event-1|secret-value/);
     await stopRuntime(root);
   } finally {
     await stopRuntime(root).catch(() => undefined);

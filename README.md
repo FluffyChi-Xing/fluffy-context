@@ -6,7 +6,7 @@
 
 它是 LLM 与项目之间的一层本地记忆：保存工作进度，积累经过验证的项目知识，按当前任务提供有长度预算的上下文。CLI 命令是 `ctx`，也提供 MCP 和 JavaScript / TypeScript API。
 
-> 本文对应 **1.0.0-beta.7**（本地开发，尚未发布 npm），面向 npm **beta** 通道，稳定通道仍为 0.8.0。AI 工具自主调用、上下文智能注入的完善与完整宿主验收列为 **1.0.0 正式版核心特性待办**；当前提供相关基础工具与协议。[升级说明与已知限制](CHANGELOG.md) · [1.0 后续计划](ROADMAP-1.0.md)
+> 本文对应 **1.0.0-beta.8**（本地开发，尚未发布 npm），面向 npm **beta** 通道，稳定通道仍为 0.8.0。AI 工具自主调用、上下文智能注入的完善与完整宿主验收列为 **1.0.0 正式版核心特性待办**；当前提供相关基础工具与协议。[升级说明与已知限制](CHANGELOG.md) · [1.0 后续计划](ROADMAP-1.0.md) · [产品方向与 beta.8 任务](docs/PRODUCT-DIRECTION.md)
 
 **beta.2 新增 `ctx upgrade`**，用于已有项目的数据升级与日志归档；beta.1 不含这个命令。
 
@@ -242,6 +242,10 @@ ctx report --format ascii
 ```
 
 报告展示已验证知识、显式复用记录、上下文输入/输出估算、日志体积和事件构成。需要程序处理时，使用默认返回 JSON 的 `ctx report`。
+
+查看宿主能力声明和实际触发记录可运行 `ctx host capabilities`（或 `--format ascii`）；MCP 对应 `context_host_capabilities`。记录只含接口、触发、交付模式及哈希身份，不表示模型已经采用返回的证据。
+
+`ctx report` 现在另列宿主触发和交付覆盖，区分观察、失败、未观察和未知触发。大量封存日志可用 `ctx journal index --apply` 建立可丢弃读取索引；报告保持只读，索引失效时回退全量验证。固定任务对照可用 `ctx evaluation report --input measurements.json`，输入契约见[效果评估说明](docs/EFFECTIVENESS.md)。缺少真实 provider token 或任务结果时不会推断节省。
 
 **检索到不等于采用，字符减少不等于模型账单减少。** 当前 token 使用字符数粗估，尚未接入模型提供商的实际用量；没有对照数据时，报告不能证明任务节省了多少 token 或时间。
 

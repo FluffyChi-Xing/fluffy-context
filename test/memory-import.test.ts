@@ -12,6 +12,7 @@ import { readJournal } from '../src/cognition/journal.js';
 import { v1Synced } from '../src/cognition/v1-bridge.js';
 import { withLock } from '../src/storage/lock.js';
 import { locksDirectory } from '../src/storage/layout.js';
+import { filterPaths } from '../src/capture/context-filter.js';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ctx-memory-'));
@@ -206,4 +207,38 @@ test('Claude worktree storage and nested repositories do not become project memo
   assert.ok(excluded.skipped.some((item) => item.reason === 'nested-repository'));
   assert.equal(excluded.changes[0].status, 'unavailable');
   assert.deepEqual(excluded.reviewRequired, []);
+});
+
+test('large-project noise fixture keeps preview read-only and imports only safe project evidence', async (t) => {
+  const root = await fixture(t);
+  const worktree = path.join(root, '.claude', 'worktrees', 'stale');
+  const nested = path.join(root, 'memory', 'nested');
+  const generated = path.join(root, 'memory', 'dist');
+  await mkdir(worktree, { recursive: true });
+  await mkdir(nested, { recursive: true });
+  await mkdir(generated, { recursive: true });
+  await writeFile(path.join(worktree, 'MEMORY.md'), 'Stale branch guidance must not be treated as current evidence.');
+  await writeFile(path.join(nested, '.git'), 'gitdir: nested-fixture');
+  await writeFile(path.join(nested, 'MEMORY.md'), 'Another repository has unrelated project guidance.');
+  await writeFile(path.join(generated, 'MEMORY.md'), 'Generated files are not durable project guidance.');
+  await writeFile(path.join(root, 'memory', 'safe.md'), 'Payment confirmation requires an idempotency key for retries.');
+  await writeFile(path.join(root, 'memory', 'credentials.md'), 'password=fixture-secret-value should never enter context.');
+  const before = await readdir(path.join(root, '.context'));
+  const preview = await importMemory(root);
+  assert.deepEqual(await readdir(path.join(root, '.context')), before);
+  assert.equal(preview.results.length, 1);
+  assert.equal(preview.results[0].source, 'memory/safe.md');
+  assert.ok(preview.skipped.some((item) => item.reason === 'worktree-storage'));
+  assert.ok(preview.skipped.some((item) => item.reason === 'nested-repository'));
+  assert.ok(preview.skipped.some((item) => item.reason === 'ignored' && item.source.replaceAll('\\', '/').endsWith('/dist')));
+  assert.doesNotMatch(JSON.stringify(preview.results), /fixture-secret-value|Stale branch|Generated files/);
+  const applied = await importMemory(root, true);
+  assert.equal(applied.results.length, 1);
+  assert.equal(applied.results[0].status, 'candidate');
+  assert.equal(applied.results[0].knowledgeStatus, 'candidate');
+  assert.equal(applied.results[0].fingerprint.length, 64);
+  const repeated = await importMemory(root);
+  assert.equal(repeated.results[0].status, 'duplicate');
+  assert.equal(repeated.results[0].fingerprint, applied.results[0].fingerprint);
+  assert.deepEqual(await filterPaths(root, ['memory\\dist\\MEMORY.md']), []);
 });

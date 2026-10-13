@@ -12,7 +12,7 @@ import { recordAdmissionDrop } from './admission.js';
 import type { ProgressReporter } from './progress.js';
 
 const eventTypes: ReadonlySet<string> = new Set([
-  'runtime.enabled', 'runtime.started', 'runtime.stopped', 'host.session.started', 'host.prompt.submitted',
+  'runtime.enabled', 'runtime.started', 'runtime.stopped', 'host.session.started', 'host.prompt.submitted', 'host.capability.declared', 'host.trigger.observed',
   'git.state.observed', 'git.branch.changed', 'git.head.changed', 'workspace.paths.changed',
   'context.checkpoint.imported', 'context.state.recorded', 'note.recorded', 'note.resolved', 'note.absorbed',
   'knowledge.proposed', 'knowledge.verified', 'knowledge.deprecated', 'knowledge.rejected',
@@ -157,6 +157,26 @@ function validatePayloadBoundary(input: AppendEventInput): void {
   if (input.type === 'host.prompt.submitted' && (typeof payload.intent !== 'string' || payload.intent.trim().length === 0)) {
     throw new Error('host prompt intent must not be empty');
   }
+  if (input.type === 'host.capability.declared') {
+    if (payload.schemaVersion !== 1 || !['cli', 'mcp', 'agent', 'hook'].includes(payload.interface as string)
+      || typeof payload.adapter !== 'string' || payload.adapter.trim().length === 0
+      || !Array.isArray(payload.triggers) || payload.triggers.length === 0
+      || !payload.triggers.every((value) => typeof value === 'string' && value.trim().length > 0)
+      || !['full', 'delta', 'explicit', 'none'].includes(payload.deliveryMode as string)) {
+      throw new Error('invalid host capability payload');
+    }
+  }
+  if (input.type === 'host.trigger.observed') {
+    if (payload.schemaVersion !== 1 || !['cli', 'mcp', 'agent', 'hook'].includes(payload.interface as string)
+      || typeof payload.adapter !== 'string' || payload.adapter.trim().length === 0
+      || typeof payload.trigger !== 'string' || payload.trigger.trim().length === 0
+      || !['observed', 'unsupported', 'failed'].includes(payload.status as string)
+      || (payload.deliveryMode !== undefined && !['full', 'delta', 'replacement', 'unchanged', 'none'].includes(payload.deliveryMode as string))
+      || (payload.sessionId !== undefined && (typeof payload.sessionId !== 'string' || payload.sessionId.trim().length === 0))
+      || (payload.taskId !== undefined && (typeof payload.taskId !== 'string' || payload.taskId.trim().length === 0))) {
+      throw new Error('invalid host trigger payload');
+    }
+  }
   if (['note.recorded', 'note.resolved', 'note.absorbed'].includes(input.type)) {
     const record = payload.record;
     if (!isRecord(record) || typeof record.message !== 'string' || record.message.trim().length === 0) throw new Error('note message must not be empty');
@@ -264,9 +284,12 @@ async function recoverPartialTail(projectRoot: string): Promise<void> {
 export async function readJournal(startPath?: string, options: { allowPartialTail?: boolean; onProgress?: ProgressReporter } = {}): Promise<CognitionEvent[]> {
   const projectRoot = await resolveProjectRoot(startPath);
   const projectId = (await loadManifest(projectRoot)).projectId;
+  return readJournalSegments(projectRoot, projectId, await journalFiles(projectRoot), null, options);
+}
+
+export async function readJournalSegments(projectRoot: string, projectId: string, files: string[], priorHash: string | null, options: { allowPartialTail?: boolean; onProgress?: ProgressReporter } = {}): Promise<CognitionEvent[]> {
   const events: CognitionEvent[] = [];
-  let previousHash: string | null = null;
-  const files = await journalFiles(projectRoot);
+  let previousHash: string | null = priorHash;
   options.onProgress?.({ phase: 'verify-journal', completed: 0, total: files.length, unit: 'segments' });
   let completed = 0;
   for (const file of files) {
@@ -388,7 +411,7 @@ export async function appendEvents<T>(startPath: string | undefined, inputs: App
       };
       const event = { ...eventWithoutHash, hash: eventHash(eventWithoutHash) };
       const line = `${JSON.stringify(event)}\n`;
-      if (['workspace.paths.changed', 'host.prompt.submitted', 'usage.operation.completed'].includes(input.type)) {
+      if (['workspace.paths.changed', 'host.prompt.submitted', 'host.trigger.observed', 'usage.operation.completed'].includes(input.type)) {
         let limit: number | undefined;
         try { limit = (await loadRuntimePolicy(projectRoot)).retentionMaxBytes; }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }

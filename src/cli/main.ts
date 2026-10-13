@@ -2,9 +2,12 @@
 import { checkpoint, resume } from '../runtime/runtime.js';
 import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, transitionContextRecipe, transitionContextSkill, acceptContextEvolutionCandidate, inspectContextEvolutionProposal, listContextEvolutionProposals, proposeContextEvolution, transitionContextEvolutionProposal } from '../agent/api.js';
 import { formatUsageReport } from '../cognition/usage-report.js';
+import { buildHostCapabilityReport, formatHostCapabilityReport } from '../cognition/host-capabilities.js';
+import { evaluateEffectivenessFile } from '../cognition/effectiveness.js';
 import { importV1, verifyV1Import } from '../cognition/migration-v1.js';
 import { recordUse } from '../cognition/feedback.js';
 import { compactJournal, readJournal, verifyJournal } from '../cognition/journal.js';
+import { readJournalIndexed, rebuildJournalIndex } from '../cognition/journal-index.js';
 import { projectEvents } from '../cognition/projections.js';
 import { disableRuntime, enableRuntime, ensureRuntimeForSession, runtimeStatus, serveRuntime, setFilesystemEvents, startRuntime, stopRuntime } from '../cognition/runtime.js';
 import { loadRuntimePolicy } from '../cognition/policy.js';
@@ -139,6 +142,15 @@ Options:
   --format <value>               json|ascii (default: json)
   --baseline-tokens <number>    Explicit comparison token count
   --baseline-source <value>      manual|recorded-control`,
+  host: `usage: ctx host capabilities [--path <path>] [--format json|ascii]
+
+Show read-only host capability declarations and observed trigger coverage.
+Observations contain metadata and identifiers only; prompt text is never shown.`,
+  evaluation: `usage: ctx evaluation report --input <file>
+
+Compare paired control/context task results from a JSON file. Both runs must
+use the same repository commit, model and acceptance ID. Missing provider token
+usage remains unavailable; this command does not run an agent or write data.`,
   'usage report': `usage: ctx usage report [options]
 
 Show read-only context asset, reuse, token investment, and operation metrics.
@@ -236,7 +248,7 @@ Start an MCP stdio server for Agent integrations.
 Run "ctx agent serve --help" for details.`,
   'agent serve': `usage: ctx agent serve
 
-Start an MCP stdio server exposing context_orient, context_expand, context_compile, context_resume, context_note_list, context_note_add, context_usage_report, and context_checkpoint tools.
+Start an MCP stdio server exposing context_orient, context_expand, context_compile, context_resume, context_note_list, context_note_add, context_usage_report, context_host_capabilities, and context_checkpoint tools.
 
 The server owns standard input/output; do not use it interactively.`,
   hook: `usage: ctx hook claude-code session-start|user-prompt
@@ -357,7 +369,7 @@ Record an idempotent use signal that affects deterministic rank only.`,
        ctx skill supersede <skill-id> --rationale <text> --supersedes <entity:id> [--path <path>]
        ctx skill invoke <skill-id> --invocation-id <id> --caller-event <id> --input-hash <hash> [--path <path>]
        ctx skill outcome <skill-id> --invocation-id <id> --outcome-id <id> --caller-event <id> --outcome <value> --summary <text> [--path <path>]`,
-  journal: `usage: ctx journal verify|compact [--path <path>] [--apply]
+  journal: `usage: ctx journal verify|compact|index [--path <path>] [--apply]
 
 Validate the v2 journal hash chain and replay projections in memory.`,
   'journal verify': `usage: ctx journal verify [--path <path>]
@@ -367,6 +379,11 @@ Validate journal integrity without writing derived state.`,
 
 Preview or apply lossless gzip archival. Replays the full hash chain before and after.
 Archived projects require this development version or newer readers.`,
+  'journal index': `usage: ctx journal index [--path <path>] [--apply]
+
+Inspect the disposable sealed-segment read index. --apply verifies the full
+journal and rebuilds the cache. Reports remain read-only and fall back to a
+full replay when the index is absent or stale.`,
   deadends: `usage: ctx deadends [--all] [--path <path>]
 
 List recorded deadends.`,
@@ -534,8 +551,10 @@ Advanced commands (existing names remain supported):
   Retrieval     resume, orient, compile, expand
   Work notes    note, activity
   Integration   agent, hook, integrate
+  Host          host capabilities
   Maintenance   runtime, filesystem, migrate, journal
   Evaluation    feedback, usage
+  Paired tasks  evaluation report
   Experimental  skill, recipe, evolution
 
 Compatibility names:
@@ -583,13 +602,14 @@ function printHelp(args: string[]): boolean {
     || (command === 'knowledge' && ['verify', 'discover', 'deprecate', 'reject', 'review', 'batch'].includes(args[1]))
     || (command === 'deadend' && ['verify', 'obsolete', 'reject'].includes(args[1]))
     || (command === 'feedback' && args[1] === 'use')
-    || (command === 'journal' && ['verify', 'compact'].includes(args[1]))
+    || (command === 'journal' && ['verify', 'compact', 'index'].includes(args[1]))
     || (command === 'note' && ['add', 'list'].includes(args[1]))
     || (command === 'migrate' && ['v1', 'verify'].includes(args[1]))
     || (command === 'recipe' && ['list', 'inspect', 'materialize', 'verify', 'publish', 'deprecate', 'supersede'].includes(args[1]))
     || (command === 'evolution' && ['propose', 'list', 'inspect', 'accept', 'verify', 'reject', 'deprecate', 'supersede'].includes(args[1]))
     || (command === 'runtime' && ['enable', 'disable', 'start', 'stop', 'status', 'serve'].includes(args[1]))
-    || (command === 'usage' && args[1] === 'report');
+    || (command === 'usage' && args[1] === 'report')
+    || (command === 'host' && args[1] === 'capabilities');
   const key = nested ? `${command} ${args[1]}` : command;
   const nestedKey = key === 'integrate claude' && (args[2] === 'inspect' || args[2] === 'install') ? `${key} ${args[2]}` : key;
   const help = HELP[nestedKey];
@@ -790,6 +810,24 @@ async function run(args: string[]): Promise<void> {
       });
       if (enumOption(args, '--format', ['json', 'ascii'] as const) === 'ascii') process.stdout.write(formatUsageReport(report));
       else print(report);
+      return;
+    }
+    case 'host': {
+      if (args[1] !== 'capabilities') throw new Error(HELP.host);
+      validateOptions(args.slice(2), ['--path', '--format'], ['--path', '--format']);
+      validatePositionals(positionals(args.slice(2), ['--path', '--format']), 0, HELP.host);
+      const report = await buildHostCapabilityReport(target);
+      if (enumOption(args, '--format', ['json', 'ascii'] as const) === 'ascii') process.stdout.write(formatHostCapabilityReport(report));
+      else print(report);
+      return;
+    }
+    case 'evaluation': {
+      if (args[1] !== 'report') throw new Error(HELP.evaluation);
+      validateOptions(args.slice(2), ['--input'], ['--input']);
+      validatePositionals(positionals(args.slice(2), ['--input']), 0, HELP.evaluation);
+      const file = option(args, '--input');
+      if (!file) throw new Error('--input is required');
+      print(await evaluateEffectivenessFile(file));
       return;
     }
     case 'agent':
@@ -1048,6 +1086,16 @@ async function run(args: string[]): Promise<void> {
       throw new Error(HELP.recipe);
     }
     case 'journal': {
+      if (args[1] === 'index') {
+        validateOptions(args.slice(2), ['--path', '--apply'], ['--path']);
+        validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['journal index']);
+        if (args.includes('--apply')) print({ applied: true, ...await rebuildJournalIndex(target) });
+        else {
+          const indexed = await readJournalIndexed(target);
+          print({ applied: false, mode: indexed.mode, reason: indexed.reason, eventCount: indexed.events.length });
+        }
+        return;
+      }
       if (args[1] === 'compact') {
         validateOptions(args.slice(2), ['--path', '--apply'], ['--path']);
         validatePositionals(positionals(args.slice(2), ['--path']), 0, HELP['journal compact']);

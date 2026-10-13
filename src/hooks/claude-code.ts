@@ -6,6 +6,7 @@ import { readGitWorktreeState } from '../git/git-adapter.js';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { injectContext } from '../compiler/inject.js';
 import { contentHash } from '../compiler/identity.js';
+import { recordHostCapability, recordHostTrigger } from '../cognition/host-capabilities.js';
 
 interface ClaudeCodeHookInput {
   cwd?: unknown;
@@ -49,16 +50,20 @@ async function capture(event: 'session-start' | 'user-prompt', input: ClaudeCode
   const sessionId = stableId(input, 'session');
   const eventId = stableId(input, 'event');
   if (!sessionId || !eventId) return;
+  const sessionHash = contentHash(sessionId);
+  const eventHash = contentHash(eventId);
+  await recordHostCapability(projectRoot, 'hook', 'claude-code');
+  await recordHostTrigger(projectRoot, { interface: 'hook', adapter: 'claude-code', trigger: event, status: 'observed', sessionId, taskId: eventId, observationId: `${sessionId}:${eventId}` });
   const state = await readGitWorktreeState(projectRoot);
   const captured = event === 'user-prompt' ? redactIntent(compact(text(input.prompt) ?? '', policy.promptIntentMaxChars)) : { intent: '', redactionCount: 0 };
   await appendEvent(projectRoot, {
     type: event === 'session-start' ? 'host.session.started' : 'host.prompt.submitted',
-    source: { kind: 'claude-hook', instanceId: sessionId },
-    correlationId: sessionId,
-    idempotencyKey: `claude-hook:${event}:${sessionId}:${eventId}`,
+    source: { kind: 'claude-hook', instanceId: sessionHash },
+    correlationId: sessionHash,
+    idempotencyKey: `claude-hook:${event}:${sessionHash}:${eventHash}`,
     git: { worktreeId: state.worktreeId, branch: state.branch, ref: state.ref, head: state.commit },
     privacy: { classification: captured.redactionCount > 0 || event === 'user-prompt' ? 'redacted-text' : 'metadata', redactionCount: captured.redactionCount },
-    payload: event === 'user-prompt' ? { eventId, intent: captured.intent } : { eventId },
+    payload: event === 'user-prompt' ? { eventId: eventHash, intent: captured.intent } : { eventId: eventHash },
   });
 }
 

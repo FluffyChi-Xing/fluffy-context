@@ -15,6 +15,7 @@ import { expandContext } from '../compiler/expand.js';
 import { compileContext } from '../compiler/compile.js';
 import { withUsageTelemetry, type UsageInterface } from '../cognition/usage.js';
 import { buildUsageReport, type UsageReport, type UsageReportOptions } from '../cognition/usage-report.js';
+import { buildHostCapabilityReport, type HostCapabilityReport } from '../cognition/host-capabilities.js';
 import type {
   AgentLoadOptions,
   AgentLoadResult,
@@ -332,6 +333,10 @@ export async function contextOrient(startPath: string | undefined, options: Cont
 
 export async function contextUsageReport(startPath: string | undefined, options: UsageReportOptions = {}): Promise<UsageReport> {
   return buildUsageReport(startPath, options);
+}
+
+export async function contextHostCapabilities(startPath: string | undefined): Promise<HostCapabilityReport> {
+  return buildHostCapabilityReport(startPath);
 }
 
 export async function recordContextUse(startPath: string | undefined, input: ContextUseInput): Promise<{ recorded: boolean; eventId: string }> {

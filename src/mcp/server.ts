@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { addNote, listNotes } from '../runtime/notes.js';
-import { contextCompile, contextExpand, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextRecipe, transitionContextSkill, acceptContextEvolutionCandidate, inspectContextEvolutionProposal, listContextEvolutionProposals, proposeContextEvolution, transitionContextEvolutionProposal } from '../agent/api.js';
+import { contextCompile, contextExpand, contextHostCapabilities, contextOrient, contextUsageReport, inspectRecipe, inspectSkill, listRecipes, listSkills, loadContext, materializeContextRecipe, materializeContextSkill, recordContextSkillInvocation, recordContextSkillOutcome, saveContext, transitionContextRecipe, transitionContextSkill, acceptContextEvolutionCandidate, inspectContextEvolutionProposal, listContextEvolutionProposals, proposeContextEvolution, transitionContextEvolutionProposal } from '../agent/api.js';
 import { ensureRuntimeForSession } from '../cognition/runtime.js';
 import { VERSION } from '../version.js';
 import { injectContext } from '../compiler/inject.js';
@@ -275,6 +275,14 @@ export function createMcpServer(): McpServer {
     } catch (error) {
       return failureResponse('context_usage_report', error);
     }
+  }));
+  server.registerTool('context_host_capabilities', {
+    title: 'Host capabilities and trigger observations',
+    description: 'Read declared adapter triggers and observed host activity without writing project state. An invocation receipt does not prove model adoption.',
+    inputSchema: z.object({ path: z.string().optional() }),
+  }, async ({ path }) => withProjectResolution(async () => {
+    try { return successResponse(await contextHostCapabilities(path)); }
+    catch (error) { return failureResponse('context_host_capabilities', error); }
   }));
   server.registerTool('recipe_list', {
     title: 'List Recipes',

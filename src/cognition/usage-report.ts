@@ -4,11 +4,12 @@ import { readJson, isRecord } from '../storage/json-store.js';
 import { contextsRoot, contextMetadataPath, snapshotsDirectory } from '../storage/layout.js';
 import { journalStorage } from './journal-segments.js';
 import { readAdmissionStats } from './admission.js';
-import { readJournal } from './journal.js';
+import { readJournalIndexed } from './journal-index.js';
 import { listDeadends, listKnowledge } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import type { CognitionEvent, UsageOperationCompletedPayload } from './types.js';
 import type { ContextMetadata, Deadend, Knowledge, Note } from '../runtime/types.js';
+import { HOST_CAPABILITIES } from './host-capabilities.js';
 
 export type UsageReportFormat = 'json' | 'ascii';
 export type UsageGranularity = 'day' | 'week' | 'month';
@@ -49,6 +50,7 @@ export interface UsageReport {
   investment: Record<string, unknown>;
   payback: Record<string, unknown>;
   operations: Record<string, unknown>;
+  delivery: Record<string, unknown>;
   trends: Array<Record<string, unknown>>;
   warnings: string[];
 }
@@ -170,18 +172,74 @@ function operationStats(events: CognitionEvent[]): { byOperation: Record<string,
   };
 }
 
+function deliveryStats(events: CognitionEvent[], history: CognitionEvent[]): Record<string, unknown> {
+  const declared = new Set(history.filter((event) => event.type === 'host.capability.declared').map((event) => {
+    const payload = event.payload as Record<string, unknown>;
+    return `${payload.interface}/${payload.adapter}`;
+  }));
+  const observations = events.filter((event) => event.type === 'host.trigger.observed');
+  const grouped = (keyFor: (payload: Record<string, unknown>) => string) => {
+    const groups: Record<string, { observed: number; failed: number; unsupported: number; byMode: Record<string, number> }> = {};
+    for (const event of observations) {
+      const payload = event.payload as Record<string, unknown>;
+      const key = keyFor(payload);
+      const entry = groups[key] ?? { observed: 0, failed: 0, unsupported: 0, byMode: {} };
+      const status = payload.status as 'observed' | 'failed' | 'unsupported';
+      entry[status] += 1;
+      if (typeof payload.deliveryMode === 'string') entry.byMode[payload.deliveryMode] = (entry.byMode[payload.deliveryMode] ?? 0) + 1;
+      groups[key] = entry;
+    }
+    return Object.fromEntries(Object.entries(groups).map(([key, value]) => [key, {
+      ...value,
+      total: value.observed + value.failed + value.unsupported,
+      errorRate: value.observed + value.failed === 0 ? null : value.failed / (value.observed + value.failed),
+    }]));
+  };
+  const observedPairs = new Set(observations.map((event) => {
+    const payload = event.payload as Record<string, unknown>;
+    return `${payload.interface}/${payload.adapter}/${payload.trigger}`;
+  }));
+  const unobservedSupported = HOST_CAPABILITIES.filter((item) => declared.has(`${item.interface}/${item.adapter}`)).flatMap((item) => item.triggers.filter((trigger) => !observedPairs.has(`${item.interface}/${item.adapter}/${trigger}`)).map((trigger) => ({ interface: item.interface, adapter: item.adapter, trigger })));
+  const known = new Set(HOST_CAPABILITIES.flatMap((item) => item.triggers.map((trigger) => `${item.interface}/${item.adapter}/${trigger}`)));
+  const unknownTriggerCount = observations.filter((event) => {
+    const payload = event.payload as Record<string, unknown>;
+    return !known.has(`${payload.interface}/${payload.adapter}/${payload.trigger}`);
+  }).length;
+  return {
+    available: observations.length > 0,
+    observationCount: observations.length,
+    declaredAdapters: [...declared].sort(),
+    byInterface: grouped((payload) => String(payload.interface)),
+    byTrigger: grouped((payload) => String(payload.trigger)),
+    byMode: observations.reduce<Record<string, number>>((result, event) => {
+      const mode = (event.payload as Record<string, unknown>).deliveryMode;
+      if (typeof mode === 'string') result[mode] = (result[mode] ?? 0) + 1;
+      return result;
+    }, {}),
+    unobservedSupported,
+    unknownTriggerCount,
+    reason: observations.length ? null : 'No host trigger observations in this window; this does not prove a trigger failed',
+  };
+}
+
 export async function buildUsageReport(startPath: string | undefined, options: UsageReportOptions = {}): Promise<UsageReport> {
   if (options.baselineTokens !== undefined && (!Number.isSafeInteger(options.baselineTokens) || options.baselineTokens < 0)) throw new Error('baselineTokens must be a non-negative safe integer');
   const projectRoot = await resolveProjectRoot(startPath);
   const window = windowOf(options);
   let events: CognitionEvent[] = [];
   let journalVerified = true;
-  try { events = await readJournal(projectRoot); } catch (error) {
+  let journalRead: { mode: string; reason: string | null } = { mode: 'unavailable', reason: null };
+  try {
+    const result = await readJournalIndexed(projectRoot);
+    events = result.events;
+    journalRead = { mode: result.mode, reason: result.reason };
+    journalVerified = result.mode === 'full';
+  } catch (error) {
     if (!(error instanceof Error && /ENOENT|manifest|not initialized/i.test(error.message))) throw error;
     journalVerified = false;
   }
   const scoped = events.filter((event) => inWindow(event, window));
-  const storage = await journalStorage(projectRoot, true);
+  const storage = await journalStorage(projectRoot, journalRead.mode !== 'indexed');
   const admission = await readAdmissionStats(projectRoot);
   const journalBytes = storage.bytes;
   const eventTypes: Record<string, number> = {};
@@ -246,7 +304,7 @@ export async function buildUsageReport(startPath: string | undefined, options: U
   });
   return {
     schemaVersion: 1, generatedAt: new Date().toISOString(), projectRoot, window,
-    dataQuality: { journalVerified, journalBytes, journalStorage: storage, admission, eventTypes, semanticEventRatio: metric(scoped.length ? semanticEvents / scoped.length : null, 'derived', 'ratio', 'semantic lifecycle events / window events; not a correctness score'), journalEventCount: events.length, windowEventCount: scoped.length, usageEventCount: usageEvents.length, firstUsageAt: usageEvents[0]?.event.occurredAt ?? null, lastUsageAt: usageEvents.at(-1)?.event.occurredAt ?? null, measuredMetricCount: usageEvents.length * 7, estimatedMetricCount: usageEvents.length * 2 + (ctxTokens > 0 ? 1 : 0), unavailableMetricCount: 1 },
+    dataQuality: { journalVerified, journalRead, journalBytes, journalStorage: storage, admission, eventTypes, semanticEventRatio: metric(scoped.length ? semanticEvents / scoped.length : null, 'derived', 'ratio', 'semantic lifecycle events / window events; not a correctness score'), journalEventCount: events.length, windowEventCount: scoped.length, usageEventCount: usageEvents.length, firstUsageAt: usageEvents[0]?.event.occurredAt ?? null, lastUsageAt: usageEvents.at(-1)?.event.occurredAt ?? null, measuredMetricCount: usageEvents.length * 7, estimatedMetricCount: usageEvents.length * 2 + (ctxTokens > 0 ? 1 : 0), unavailableMetricCount: 1 },
     assets: {
       knowledge: { total: knowledge.length, candidate: knowledge.filter((item) => item.status === 'candidate').length, verified: knowledge.filter((item) => item.status === 'verified').length, retired: knowledge.filter((item) => ['deprecated', 'rejected'].includes(item.status)).length, created: lifecycle('knowledge.proposed'), verifiedInWindow: lifecycle('knowledge.verified') },
       deadends: { total: deadends.length, candidate: deadends.filter((item) => item.status === 'candidate').length, verified: deadends.filter((item) => item.status === 'verified').length, retired: deadends.filter((item) => ['obsolete', 'rejected'].includes(item.status)).length, created: lifecycle('deadend.proposed'), verifiedInWindow: lifecycle('deadend.verified') },
@@ -264,8 +322,9 @@ export async function buildUsageReport(startPath: string | undefined, options: U
       paybackPeriodDays: null,
     },
     operations: { available: usageEvents.length > 0, ...operationStats(scoped), reason: usageEvents.length > 0 ? null : 'operation output telemetry is not yet recorded' },
+    delivery: deliveryStats(scoped, events),
     trends,
-    warnings: [...(!journalVerified ? ['v2 journal unavailable; lifecycle metrics may be incomplete'] : []), 'Provider token usage is unavailable', 'chars-div-four is a rough estimate, especially for CJK; context compression is not proven task savings', ...(baseline !== null ? ['Window baseline is unpaired; no causal savings or payback date can be established'] : []), ...(usageEvents.length === 0 ? ['Token investment is unavailable until operation output telemetry is recorded'] : [])],
+    warnings: [...(journalRead.mode === 'indexed' ? ['Indexed read reuses previously verified sealed segments; run ctx journal verify for current full-chain verification'] : !journalVerified ? ['v2 journal unavailable; lifecycle metrics may be incomplete'] : []), 'Provider token usage is unavailable', 'chars-div-four is a rough estimate, especially for CJK; context compression is not proven task savings', ...(baseline !== null ? ['Window baseline is unpaired; no causal savings or payback date can be established'] : []), ...(usageEvents.length === 0 ? ['Token investment is unavailable until operation output telemetry is recorded'] : [])],
   };
 }
 
@@ -273,9 +332,11 @@ export function formatUsageReport(report: Record<string, any>): string {
   const assets = report.assets; const payback = report.payback;
   const lines = ['fluffy-context usage report', `Window: ${String(report.window.from).slice(0, 10)} to ${String(report.window.to).slice(0, 10)}`, '', 'ASSET VALUE', `  Verified knowledge       ${assets.knowledge.verified}`, `  Verified deadends        ${assets.deadends.verified}`, `  Used verified assets     ${report.reuse.usedVerifiedAssetCount}`, `  Asset points             ${assets.effectiveAssetPoints.value.toFixed(2)}  derived`, '', 'TOKEN INVESTMENT', `  Estimated tokens         ${report.investment.totalContextTokens.value}  estimated (input + output)`, '  Provider tokens          n/a  unavailable', '', 'RETURN', `  Baseline tokens          ${payback.baselineTokens ?? 'n/a'}`, `  Estimated savings        ${payback.estimatedSavings.value ?? 'n/a'}`, `  ROI                      ${payback.estimatedROI ?? 'n/a'}`, `  Payback                  ${payback.status}`, '', 'COMMAND OUTPUT TREND', `  Usage events             ${report.dataQuality.usageEventCount}`, '', 'DATA QUALITY', `  Journal verified         ${report.dataQuality.journalVerified ? 'yes' : 'no'}`, `  Window events            ${report.dataQuality.windowEventCount}`, `  Warnings                 ${report.warnings.length}`];
   lines.push(`  Journal bytes            ${report.dataQuality.journalBytes}`, `  Semantic event ratio     ${report.dataQuality.semanticEventRatio.value ?? 'n/a'}  derived`, '', 'EVENT TYPES');
-  lines.push(`  Archives                 ${report.dataQuality.journalStorage.archives}`, `  Expanded journal bytes   ${report.dataQuality.journalStorage.expandedBytes}`);
+  lines.push(`  Archives                 ${report.dataQuality.journalStorage.archives}`, `  Expanded journal bytes   ${report.dataQuality.journalStorage.expandedBytes ?? 'n/a (indexed read)'}`);
   for (const [type, count] of Object.entries(report.dataQuality.eventTypes)) lines.push(`  ${type}: ${count}`);
   lines.push(`  Budget-rejected observations ${Object.values(report.dataQuality.admission.dropped).reduce((sum, count) => Number(sum) + Number(count), 0)}`);
+  lines.push('', 'HOST DELIVERY', `  Trigger observations      ${report.delivery.observationCount}`, `  Unknown triggers          ${report.delivery.unknownTriggerCount}`, `  Unobserved supported      ${report.delivery.unobservedSupported.length}`);
+  for (const [mode, count] of Object.entries(report.delivery.byMode)) lines.push(`  ${mode}: ${count}`);
   lines.push('', ...report.warnings.map((warning: string) => `  ${warning}`));
   return `${lines.join('\n')}\n`;
 }

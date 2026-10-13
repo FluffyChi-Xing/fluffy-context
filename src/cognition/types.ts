@@ -7,6 +7,8 @@ export type CognitionEventType =
   | 'runtime.stopped'
   | 'host.session.started'
   | 'host.prompt.submitted'
+  | 'host.capability.declared'
+  | 'host.trigger.observed'
   | 'git.state.observed'
   | 'git.branch.changed'
   | 'git.head.changed'

@@ -10,6 +10,8 @@ import { checkpoint } from '../src/runtime/runtime.js';
 import { learnKnowledge, verifyKnowledge, transitionKnowledge } from '../src/runtime/knowledge.js';
 import { injectContext } from '../src/compiler/inject.js';
 import { inspectInjectionSession } from '../src/compiler/session.js';
+import { readJournal } from '../src/cognition/journal.js';
+import { importV1 } from '../src/cognition/migration-v1.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +26,22 @@ async function fact(root: string, statement: string) {
   const candidate = await learnKnowledge(root, statement);
   return verifyKnowledge(root, candidate.knowledgeId);
 }
+
+test('v2 injection records CLI, MCP and Agent API trigger metadata without raw identities', async (t) => {
+  const root = await fixture(t);
+  await checkpoint(root, { title: 'Host telemetry', progressSummary: 'Resume safely' });
+  await importV1(root);
+  for (const interfaceName of ['cli', 'mcp', 'agent'] as const) {
+    await injectContext(root, { query: 'resume', sessionId: `${interfaceName}-private-session`, taskId: `${interfaceName}-private-task` }, interfaceName);
+  }
+  const events = await readJournal(root);
+  const declared = events.filter((event) => event.type === 'host.capability.declared');
+  const observed = events.filter((event) => event.type === 'host.trigger.observed');
+  assert.equal(declared.length, 3);
+  assert.deepEqual(observed.map((event) => (event.payload as { interface: string }).interface), ['cli', 'mcp', 'agent']);
+  assert.deepEqual(observed.map((event) => (event.payload as { trigger: string }).trigger), ['manual', 'tool-call', 'manual']);
+  assert.doesNotMatch(JSON.stringify(observed), /private-session|private-task/);
+});
 
 test('session delivery is opt-in, hash-only, incremental, and resets after evidence retraction', async (t) => {
   const root = await fixture(t);
@@ -63,6 +81,10 @@ test('session delivery is opt-in, hash-only, incremental, and resets after evide
   const diagnostics = await inspectInjectionSession(root, 'agent:agent');
   assert.equal(diagnostics.lastLocalInvocation?.mode, 'full');
   assert.equal(diagnostics.hostAcceptance, 'not-observed');
+  const hostEvents = (await readJournal(root)).filter((event) => event.type === 'host.trigger.observed');
+  assert.ok(hostEvents.some((event) => (event.payload as { deliveryMode?: string }).deliveryMode === 'replacement'));
+  assert.ok(hostEvents.some((event) => (event.payload as { deliveryMode?: string }).deliveryMode === 'unchanged'));
+  assert.doesNotMatch(JSON.stringify(hostEvents), /private-session-value|private-task-value/);
 });
 
 test('session, task, budget, scope, adapter, and explicit reset boundaries force full delivery', async (t) => {

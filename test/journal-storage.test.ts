@@ -14,6 +14,7 @@ import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.j
 import { readAdmissionStats } from '../src/cognition/admission.js';
 import { withLock } from '../src/storage/lock.js';
 import { filterPaths } from '../src/capture/context-filter.js';
+import { readJournalIndexed, rebuildJournalIndex } from '../src/cognition/journal-index.js';
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'ctx-journal-storage-'));
@@ -56,6 +57,41 @@ test('archive preview is read-only; gzip replay preserves identities, projection
   assert.equal(next.event.previousHash, before.at(-1)?.hash);
   assert.deepEqual((await readdir(directory)).sort(), ['00000001.ndjson.gz', '00000002.ndjson']);
   assert.equal((await verifyJournal(root)).length, before.length + 1);
+});
+
+test('sealed-segment index accelerates repeat reads and falls back safely when stale or corrupt', async (t) => {
+  const root = await fixture(t);
+  await appendEvent(root, { type: 'runtime.enabled', idempotencyKey: 'index-one', payload: {} });
+  await compactJournal(root, { apply: true });
+  await appendEvent(root, { type: 'runtime.started', idempotencyKey: 'index-two', payload: {} });
+  const expected = await readJournal(root);
+  const built = await rebuildJournalIndex(root);
+  assert.equal(built.segments, 1);
+  assert.equal(built.events, 1);
+  const indexed = await readJournalIndexed(root);
+  assert.equal(indexed.mode, 'indexed');
+  assert.deepEqual(indexed.events, expected);
+  const cache = path.join(root, '.context', 'v2', 'cache', 'journal-index.json');
+  await writeFile(cache, '{broken');
+  const recovered = await readJournalIndexed(root);
+  assert.equal(recovered.mode, 'full');
+  assert.deepEqual(recovered.events, expected);
+  assert.equal((await rebuildJournalIndex(root)).events, 1);
+  await compactJournal(root, { apply: true });
+  assert.equal((await readJournalIndexed(root)).mode, 'full');
+  assert.deepEqual(await readJournal(root), expected);
+});
+
+test('failed journal index rebuild preserves the previous cache', async (t) => {
+  const root = await fixture(t);
+  await appendEvent(root, { type: 'runtime.enabled', idempotencyKey: 'cache-preservation', payload: {} });
+  await compactJournal(root, { apply: true });
+  await rebuildJournalIndex(root);
+  const cache = path.join(root, '.context', 'v2', 'cache', 'journal-index.json');
+  const before = await readFile(cache);
+  await writeFile(path.join(cognitionJournalDirectory(root), '00000002.ndjson'), '{broken\n');
+  await assert.rejects(() => rebuildJournalIndex(root), /invalid journal record/);
+  assert.deepEqual(await readFile(cache), before);
 });
 
 test('interrupted archive publication deduplicates matching bytes and refuses conflicting copies', async (t) => {

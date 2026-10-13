@@ -1,5 +1,7 @@
 export * from './api.js';
 export { injectContext } from '../compiler/inject.js';
+export { evaluateEffectiveness, evaluateEffectivenessFile, EFFECTIVENESS_TASKS } from '../cognition/effectiveness.js';
+export type { EffectivenessInput, EffectivenessReport, EffectivenessTask } from '../cognition/effectiveness.js';
 export type { InjectionOptions } from '../compiler/inject.js';
 export type { InjectionDelivery } from '../compiler/session.js';
 export { importMemory } from '../cognition/import-memory.js';

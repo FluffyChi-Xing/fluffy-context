@@ -1,5 +1,15 @@
 # 发布说明
 
+## 1.0.0-beta.8（本地开发，未发布 npm）
+
+- B8.1：新增版本化宿主 capability 声明与独立 trigger 观察事件；CLI/MCP/Agent API 注入和 Claude Hook 记录接口、触发、交付模式及哈希化会话/任务身份，不保存原始标识。
+- 新增只读 `ctx host capabilities`、MCP `context_host_capabilities` 和 Agent API `contextHostCapabilities`；声明与实际触发分开展示，调用回执不代表模型采用。
+- `ctx report` 新增按触发、接口、交付模式和失败状态统计的覆盖区，保留原有 operation/interface 输出；不把未触发或未采用推断为模型失败。
+- 新增封存日志段的哈希/偏移读取索引与 `ctx journal index --apply`。索引失效或损坏时报告回退全量重放，`ctx journal verify` 始终做全链验证。
+- 新增 `ctx evaluation report --input` 的固定任务 paired 评估入口；只接受同仓库版本、模型与验收标准的真实记录，缺少 provider usage 标为 unavailable。
+- 记忆导入排除来源目录内部的生成目录；回归覆盖旧 worktree、嵌套仓库、凭据样本文本、候选隔离和重复扫描指纹。
+- 合成 CLI、MCP、Agent API、Claude Hook 回归已覆盖；真实 Zcode/Codex 触发与采用、跨平台矩阵和 npm 发布仍待完成。
+
 ## 1.0.0-beta.7（本地开发，未发布 npm）
 
 - 修复 runtime 启停的失败误报：启动优先等待初始化，截止时重新以实际存活状态确认；显式启停等待上限为 10 秒，停止仍等到最终写入完成及租约清理。超时提示“尚未确认”并引导 `ctx runtime status`，保留启动标记避免重复拉起。

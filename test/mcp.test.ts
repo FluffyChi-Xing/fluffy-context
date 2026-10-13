@@ -112,6 +112,7 @@ test('MCP context_orient exposes bounded orientation and keeps serving after too
       'context_note_list',
       'context_note_add',
       'context_usage_report',
+      'context_host_capabilities',
       'recipe_list',
       'recipe_inspect',
       'recipe_materialize',
@@ -278,6 +279,22 @@ test('MCP context_usage_report returns structured read-only metrics', async () =
     assert.deepEqual(JSON.parse(textContent(report)), structured);
     assert.deepEqual(await readdir(path.join(root, '.context')), before);
     assert.equal(await readFile(journalPath, 'utf8').catch(() => ''), beforeJournal);
+  } finally {
+    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+  }
+});
+
+test('MCP host capability inspection is read-only', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const response = await client.callTool({ name: 'context_host_capabilities', arguments: { path: root } });
+    assert.notEqual(response.isError, true);
+    const report = response.structuredContent as { schemaVersion: number; capabilities: Array<{ interface: string }>; observations: { total: number } };
+    assert.equal(report.schemaVersion, 1);
+    assert.ok(report.capabilities.some((item) => item.interface === 'mcp'));
+    assert.equal(report.observations.total, 0);
   } finally {
     await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
   }
@@ -526,6 +543,7 @@ test('ctx agent serve communicates over stdio without diagnostic output', async 
       'context_note_list',
       'context_note_add',
       'context_usage_report',
+      'context_host_capabilities',
       'recipe_list',
       'recipe_inspect',
       'recipe_materialize',

@@ -1,5 +1,6 @@
 import { compileContext } from './compile.js';
 import { withUsageTelemetry } from '../cognition/usage.js';
+import { recordHostCapability, recordHostTrigger } from '../cognition/host-capabilities.js';
 import type { ContextCompileOptions, ContextScenario } from './types.js';
 import { selectSessionDelivery, validateSessionOptions, type SessionOptions } from './session.js';
 
@@ -17,7 +18,10 @@ export interface InjectionOptions extends ContextCompileOptions, SessionOptions 
 
 export async function injectContext(startPath: string | undefined, options: InjectionOptions = {}, interfaceName: 'cli' | 'hook' | 'agent' | 'mcp' = 'agent') {
   validateSessionOptions(options);
-  return withUsageTelemetry(startPath, 'compile', interfaceName === 'hook' ? 'claude-hook' : interfaceName, options, async () => {
+  const adapter = interfaceName === 'agent' ? 'agent-api' : interfaceName;
+  if (interfaceName !== 'hook') await recordHostCapability(startPath, interfaceName, adapter);
+  try {
+    const result = await withUsageTelemetry(startPath, 'compile', interfaceName === 'hook' ? 'claude-hook' : interfaceName, options, async () => {
     const scenario = options.scenario ?? inferScenario(options.query ?? '');
     const manifest = await compileContext(startPath, { ...options, scenario, maxChars: options.maxChars ?? 2400, activityLimit: options.activityLimit ?? 0 });
     const { selected, delivery } = await selectSessionDelivery(manifest, options, `${interfaceName}:${options.adapter ?? interfaceName}`);
@@ -40,5 +44,11 @@ export async function injectContext(startPath: string | undefined, options: Inje
         },
       } : {}),
       next: manifest.truncation.truncated ? 'Use ctx compile / ctx expand for selected evidence.' : null };
-  }, interfaceName);
+    }, interfaceName);
+    if (interfaceName !== 'hook') await recordHostTrigger(startPath, { interface: interfaceName, adapter, trigger: options.resetSession ? 'context-reset' : options.trigger ?? (interfaceName === 'mcp' ? 'tool-call' : 'manual'), status: 'observed', deliveryMode: result.delivery.replacePrevious ? 'replacement' : result.delivery.mode, sessionId: options.sessionId, taskId: options.taskId });
+    return result;
+  } catch (error) {
+    if (interfaceName !== 'hook') await recordHostTrigger(startPath, { interface: interfaceName, adapter, trigger: options.resetSession ? 'context-reset' : options.trigger ?? (interfaceName === 'mcp' ? 'tool-call' : 'manual'), status: 'failed', sessionId: options.sessionId, taskId: options.taskId });
+    throw error;
+  }
 }

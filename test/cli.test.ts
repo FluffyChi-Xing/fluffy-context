@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { initProject } from '../src/runtime/init.js';
 import { stopRuntime } from '../src/cognition/runtime.js';
 import { appendEvent, readJournal } from '../src/cognition/journal.js';
+import { recordHostCapability, recordHostTrigger } from '../src/cognition/host-capabilities.js';
 
 const cli = path.resolve('dist/src/cli/main.js');
 
@@ -37,6 +38,82 @@ test('knowledge review and batch CLI preserve preview, token and status boundari
   for (const action of ['review', 'batch']) assert.equal((await runCli(['knowledge', action, '--help'], root)).code, 0);
 });
 
+test('host capability report is read-only and classifies observed triggers', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  await recordHostCapability(root, 'hook', 'claude-code');
+  await recordHostTrigger(root, { interface: 'hook', adapter: 'claude-code', trigger: 'session-start', status: 'observed', deliveryMode: 'full', sessionId: 'session-hash', taskId: 'event-hash' });
+  const before = (await readJournal(root)).length;
+  const json = await runCli(['host', 'capabilities', '--path', root], root);
+  assert.equal(json.code, 0, json.stderr);
+  const report = JSON.parse(json.stdout) as { schemaVersion: number; observations: { total: number; byInterface: Record<string, number>; byTrigger: Record<string, number> }; capabilities: Array<{ adapter: string }> };
+  assert.equal(report.schemaVersion, 1);
+  assert.equal(report.observations.total, 1);
+  assert.equal(report.observations.byInterface.hook, 1);
+  assert.equal(report.observations.byTrigger['session-start'], 1);
+  assert.ok(report.capabilities.some((item) => item.adapter === 'claude-code'));
+  assert.equal((await readJournal(root)).length, before);
+  const ascii = await runCli(['host', 'capabilities', '--path', root, '--format', 'ascii'], root);
+  assert.equal(ascii.code, 0, ascii.stderr);
+  assert.match(ascii.stdout, /fluffy-context host capabilities/);
+});
+
+test('usage report separates host delivery coverage from operation telemetry', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  await recordHostCapability(root, 'cli', 'cli');
+  await recordHostTrigger(root, { interface: 'cli', adapter: 'cli', trigger: 'manual', status: 'observed', deliveryMode: 'full' });
+  await recordHostTrigger(root, { interface: 'cli', adapter: 'cli', trigger: 'context-reset', status: 'failed' });
+  const before = (await readJournal(root)).length;
+  const result = await runCli(['report', '--path', root, '--days', '7'], root);
+  assert.equal(result.code, 0, result.stderr);
+  const report = JSON.parse(result.stdout) as { delivery: { observationCount: number; byInterface: Record<string, { observed: number; failed: number; errorRate: number }>; byMode: Record<string, number>; unobservedSupported: unknown[] }; operations: { available: boolean } };
+  assert.equal(report.delivery.observationCount, 2);
+  assert.equal(report.delivery.byInterface.cli.observed, 1);
+  assert.equal(report.delivery.byInterface.cli.failed, 1);
+  assert.equal(report.delivery.byInterface.cli.errorRate, 0.5);
+  assert.equal(report.delivery.byMode.full, 1);
+  assert.equal(report.delivery.unobservedSupported.length, 0);
+  assert.equal(report.operations.available, false);
+  assert.equal((await readJournal(root)).length, before);
+});
+
+test('evaluation CLI accepts paired measurements without changing project data', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const input = path.join(root, 'measurements.json');
+  const baseline = { task: 'resume', repositoryCommit: 'same-commit', model: 'same-model', acceptanceId: 'resume-check', success: true, testsPassed: true, durationMs: 100, retries: 0 };
+  await writeFile(input, JSON.stringify({ schemaVersion: 1, runs: [{ ...baseline, variant: 'control' }, { ...baseline, variant: 'context', durationMs: 80 }] }));
+  const before = await readFile(input);
+  const report = await runCli(['evaluation', 'report', '--input', input], root);
+  assert.equal(report.code, 0, report.stderr);
+  assert.equal(JSON.parse(report.stdout).sampleCount, 1);
+  assert.deepEqual(await readFile(input), before);
+  assert.deepEqual(await readdir(root), ['measurements.json']);
+});
+
+test('journal index CLI builds a disposable cache while usage report stays read-only', async (t) => {
+  const root = await project();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await initProject(root);
+  await appendEvent(root, { type: 'runtime.enabled', idempotencyKey: 'indexed-report', payload: {} });
+  const compacted = await runCli(['journal', 'compact', '--path', root, '--apply'], root);
+  assert.equal(compacted.code, 0, compacted.stderr);
+  const built = await runCli(['journal', 'index', '--path', root, '--apply'], root);
+  assert.equal(built.code, 0, built.stderr);
+  assert.equal(JSON.parse(built.stdout).segments, 1);
+  const cache = path.join(root, '.context', 'v2', 'cache', 'journal-index.json');
+  const before = await readFile(cache);
+  const report = await runCli(['report', '--path', root], root);
+  assert.equal(report.code, 0, report.stderr);
+  assert.equal(JSON.parse(report.stdout).dataQuality.journalRead.mode, 'indexed');
+  assert.deepEqual(await readFile(cache), before);
+  const verified = await runCli(['journal', 'verify', '--path', root], root);
+  assert.equal(verified.code, 0, verified.stderr);
+});
+
 function runCli(args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, ...args], { cwd, windowsHide: true });
@@ -54,7 +131,7 @@ test('cli reports the package release version', async () => {
   try {
     const result = await runCli(['--version'], root);
     assert.equal(result.code, 0);
-    assert.equal(JSON.parse(result.stdout), '1.0.0-beta.7');
+    assert.equal(JSON.parse(result.stdout), '1.0.0-beta.8');
     assert.equal(result.stderr, '');
   } finally {
     await stopRuntime(root).catch(() => undefined);

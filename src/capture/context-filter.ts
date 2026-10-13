@@ -24,6 +24,7 @@ const builtinPatterns = [
   'secret*',
   '*token*',
 ];
+const builtinDirectories = new Set(['.context', '.git', 'node_modules', 'dist', 'build', 'coverage', 'tmp', '.cache', '.next']);
 
 interface Rule {
   pattern: string;
@@ -78,6 +79,7 @@ export async function filterPaths(projectRoot: string, paths: string[]): Promise
       if (path.posix.isAbsolute(relativePath) || path.win32.isAbsolute(relativePath)) return false;
       const normalized = path.posix.normalize(relativePath);
       if (normalized === '..' || normalized.startsWith('../')) return false;
+      if (normalized.split('/').some((part) => builtinDirectories.has(part))) return false;
       if (builtinPatterns.some((pattern) => matches(pattern, normalized))) return false;
 
       let included = true;
