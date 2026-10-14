@@ -34,6 +34,18 @@ function stableId(input: ClaudeCodeHookInput, name: 'session' | 'event'): string
   return name === 'session' ? text(input.session_id) ?? text(input.sessionId) : text(input.prompt_id) ?? text(input.event_id) ?? text(input.eventId);
 }
 
+function eventIdentity(input: ClaudeCodeHookInput, event: 'session-start' | 'user-prompt', sessionId: string | undefined): string | undefined {
+  const supplied = stableId(input, 'event');
+  if (supplied) return supplied;
+  // Zcode's UserPromptSubmit payload has a session_id and prompt but no
+  // event_id. Derive a deterministic identity so the hook is observable and
+  // retry-safe without persisting the prompt itself. Repeated identical
+  // prompts in that host session intentionally collapse to one lifecycle
+  // event because the host supplied no per-event identity.
+  if (!sessionId) return undefined;
+  return `derived:${event}:${sessionId}:${text(input.prompt) ?? ''}`;
+}
+
 function redactIntent(value: string): { intent: string; redactionCount: number } {
   let redactionCount = 0;
   const intent = value
@@ -48,7 +60,7 @@ async function capture(event: 'session-start' | 'user-prompt', input: ClaudeCode
   if (!await v2Enabled(projectRoot)) return;
   const policy = await loadRuntimePolicy(projectRoot);
   const sessionId = stableId(input, 'session');
-  const eventId = stableId(input, 'event');
+  const eventId = eventIdentity(input, event, sessionId);
   if (!sessionId || !eventId) return;
   const sessionHash = contentHash(sessionId);
   const eventHash = contentHash(eventId);

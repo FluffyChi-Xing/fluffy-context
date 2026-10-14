@@ -126,9 +126,70 @@ cat hook-input.json | ctx hook claude-code user-prompt
 | I-ambiguous | 通过 | 隔离项目 + 主项目双双触发 `ambiguous context id ctx; matches: …`（exit=1） | — |
 | I-context is not active | 通过 | archived 状态 → `context is not active: ctx-mv8fs4fp-ef27546a`（exit=1） | deprecated/rejected 非法（见 schema 纠正）；建议非法状态显式诊断 |
 
+## 复测（2026-10-15 19:15Z，CLI 热更新后）
+
+背景：CLI 已更新但版本串仍为 `1.0.0-beta.10`（`journal-index.js` dist mtime 19:05Z，晚于上一回合结束 18:38Z；journal 同时记录了 18:45–19:06 对 `src/cognition/journal-index.ts`、`src/runtime/diagno*`、`docs/ZCODE-BETA10-VALIDATION.md` 等的改动与 19:06 的 commit——即本次复测针对的三项修复）。主项目 journal 在复测时点为 1299 事件、verify 通过。
+
+### 复测 1：真实 UserPromptSubmit 是否产生 interface=hook 观察 — 未触发（待新会话）
+
+用户提交复测消息（约 19:05–19:14Z 时间窗）后核查主项目 journal：
+
+- 全量扫描 `host.trigger.observed`：`interface=hook` 计数 **0**（该项目历史上从未出现）；
+- `host.prompt.submitted` / `host.session.started` 计数 **0**；hook 适配器 usage 事件 0；
+- `.zcode/config.json` 完好（`hooks.enabled: true`，UserPromptSubmit，type:process，schema 与 Zcode 文档一致）；
+- 同窗口实际发生的事件仅为 `runtime.started`(19:05:52)、`git.state.observed`/`git.head.changed`(19:06:21)、外部 checkpoint(19:06:33)——均与 hook 无关。
+
+结论：**工作区 hook 未被触发**。项目侧证据无法区分"宿主未加载会话中途新增的 hook 配置"与"宿主尝试拉起但 spawn 失败"（后者只会记录在 Zcode 自身日志中，按约束未读取用户级日志）。与文档"配置文件 hook 随会话加载"的模型一致：**需新 Zcode 会话（或应用重启）后由任一用户消息验证**；配置保留安装。此结果不改变 G 组判定（Zcode 支持 hook，非 unsupported）。
+
+### 复测 2：journal index 新字段解释事件数量 — 通过
+
+```
+ctx journal index --path D:\client\fluffy-context --apply
+→ { "applied": true, "segments": 3, "sealedEventCount": 787, "headHash": "5b56648d…" }
+
+ctx journal index --path D:\client\fluffy-context        （读取模式，新增字段）
+→ { "applied": false, "mode": "indexed", "reason": null,
+    "eventCount": 1299, "sealedEventCount": 787, "liveEventCount": 512,
+    "eventCountScope": "sealed-cache-plus-live-tail" }
+```
+
+三方对账：`ctx journal verify` 总数 1299；CLI 分解 787+512=1299；独立按段解析（3 个 gzip 封存段 + 1 个活跃段）同样 sealed=787、live=512、total=1299。原 `events` 字段已更名 `sealedEventCount`（apply 输出），读取模式新增 `liveEventCount` 与口径标签 `eventCountScope`——此前"787 vs 总数"的歧义现已由输出自身解释，无需查阅源码。
+
+### 复测 3：非法 context status 的 doctor 诊断 — 通过
+
+隔离项目 alpha（ctx-mv8fs4fp-ef27546a）status 置为非法值 `deprecated` 后：
+
+```
+ctx doctor --path <iso>
+→ { "healthy": false, "checks": [
+    "manifest: ok", "context directory: ok", "index: ok",
+    "contexts: invalid context status deprecated for ctx-mv8fs4fp-ef27546a; expected draft|active|stable|archived|deleted",
+    "notes: ok",
+    "index rebuild: index rebuild mismatch",
+    "v2 migration readiness: ok" ] }
+```
+
+诊断明确指出：context ID、非法值、合法值全集（draft|active|stable|archived|deleted），并因 rebuildIndex 排除畸形元数据而联动报告 `index rebuild mismatch`。I 组遗留的"非法状态静默从索引消失"问题已在 doctor 层面闭环。
+
+### 复测汇总
+
+| 复测项 | 结果 | 关键证据 | 后续 |
+| --- | --- | --- | --- |
+| 真实 UserPromptSubmit → interface=hook | 未触发 | 全量 journal 计数 0；配置完好且 schema 合规 | 需新会话/重启后重验；或读取 Zcode 日志定位（需授权） |
+| index 字段解释事件数 | 通过 | sealedEventCount 787 + liveEventCount 512 = eventCount 1299 = verify 总数 = 独立统计 | — |
+| doctor 指出非法 status | 通过 | `invalid context status deprecated for ctx-mv8fs4fp…; expected draft\|active\|stable\|archived\|deleted` | — |
+
 ## 结束状态与项目变更清单
 
 - 主项目 runtime：运行中（instance `018d553f…`，心跳新鲜 2026-10-14T18:37:16Z）；journal `verified: true`，1277 事件。
 - 隔离项目 runtime：已停止（journal 保留，38 事件，verified）。
 - 主项目新增状态（全部为本验收的合法工作流记账）：`.zcode/config.json`（hook，待验证后可删）、note-mv8g55fa（hook stdin 发现）、note-mv8g6c34（delta 探针）、checkpoint snap-mv8g4762（追加测试进度）；另有宿主侧外部创建的 ctx-mv8flej4 及其快照（见 G 组附带观察）。
 - 临时文件：`%TEMP%\fluffy-beta10-debug*.mjs`、`fluffy-beta10-hook-input.json`（诊断脚本，可删）；隔离项目 `%TEMP%\fluffy-beta10-iso`（证据，可删）。
+
+## 后续修复状态
+
+本报告定位的兼容性问题已在开发树修复：Zcode 的 `UserPromptSubmit` 可以只有
+`session_id` 和 `prompt`，没有 `event_id/prompt_id`。Hook 现在为这种输入派生确定性事件身份，继续记录哈希后的 `host.trigger.observed` 与
+`host.prompt.submitted`，相同输入保持幂等；原始 session ID 和派生身份不会写入日志。
+
+修复已通过新增 Hook 回归以及完整 182 项测试。请在 Zcode 更新全局 beta.10 后重做 G4；本报告中 G4 的“未触发”结论是修复前的实测结果，不能替代修复后的宿主复测。

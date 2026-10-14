@@ -161,6 +161,29 @@ test('Claude Code hooks capture redacted host events with stable identifiers', a
   }
 });
 
+test('Claude Code hooks derive an event identity when the host omits event_id', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    await saveContext(root, { title: 'Derived hook event', progressSummary: 'Capture without event id' });
+    await importV1(root);
+    await enableRuntime(root);
+    const input = JSON.stringify({ cwd: root, session_id: 'zcode-session', prompt: 'continue without event id' });
+    const first = await runCli(['hook', 'claude-code', 'user-prompt'], root, input);
+    const second = await runCli(['hook', 'claude-code', 'user-prompt'], root, input);
+    assert.equal(first.code, 0);
+    assert.equal(second.code, 0);
+    const events = await readJournal(root);
+    assert.equal(events.filter((event) => event.type === 'host.trigger.observed').length, 1);
+    assert.equal(events.filter((event) => event.type === 'host.prompt.submitted').length, 1);
+    assert.doesNotMatch(JSON.stringify(events), /zcode-session|derived:user-prompt:zcode-session/);
+    assert.match(JSON.stringify(events), /continue without event id/);
+  } finally {
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
 test('Claude Code hooks start migrated runtime without stable host identifiers', async () => {
   const root = await project();
   try {

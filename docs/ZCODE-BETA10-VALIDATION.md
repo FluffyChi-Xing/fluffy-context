@@ -51,6 +51,7 @@ ctx runtime status --path D:\client\fluffy-context
 - [ ] 启动刚返回或仍有 startup marker 时立即执行 `ctx runtime stop --path D:\client\fluffy-context`。确认最终能停止，不会留下永久 marker，也不会因残留 lease 无法再次启动。
 - [ ] 连续执行 stop → status → start → status 两轮。每轮记录 `runtime.stopped` 先于下一次 `runtime.started`，且 journal 校验仍能通过。
 - [ ] 如果能安全模拟异常退出，只终止本次测试创建的 runtime PID；等待心跳过期后执行 stop/start，确认 abandoned lease 可回收。不能终止 Zcode 或其它项目进程。
+- [ ] 对 Zcode 的 `UserPromptSubmit`，只提供 `session_id` 和 prompt 也应产生一次 `interface=hook` 观察；没有 `event_id/prompt_id` 时，重复相同输入应保持幂等，不应静默丢失 trigger 事件。
 
 通过条件：不存在永久锁、永久 startup marker 或无法 stop/restart 的状态；每次失败都能通过 status 诊断；新实例不会和旧实例同时写 journal。
 
