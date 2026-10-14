@@ -69,6 +69,10 @@ retrieval counts alone.
 
 ## Beta.8 release objective
 
+Beta.8 is published on the npm beta channel. The October 14 ZCode integration
+fixes are committed and planned for beta.10; beta.9 will be skipped. The dated
+follow-up priorities and acceptance gates are in `docs/OCTOBER-2026-PLAN.md`.
+
 **Objective:** make host-trigger coverage and context delivery measurable while
 keeping the evidence ledger trustworthy and cheap to inspect in large projects.
 
@@ -145,14 +149,14 @@ operating systems remain in the release matrix.
 
 ### B8.6 Release validation
 
-Status: local verification and installed-package MCP acceptance are in
-progress. Zcode/Codex model adoption and macOS/Linux runs remain pending.
+Status: beta.8 is published. Installed-package MCP acceptance has a repeatable
+script; Zcode/Codex model adoption and macOS/Linux runs remain pending.
 
 - Run the full test suite, package smoke test, and `npm run install:local`.
 - Reconnect at least one MCP host after global installation and record actual
   capability/trigger observations in the release checkpoint.
-- Publish beta.8 only after the report, fixed-task harness, and install receipt
-  are reproducible from a clean checkout.
+- Keep the report, fixed-task harness, and install receipt reproducible from a
+  clean checkout for each subsequent beta.
 
 ## Success metrics for the next decision
 

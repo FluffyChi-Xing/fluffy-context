@@ -1,6 +1,15 @@
 # 发布说明
 
-## 1.0.0-beta.8（本地开发，未发布 npm）
+## 未发布（计划纳入 1.0.0-beta.10）
+
+- 修复 Windows 锁文件的过期判断和回收：活跃持有者定期续期，清理时核对锁身份，避免残留锁长期阻塞日志写入与 runtime 启停。
+- 修复 runtime 并发启动/停止：启动尝试由标记协调，停止期间撤销未完成的启动并等待租约及待写入事件清理；超时保留可诊断状态，避免重复拉起。
+- 修复任务注入和 orient 中无关当前进度挤占上下文预算的问题；恢复与明确指定 context ID 的场景仍可读取当前进度。
+- 缺失的封存日志索引可自动重建，损坏时仍可回退权威日志；增加不支持触发组合的报告明细，并明确复用率只统计显式 `record.used`。
+- `resume` 接受唯一短 context ID，并对不存在、歧义和非活跃 ID 给出明确错误。
+- 以上修复来自 beta.8 的真实 ZCode 项目反馈，已提交为 `7da2769`；本地回归和安装验收记录见路线图。真实 ZCode/Codex 自动触发、跨平台矩阵及效果收益仍需独立验证。
+
+## 1.0.0-beta.8（npm beta 通道）
 
 - B8.1：新增版本化宿主 capability 声明与独立 trigger 观察事件；CLI/MCP/Agent API 注入和 Claude Hook 记录接口、触发、交付模式及哈希化会话/任务身份，不保存原始标识。
 - 新增只读 `ctx host capabilities`、MCP `context_host_capabilities` 和 Agent API `contextHostCapabilities`；声明与实际触发分开展示，调用回执不代表模型采用。
@@ -8,7 +17,7 @@
 - 新增封存日志段的哈希/偏移读取索引与 `ctx journal index --apply`。索引失效或损坏时报告回退全量重放，`ctx journal verify` 始终做全链验证。
 - 新增 `ctx evaluation report --input` 的固定任务 paired 评估入口；只接受同仓库版本、模型与验收标准的真实记录，缺少 provider usage 标为 unavailable。
 - 记忆导入排除来源目录内部的生成目录；回归覆盖旧 worktree、嵌套仓库、凭据样本文本、候选隔离和重复扫描指纹。
-- 合成 CLI、MCP、Agent API、Claude Hook 回归已覆盖；真实 Zcode/Codex 触发与采用、跨平台矩阵和 npm 发布仍待完成。
+- 合成 CLI、MCP、Agent API、Claude Hook 回归已覆盖；真实 Zcode/Codex 触发与采用、跨平台矩阵仍待完成。
 
 ## 1.0.0-beta.7（本地开发，未发布 npm）
 
