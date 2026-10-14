@@ -201,6 +201,11 @@ function deliveryStats(events: CognitionEvent[], history: CognitionEvent[]): Rec
   }));
   const unobservedSupported = HOST_CAPABILITIES.filter((item) => declared.has(`${item.interface}/${item.adapter}`)).flatMap((item) => item.triggers.filter((trigger) => !observedPairs.has(`${item.interface}/${item.adapter}/${trigger}`)).map((trigger) => ({ interface: item.interface, adapter: item.adapter, trigger })));
   const known = new Set(HOST_CAPABILITIES.flatMap((item) => item.triggers.map((trigger) => `${item.interface}/${item.adapter}/${trigger}`)));
+  const unknownTriggerPairs = [...new Set(observations.flatMap((event) => {
+    const payload = event.payload as Record<string, unknown>;
+    const pair = `${payload.interface}/${payload.adapter}/${payload.trigger}`;
+    return known.has(pair) ? [] : [pair];
+  }))].sort();
   const unknownTriggerCount = observations.filter((event) => {
     const payload = event.payload as Record<string, unknown>;
     return !known.has(`${payload.interface}/${payload.adapter}/${payload.trigger}`);
@@ -218,6 +223,7 @@ function deliveryStats(events: CognitionEvent[], history: CognitionEvent[]): Rec
     }, {}),
     unobservedSupported,
     unknownTriggerCount,
+    unknownTriggerPairs,
     reason: observations.length ? null : 'No host trigger observations in this window; this does not prove a trigger failed',
   };
 }
@@ -310,7 +316,7 @@ export async function buildUsageReport(startPath: string | undefined, options: U
       deadends: { total: deadends.length, candidate: deadends.filter((item) => item.status === 'candidate').length, verified: deadends.filter((item) => item.status === 'verified').length, retired: deadends.filter((item) => ['obsolete', 'rejected'].includes(item.status)).length, created: lifecycle('deadend.proposed'), verifiedInWindow: lifecycle('deadend.verified') },
       notes: { total: notes.length, createdInWindow: lifecycle('note.recorded') }, contexts: { total: contextData.items.length, active: contextData.items.filter((item) => ['active', 'stable'].includes(item.status)).length, snapshots: contextData.snapshots }, rawVerifiedAssetCount: rawAssets, effectiveAssetPoints: metric(rawAssets + usedCount * 0.25, 'derived', 'asset-points'), assumptions: { reuseBonusPerUse: 0.25, maxBonusUses: 3 },
     },
-    reuse: { recordUsedInWindow: recordUsed, recordUsedTotal: events.filter((event) => event.type === 'record.used').length, usedVerifiedAssetCount: usedVerified, verifiedAssetReuseRate: metric(rawAssets === 0 ? null : usedVerified / rawAssets, 'derived', 'ratio') },
+    reuse: { recordUsedInWindow: recordUsed, recordUsedTotal: events.filter((event) => event.type === 'record.used').length, usedVerifiedAssetCount: usedVerified, verifiedAssetReuseRate: metric(rawAssets === 0 ? null : usedVerified / rawAssets, 'derived', 'ratio', 'explicit record.used events only; retrieval and injection do not imply use') },
     investment: { contextOutputTokens: investment, contextInputTokens: metric(inputTokens, 'estimated', 'tokens', 'chars-div-four'), totalContextTokens: metric(totalTokens, 'estimated', 'tokens', 'chars-div-four'), providerTokens: metric(null, 'unavailable', 'tokens') },
     payback: {
       baselineTokens: baseline,
@@ -335,7 +341,8 @@ export function formatUsageReport(report: Record<string, any>): string {
   lines.push(`  Archives                 ${report.dataQuality.journalStorage.archives}`, `  Expanded journal bytes   ${report.dataQuality.journalStorage.expandedBytes ?? 'n/a (indexed read)'}`);
   for (const [type, count] of Object.entries(report.dataQuality.eventTypes)) lines.push(`  ${type}: ${count}`);
   lines.push(`  Budget-rejected observations ${Object.values(report.dataQuality.admission.dropped).reduce((sum, count) => Number(sum) + Number(count), 0)}`);
-  lines.push('', 'HOST DELIVERY', `  Trigger observations      ${report.delivery.observationCount}`, `  Unknown triggers          ${report.delivery.unknownTriggerCount}`, `  Unobserved supported      ${report.delivery.unobservedSupported.length}`);
+  lines.push('', 'HOST DELIVERY', `  Trigger observations      ${report.delivery.observationCount}`, `  Unsupported trigger pairs ${report.delivery.unknownTriggerCount}`, `  Unobserved supported      ${report.delivery.unobservedSupported.length}`);
+  for (const pair of report.delivery.unknownTriggerPairs) lines.push(`    ${pair}`);
   for (const [mode, count] of Object.entries(report.delivery.byMode)) lines.push(`  ${mode}: ${count}`);
   lines.push('', ...report.warnings.map((warning: string) => `  ${warning}`));
   return `${lines.join('\n')}\n`;

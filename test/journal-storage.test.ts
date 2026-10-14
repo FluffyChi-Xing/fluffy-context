@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, readdir, rm, appendFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, readdir, rm, appendFile, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { initProject } from '../src/runtime/init.js';
@@ -65,6 +65,9 @@ test('sealed-segment index accelerates repeat reads and falls back safely when s
   await compactJournal(root, { apply: true });
   await appendEvent(root, { type: 'runtime.started', idempotencyKey: 'index-two', payload: {} });
   const expected = await readJournal(root);
+  const initiallyIndexed = await readJournalIndexed(root);
+  assert.equal(initiallyIndexed.mode, 'indexed');
+  assert.deepEqual(initiallyIndexed.events, expected);
   const built = await rebuildJournalIndex(root);
   assert.equal(built.segments, 1);
   assert.equal(built.events, 1);
@@ -156,4 +159,33 @@ test('live old locks and fresh incomplete locks cannot be stolen', async (t) => 
   await assert.rejects(() => withLock(lock, async () => assert.fail('stolen')), /busy/);
   await writeFile(lock, '');
   await assert.rejects(() => withLock(lock, async () => assert.fail('stolen')), /busy/);
+});
+
+test('expired lock is recovered even when Windows reports its PID as alive', async (t) => {
+  const root = await fixture(t);
+  const lock = path.join(locksDirectory(root), 'abandoned.lock');
+  await writeFile(lock, JSON.stringify({ pid: process.pid, createdAt: '2000-01-01T00:00:00Z' }));
+  const old = new Date(Date.now() - 60_000);
+  await utimes(lock, old, old);
+  assert.equal(await withLock(lock, async () => 'recovered'), 'recovered');
+  assert.deepEqual(await readdir(locksDirectory(root)), []);
+});
+
+test('simultaneous reclaimers never enter the same critical section', async (t) => {
+  const root = await fixture(t);
+  const lock = path.join(locksDirectory(root), 'contended.lock');
+  await writeFile(lock, JSON.stringify({ pid: process.pid, createdAt: '2000-01-01T00:00:00Z' }));
+  const old = new Date(Date.now() - 60_000);
+  await utimes(lock, old, old);
+  let active = 0;
+  let entered = 0;
+  const attempts = await Promise.allSettled(Array.from({ length: 8 }, () => withLock(lock, async () => {
+    active += 1;
+    assert.equal(active, 1);
+    entered += 1;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    active -= 1;
+  })));
+  assert.equal(entered, 1);
+  assert.equal(attempts.filter((item) => item.status === 'fulfilled').length, 1);
 });

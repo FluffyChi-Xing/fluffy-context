@@ -251,7 +251,7 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
       ['lastError', resumeSummary.lastError, 'risk'],
     ];
     for (const [field, value, section] of summaryFields) {
-      const text = textForSummary(field, value);
+      const text = textForSummary(`context.${field}`, value);
       if (text) {
         const candidate = makeCandidate(section, contextSource, { field, value }, text, terms, [field], field);
         candidate.priority = field === 'progressSummary' ? 104 : field === 'title' ? 102 : candidate.priority;
@@ -267,7 +267,7 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
     ];
     for (const [field, values, section] of listFields) {
       for (const [index, value] of values.entries()) {
-        const candidate = makeCandidate(section, contextSource, { field, value }, `${field}: ${value}`, terms, [field], `${field}:${index}`);
+        const candidate = makeCandidate(section, contextSource, { field, value }, `context.${field}: ${value}`, terms, [field], `${field}:${index}`);
         if (field === 'pendingTasks') candidate.priority = 103;
         candidates.push(candidate);
       }
@@ -343,8 +343,14 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const deadends = intent.query ? await listDeadends(sources.anchor.projectRoot, true) : [];
   const activities = await extractActivity(sources.anchor.projectRoot, sources.events, sources.anchor, sources.workspace, options.activityLimit ?? 20);
   const all = createCandidates(sources, intent, notes, knowledge, deadends, activities);
+  const contextRelevant = !options.query || Boolean(options.contextId) || ['resume', 'handoff'].includes(intent.scenario)
+    || all.some((candidate) => candidate.source.kind === 'current-context' && candidate.matchedTerms.length > 0);
   const excluded: ContextExclusion[] = [];
   const eligible = all.filter((candidate) => {
+    if (candidate.source.kind === 'current-context' && !contextRelevant) {
+      excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: 'query_no_match' });
+      return false;
+    }
     const check = applicable(candidate, intent);
     if (!check.ok) excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: check.reason ?? 'query_no_match' });
     return check.ok;

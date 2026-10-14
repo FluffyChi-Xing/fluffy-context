@@ -63,6 +63,8 @@ ctx inject "修复支付回调" --session-id chat-42 --task-id payment-fix --res
 
 首次 `delivery.mode` 为 `full`；相同任务只有新增证据时返回 `delta`；无变化时为 `unchanged`，正文为空。`replacePrevious: true` 表示应以本包替代之前的项目证据，不能继续沿用已撤回的结论。任务、分支、Context、范围或预算变化，以及证据修改或撤回，会重新发送完整包。未提供 task-id 时使用查询文本识别任务；不同宿主、子 agent 应使用独立会话身份。
 
+验证 `delta` 时，在首次调用后新增并核验一条与原查询匹配的知识，再以相同 session-id、task-id、query、预算和分支调用；新增知识应单独返回，`reason` 为 `new-evidence`。修改已有快照或切换查询会返回替换包。
+
 上下文压缩、清空、重连但未保留旧上下文时，调用方必须使用 `--reset-session`；task-id 和 reset 都需要 session-id。MCP `context_inject` 和 API 接受对应的 `sessionId`、`taskId`、`resetSession` 参数。`budget.usedChars` 是实际发送正文长度，`compiledChars` 是完整包长度；`--explain` 的选择统计仍描述完整包。
 
 Claude Hook 从 `session_id` 自动取得身份，以完整 prompt 的哈希识别任务；`agent_id` 隔离子 agent。每次 SessionStart（包括 resume / clear / compact）重置。生成配置保留 Claude 2.1.12 支持的 shell command 格式。`ctx doctor --integrations` 检查项目配置、执行路径、禁用/异步/匹配条件及最近本地调用；用户级或托管配置、工作区信任和宿主是否接受输出仍需在 Claude 中检查。
@@ -159,6 +161,8 @@ ctx integrate claude inspect
 ```
 
 将服务的工作目录设为项目目录，或在调用工具时传入项目的绝对 `path`。如果客户端找不到 `ctx`，使用其支持的绝对可执行路径配置方式。
+
+某些 Windows 宿主会把后台子进程放进随会话结束而终止的 Job Object。此时 runtime 无法长驻，MCP 调用可能反复启动它；从可长驻的终端运行 `ctx runtime start`，再用 `ctx runtime status` 确认运行状态。宿主若不允许子进程脱离 Job Object，包内的 detached 设置无法改变该限制。
 
 日常使用 `context_inject` 取得上下文，`context_checkpoint` 保存进度，`context_learn` 记录候选知识；仅在项目中已有记忆文件时按需使用 `context_import`。工具列表和输入参数由 MCP 服务提供。
 

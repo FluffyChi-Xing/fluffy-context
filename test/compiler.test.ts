@@ -105,7 +105,7 @@ test('scenario budgets lend unused space and retain progress on resume under evi
     assert.equal(validateManifestIdentity(manifest), true);
   }
   const taskOnly = await injectContext(root, { query: 'unmatched', maxChars: 500 });
-  assert.equal(taskOnly.text.length, 500, 'task borrows the unused evidence reservation');
+  assert.equal(taskOnly.text, '', 'unrelated checkpoint fields do not consume a task budget');
 
   const empty = await project();
   t.after(() => rm(empty, { recursive: true, force: true }));

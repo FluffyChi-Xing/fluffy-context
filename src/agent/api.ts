@@ -9,6 +9,7 @@ import { inspectSkill, listSkills, materializeSkill, recordSkillInvocation, reco
 import { acceptEvolutionCandidate, inspectEvolutionProposal, listEvolutionProposals, proposeEvolution, transitionEvolutionProposal, type AcceptEvolutionCandidateInput, type ProposeEvolutionInput, type TransitionEvolutionProposalInput } from '../cognition/evolution.js';
 import { selectV2Orientation } from '../cognition/orient.js';
 import { discoverV2Deadends, discoverV2Knowledge } from '../cognition/retrieval.js';
+import { queryTerms } from '../cognition/retrieval.js';
 import { discoverDeadends, discoverKnowledge, listDeadends } from '../runtime/knowledge.js';
 import { listNotes } from '../runtime/notes.js';
 import { expandContext } from '../compiler/expand.js';
@@ -264,24 +265,31 @@ export async function contextOrient(startPath: string | undefined, options: Cont
       maxChars: options.maxChars ?? 4000,
     });
 
-  const budget = { remaining: Math.max(0, options.maxChars ?? 4000) };
-  const resumeSummary: ResumeSummary = {
-    progressSummary: limited(loaded.resumeSummary.progressSummary, budget),
-    lastError: loaded.resumeSummary.lastError === null ? null : limited(loaded.resumeSummary.lastError, budget),
-    completed: limitedList(loaded.resumeSummary.completed, budget),
-    pendingTasks: limitedList(loaded.resumeSummary.pendingTasks, budget),
-    decisions: limitedList(loaded.resumeSummary.decisions, budget),
-    risks: limitedList(loaded.resumeSummary.risks, budget),
-    relatedFiles: limitedList(loaded.resumeSummary.relatedFiles, budget),
+  const contextText = [loaded.context.title, loaded.details.progressSummary, loaded.details.lastError ?? '', ...loaded.details.completed,
+    ...loaded.details.pendingTasks, ...loaded.details.decisions, ...loaded.details.risks, ...loaded.details.relatedFiles].join(' ').toLocaleLowerCase();
+  const contextRelevant = query === null || Boolean(options.contextId) || queryTerms(query).some((term) => contextText.includes(term));
+  const visibleSummary: ResumeSummary = contextRelevant ? loaded.resumeSummary : {
+    progressSummary: '', lastError: null, completed: [], pendingTasks: [], decisions: [], risks: [], relatedFiles: [],
     branchOrCommitDrift: loaded.resumeSummary.branchOrCommitDrift,
   };
-  const resumeTruncated = textLength(resumeSummary.progressSummary) < textLength(loaded.resumeSummary.progressSummary)
-    || textLength(resumeSummary.lastError) < textLength(loaded.resumeSummary.lastError)
-    || textLength(resumeSummary.completed) < textLength(loaded.resumeSummary.completed)
-    || textLength(resumeSummary.pendingTasks) < textLength(loaded.resumeSummary.pendingTasks)
-    || textLength(resumeSummary.decisions) < textLength(loaded.resumeSummary.decisions)
-    || textLength(resumeSummary.risks) < textLength(loaded.resumeSummary.risks)
-    || textLength(resumeSummary.relatedFiles) < textLength(loaded.resumeSummary.relatedFiles);
+  const budget = { remaining: Math.max(0, options.maxChars ?? 4000) };
+  const resumeSummary: ResumeSummary = {
+    progressSummary: limited(visibleSummary.progressSummary, budget),
+    lastError: visibleSummary.lastError === null ? null : limited(visibleSummary.lastError, budget),
+    completed: limitedList(visibleSummary.completed, budget),
+    pendingTasks: limitedList(visibleSummary.pendingTasks, budget),
+    decisions: limitedList(visibleSummary.decisions, budget),
+    risks: limitedList(visibleSummary.risks, budget),
+    relatedFiles: limitedList(visibleSummary.relatedFiles, budget),
+    branchOrCommitDrift: visibleSummary.branchOrCommitDrift,
+  };
+  const resumeTruncated = textLength(resumeSummary.progressSummary) < textLength(visibleSummary.progressSummary)
+    || textLength(resumeSummary.lastError) < textLength(visibleSummary.lastError)
+    || textLength(resumeSummary.completed) < textLength(visibleSummary.completed)
+    || textLength(resumeSummary.pendingTasks) < textLength(visibleSummary.pendingTasks)
+    || textLength(resumeSummary.decisions) < textLength(visibleSummary.decisions)
+    || textLength(resumeSummary.risks) < textLength(visibleSummary.risks)
+    || textLength(resumeSummary.relatedFiles) < textLength(visibleSummary.relatedFiles);
   const limitedKnowledgeResult = limitKnowledge(applicableKnowledge, budget);
   const limitedDeadendResult = limitDeadends(applicableDeadends, budget);
   const limitedNotesResult = limitNotes(notes, budget);

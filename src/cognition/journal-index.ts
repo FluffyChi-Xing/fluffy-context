@@ -9,7 +9,7 @@ import { loadManifest } from '../runtime/init.js';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import type { CognitionEvent } from './types.js';
 
-const MAX_INDEX_BYTES = 32 * 1024 * 1024;
+const MAX_INDEX_BYTES = 128 * 1024 * 1024;
 
 interface IndexedSegment {
   name: string;
@@ -76,7 +76,7 @@ export async function rebuildJournalIndex(startPath?: string): Promise<{ segment
     }
     const cached = segments.flatMap((segment) => segment.events);
     const index: JournalIndex = { schemaVersion: 1, projectId, headHash: cached.at(-1)?.hash ?? null, segments };
-    if (Buffer.byteLength(JSON.stringify(index)) > MAX_INDEX_BYTES) throw new Error('journal index exceeds 32 MiB; original journal remains authoritative');
+    if (Buffer.byteLength(JSON.stringify(index)) > MAX_INDEX_BYTES) throw new Error('journal index exceeds 128 MiB; original journal remains authoritative');
     await atomicWriteJson(file, index);
     return { segments: segments.length, events: cached.length, headHash: index.headHash };
   } catch (error) { throw error; }
@@ -87,6 +87,15 @@ export async function readJournalIndexed(startPath?: string): Promise<{ events: 
   const allFiles = await journalFiles(root);
   const sealedFiles = sealed(allFiles);
   if (sealedFiles.length === 0) return { events: await readJournal(root), mode: 'full', reason: 'no sealed segments' };
+  try {
+    await assertCachePathSafe(root);
+    await stat(indexPath(root));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      try { await rebuildJournalIndex(root); }
+      catch { /* The authoritative journal remains readable without a cache. */ }
+    } else return { events: await readJournal(root), mode: 'full', reason: error instanceof Error ? error.message : 'index unavailable' };
+  }
   let index: JournalIndex | null = null;
   try {
     await assertCachePathSafe(root);

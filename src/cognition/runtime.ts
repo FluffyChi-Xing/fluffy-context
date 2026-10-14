@@ -11,6 +11,7 @@ import { readJson } from '../storage/json-store.js';
 import { withLock } from '../storage/lock.js';
 import { cognitionManifestPath, cognitionRuntimeLeasePath, cognitionRuntimeSecretPath, cognitionRuntimeStartupPath, locksDirectory } from '../storage/layout.js';
 import { appendEvent } from './journal.js';
+import type { AppendEventInput } from './journal.js';
 import { rebuildProjections } from './projections.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from './policy.js';
 import { FilesystemObserver } from './filesystem-observer.js';
@@ -110,6 +111,19 @@ async function removeOwnedRuntimeFiles(projectRoot: string, instanceId: string):
   await rm(cognitionRuntimeLeasePath(projectRoot), { force: true });
 }
 
+async function removeAbandonedRuntimeFiles(projectRoot: string, lease: RuntimeLease): Promise<void> {
+  const heartbeat = Date.parse(lease.heartbeatAt);
+  if (!Number.isFinite(heartbeat) || Date.now() - heartbeat < 15_000) return;
+  try {
+    await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, async () => {
+      const current = await loadLease(projectRoot);
+      if (current?.instanceId !== lease.instanceId || Date.now() - Date.parse(current.heartbeatAt) < 15_000) return;
+      if (await liveLease(projectRoot, current)) return;
+      await removeOwnedRuntimeFiles(projectRoot, current.instanceId);
+    });
+  } catch { /* A concurrent start or stop owns the coordination lock. */ }
+}
+
 async function request(projectRoot: string, lease: RuntimeLease, method: RuntimeRequest['method']): Promise<RuntimeResponse | null> {
   let secret: string;
   try { secret = (await readFile(cognitionRuntimeSecretPath(projectRoot), 'utf8')).trim(); } catch { return null; }
@@ -145,6 +159,17 @@ async function writeLease(projectRoot: string, lease: RuntimeLease): Promise<voi
   await atomicWriteJson(cognitionRuntimeLeasePath(projectRoot), lease);
 }
 
+async function appendRuntimeEvent(projectRoot: string, event: AppendEventInput): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (true) {
+    try { await appendEvent(projectRoot, event); return; }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== 'context is busy; try again later' || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 async function closeServer(projectRoot: string, server: Server, observer: GitObserver, filesystem: FilesystemObserver, heartbeat: NodeJS.Timeout | null, poller: NodeJS.Timeout | null, inactivity: NodeJS.Timeout | null, background: Promise<void>, leaseWrite: Promise<void>, lease: RuntimeLease, reason: string): Promise<void> {
   if (heartbeat) clearInterval(heartbeat);
   if (poller) clearInterval(poller);
@@ -168,7 +193,7 @@ async function closeServer(projectRoot: string, server: Server, observer: GitObs
     await new Promise((resolve) => setImmediate(resolve));
   }
   try {
-    await appendEvent(projectRoot, {
+    await appendRuntimeEvent(projectRoot, {
       type: 'runtime.stopped',
       source: { kind: 'cli', instanceId: lease.instanceId },
       idempotencyKey: `runtime:stopped:${lease.instanceId}`,
@@ -296,6 +321,8 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   attachProtocol(server, secret, lease, touch, observe, close);
   try {
     await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, async () => {
+      const attemptId = process.env.FLUFFY_CONTEXT_RUNTIME_ATTEMPT_ID;
+      if (attemptId && (await loadStartupMarker(projectRoot))?.attemptId !== attemptId) throw new Error('runtime startup was cancelled');
       const live = await liveLease(projectRoot);
       if (live) throw new Error('runtime is already running');
       await mkdir(path.dirname(cognitionRuntimeSecretPath(projectRoot)), { recursive: true });
@@ -318,10 +345,11 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   // first observation must not keep an otherwise idle runtime alive forever.
   touch();
   try {
-    await appendEvent(projectRoot, { type: 'runtime.started', source: { kind: 'cli', instanceId: lease.instanceId }, idempotencyKey: `runtime:started:${lease.instanceId}`, payload: {} });
+    await appendRuntimeEvent(projectRoot, { type: 'runtime.started', source: { kind: 'cli', instanceId: lease.instanceId }, idempotencyKey: `runtime:started:${lease.instanceId}`, payload: {} });
     if (currentPolicy.filesystemEventsEnabled) filesystem.start();
     await observe();
-    await writeLease(projectRoot, lease);
+    leaseWrite = leaseWrite.then(() => writeLease(projectRoot, lease));
+    await leaseWrite;
     await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
     touch();
   } catch (error) {
@@ -379,7 +407,9 @@ async function waitForRuntime(projectRoot: string, timeoutMs: number): Promise<R
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const status = await runtimeStatus(projectRoot);
-    if (status.running && !await loadStartupMarker(projectRoot)) return status;
+    const marker = await loadStartupMarker(projectRoot);
+    if (status.running && !marker) return status;
+    if (!status.lease && !marker) return null;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const status = await runtimeStatus(projectRoot);
@@ -387,6 +417,7 @@ async function waitForRuntime(projectRoot: string, timeoutMs: number): Promise<R
 }
 
 async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): Promise<RuntimeStatus> {
+  const deadline = Date.now() + timeoutMs;
   const existing = await liveLease(projectRoot);
   if (existing) {
     // A published lease can answer ping before serveRuntime has finished its
@@ -395,26 +426,40 @@ async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): 
     // best-effort fallback.
     return (await waitForRuntime(projectRoot, timeoutMs)) ?? runtimeStatus(projectRoot);
   }
-  const attemptId = createInstanceId();
-  let owner = false;
-  try {
-    await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, async () => {
-      const live = await liveLease(projectRoot);
-      if (live) return;
-      const marker = await loadStartupMarker(projectRoot);
-      if (marker && Date.now() - Date.parse(marker.createdAt) <= startupMarkerTimeoutMs) return;
-      await atomicWriteJson(cognitionRuntimeStartupPath(projectRoot), { attemptId, pid: process.pid, createdAt: new Date().toISOString() } satisfies StartupMarker);
-      owner = true;
-    });
-  } catch {
-    // Another process owns the startup lock; it will publish the lease or the marker will expire.
+  while (Date.now() < deadline) {
+    const attemptId = createInstanceId();
+    let owner = false;
+    let observedLive = false;
+    try {
+      await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, async () => {
+        if (await liveLease(projectRoot)) { observedLive = true; return; }
+        const lease = await loadLease(projectRoot);
+        if (lease) {
+          const age = Date.now() - Date.parse(lease.heartbeatAt);
+          if (Number.isFinite(age) && age < 15_000) return;
+          await removeOwnedRuntimeFiles(projectRoot, lease.instanceId);
+        }
+        const marker = await loadStartupMarker(projectRoot);
+        if (marker && Date.now() - Date.parse(marker.createdAt) <= startupMarkerTimeoutMs) return;
+        await atomicWriteJson(cognitionRuntimeStartupPath(projectRoot), { attemptId, pid: process.pid, createdAt: new Date().toISOString() } satisfies StartupMarker);
+        owner = true;
+      });
+    } catch {
+      // A concurrent start or stop owns the coordination lock.
+    }
+    if (observedLive) return (await waitForRuntime(projectRoot, Math.max(0, deadline - Date.now()))) ?? runtimeStatus(projectRoot);
+    if (owner) {
+      const child = spawn(process.execPath, [cliPath, 'runtime', 'serve', '--path', projectRoot], {
+        detached: true, stdio: 'ignore', windowsHide: true,
+        env: { ...process.env, FLUFFY_CONTEXT_RUNTIME_ATTEMPT_ID: attemptId },
+      });
+      child.unref();
+      const status = await waitForRuntime(projectRoot, Math.max(0, deadline - Date.now()));
+      if (status) return status;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (owner) {
-    const child = spawn(process.execPath, [cliPath, 'runtime', 'serve', '--path', projectRoot], { detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref();
-  }
-  const status = await waitForRuntime(projectRoot, timeoutMs);
-  if (status) return status;
   // A timeout does not cancel the detached child. Preserve its startup marker
   // so another caller cannot launch a competing instance while it initializes.
   throw new Error('runtime startup is not yet confirmed; run ctx runtime status before retrying. The background process may still be starting.');
@@ -462,18 +507,29 @@ export async function ensureRuntimeForSession(startPath?: string, options: Ensur
 
 export async function stopRuntime(startPath?: string): Promise<RuntimeStatus> {
   const projectRoot = await resolveProjectRoot(startPath);
-  const lease = await liveLease(projectRoot);
-  if (!lease) return runtimeStatus(projectRoot);
-  await request(projectRoot, lease, 'stop');
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 20_000;
+  let stopRequestedFor: string | null = null;
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const lease = await loadLease(projectRoot);
+    const marker = await loadStartupMarker(projectRoot);
+    if (marker) {
+      try {
+        await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, async () => {
+          if ((await loadStartupMarker(projectRoot))?.attemptId === marker.attemptId) await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
+        });
+      } catch { /* A publishing runtime owns the coordination lock; retry below. */ }
+    }
+    if (lease && stopRequestedFor !== lease.instanceId && await liveLease(projectRoot, lease)) {
+      if ((await request(projectRoot, lease, 'stop'))?.ok) stopRequestedFor = lease.instanceId;
+    }
+    if (lease) await removeAbandonedRuntimeFiles(projectRoot, lease);
     const status = await runtimeStatus(projectRoot);
-    if (!status.running && !status.lease) return status;
+    if (!status.lease && !marker && !startupPromises.has(projectRoot)) return status;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const status = await runtimeStatus(projectRoot);
-  if (!status.running && !status.lease) return status;
-  throw new Error(`runtime shutdown is not yet confirmed (running: ${status.running}); run ctx runtime status before retrying. Pending writes may still be draining.`);
+  if (!status.lease && !await loadStartupMarker(projectRoot)) return status;
+  throw new Error(`runtime shutdown is not yet confirmed (running: ${status.running}); run ctx runtime status before retrying. Startup or pending writes may still be draining.`);
 }
 
 export async function observeRuntime(startPath?: string): Promise<boolean> {

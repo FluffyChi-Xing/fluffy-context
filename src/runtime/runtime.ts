@@ -387,12 +387,15 @@ export async function resume(startPath?: string, contextId?: string, maxChars = 
   await loadManifest(projectRoot);
   const git = await readGitState(projectRoot);
   const index = await rebuildIndex(projectRoot, options.touchLastUsedAt !== false);
+  const matchingIds = contextId ? [...new Set(index.contexts.filter((entry) => entry.contextId === contextId || entry.contextId.startsWith(`${contextId}-`)).map((entry) => entry.contextId))] : [];
+  if (contextId && matchingIds.length === 0) throw new Error(`context not found: ${contextId}`);
+  if (matchingIds.length > 1) throw new Error(`ambiguous context id ${contextId}; matches: ${matchingIds.join(', ')}`);
   const candidates = index.contexts
-    .filter((entry) => !contextId || entry.contextId === contextId)
+    .filter((entry) => !contextId || entry.contextId === matchingIds[0])
     .filter((entry) => ['active', 'stable'].includes(entry.status))
     .sort((left, right) => Number(right.status === 'active') - Number(left.status === 'active') || Number(right.branch === git.branch) - Number(left.branch === git.branch) || right.updatedAt.localeCompare(left.updatedAt));
   const candidate = candidates[0];
-  if (!candidate) throw new Error('no active context found');
+  if (!candidate) throw new Error(contextId ? `context is not active: ${matchingIds[0]}` : 'no active context found');
   const context = await loadContext(projectRoot, candidate.contextId);
   if (!context.currentSnapshotId) throw new Error('context has no snapshot');
   const snapshot = await loadSnapshot(projectRoot, candidate.contextId, context.currentSnapshotId);

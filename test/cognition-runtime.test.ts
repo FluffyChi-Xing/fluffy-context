@@ -9,7 +9,8 @@ import { initProject } from '../src/runtime/init.js';
 import { importV1 } from '../src/cognition/migration-v1.js';
 import { readJournal } from '../src/cognition/journal.js';
 import { disableRuntime, enableRuntime, ensureRuntimeForSession, observeRuntime, runtimeStatus, serveRuntime, setFilesystemEvents, startRuntime, stopRuntime, touchRuntime } from '../src/cognition/runtime.js';
-import { cognitionRuntimeSecretPath, cognitionRuntimeStartupPath } from '../src/storage/layout.js';
+import { cognitionRuntimeLeasePath, cognitionRuntimeSecretPath, cognitionRuntimeStartupPath, locksDirectory } from '../src/storage/layout.js';
+import { withLock } from '../src/storage/lock.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.js';
 import { GitObserver } from '../src/cognition/git-observer.js';
 
@@ -66,6 +67,101 @@ test('stop waits for pending writes beyond the old two second deadline', async (
   } finally {
     await runtime?.close('test');
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('stop retries a temporarily busy journal before publishing completion', async () => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initializedRuntime(root);
+    runtime = await serveRuntime(root, { pollIntervalMs: 60_000 });
+    let locked!: () => void;
+    const acquired = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = withLock(path.join(locksDirectory(root), 'cognition-journal.lock'), async () => {
+      locked();
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    });
+    await acquired;
+    const stopped = await stopRuntime(root);
+    await holder;
+    assert.equal(stopped.lease, null);
+    assert.ok((await readJournal(root)).some((event) => event.type === 'runtime.stopped' && event.source.instanceId === runtime?.lease.instanceId));
+  } finally {
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('restart waits for the old stopped event before publishing a new lease', async () => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initializedRuntime(root);
+    runtime = await serveRuntime(root, { pollIntervalMs: 60_000 });
+    const oldId = runtime.lease.instanceId;
+    let locked!: () => void;
+    const acquired = new Promise<void>((resolve) => { locked = resolve; });
+    const holder = withLock(path.join(locksDirectory(root), 'cognition-journal.lock'), async () => {
+      locked();
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+    });
+    await acquired;
+    const closing = runtime.close('test-restart');
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const status = await runtimeStatus(root);
+      if (!status.running && status.lease) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const restarted = await startRuntime(root);
+    await Promise.all([holder, closing]);
+    const events = await readJournal(root);
+    const stoppedIndex = events.findIndex((event) => event.type === 'runtime.stopped' && event.source.instanceId === oldId);
+    const startedIndex = events.findIndex((event) => event.type === 'runtime.started' && event.source.instanceId === restarted.lease?.instanceId);
+    assert.ok(stoppedIndex >= 0 && startedIndex > stoppedIndex);
+    await stopRuntime(root);
+  } finally {
+    await runtime?.close('test');
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('stop clears an abandoned lease after its heartbeat expires', async () => {
+  const root = await project();
+  try {
+    await initializedRuntime(root);
+    await writeFile(cognitionRuntimeLeasePath(root), JSON.stringify({
+      schemaVersion: 2, protocolVersion: 1, projectId: 'stale', instanceId: 'abandoned',
+      pid: process.pid, host: '127.0.0.1', port: 1,
+      startedAt: '2000-01-01T00:00:00.000Z', heartbeatAt: '2000-01-01T00:00:00.000Z',
+    }));
+    const stopped = await stopRuntime(root);
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.lease, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('stop issued during startup waits for the new runtime to exit', async () => {
+  const root = await project();
+  try {
+    await initializedRuntime(root);
+    const started = startRuntime(root);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await access(cognitionRuntimeStartupPath(root)).then(() => true, () => false)) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await access(cognitionRuntimeStartupPath(root)).then(() => true, () => false), true);
+    const stopped = stopRuntime(root);
+    await started.catch(() => undefined);
+    const result = await stopped;
+    assert.equal(result.running, false);
+    assert.equal(result.lease, null);
+  } finally {
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -147,10 +243,10 @@ test('runtime inactivity is refreshed by explicit activity', async () => {
   let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
   try {
     await initializedRuntime(root);
-    runtime = await serveRuntime(root, { inactivityTimeoutMs: 1_000, heartbeatIntervalMs: 50, pollIntervalMs: 1_000 });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    runtime = await serveRuntime(root, { inactivityTimeoutMs: 1_500, heartbeatIntervalMs: 50, pollIntervalMs: 3_000 });
+    await new Promise((resolve) => setTimeout(resolve, 900));
     assert.equal(await touchRuntime(root), true);
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await new Promise((resolve) => setTimeout(resolve, 900));
     assert.equal((await runtimeStatus(root)).running, true);
     await runtime.close('test');
     runtime = null;

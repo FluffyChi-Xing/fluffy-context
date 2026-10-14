@@ -278,6 +278,13 @@ test('contextOrient composes bounded verified consensus without writing runtime 
     assert.equal(result.deadends.hits[0].deadend.deadendId, deadend.deadendId);
     assert.deepEqual(result.notes.map((note) => note.message), ['Keep the state transition explicit']);
 
+    const unrelated = await contextOrient(root, { query: 'inventory ledger reconciliation', scope: 'web', maxChars: 500 });
+    assert.equal(unrelated.status, 'ready');
+    if (unrelated.status === 'ready') {
+      assert.equal(unrelated.resumeSummary.progressSummary, '');
+      assert.deepEqual(unrelated.resumeSummary.pendingTasks, []);
+    }
+
     const budgeted = await contextOrient(root, { query: 'applicant authentication', scope: 'web', maxChars: 10 });
     assert.equal(budgeted.status, 'ready');
     if (budgeted.status !== 'ready') return;
@@ -460,7 +467,20 @@ test('Agent API rejects empty and missing context queries', async () => {
   try {
     await initProject(root);
     await assert.rejects(() => searchContext(root, '   '), /context search query/);
-    await assert.rejects(() => loadContext(root, { contextId: 'missing' }), /no active context found|ENOENT/);
+    await assert.rejects(() => loadContext(root, { contextId: 'missing' }), /context not found/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Agent API resolves a unique short context ID', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await saveContext(root, { title: 'Short ID', progressSummary: 'Recover this context' });
+    const shortId = saved.result.context.id.slice(0, -9);
+    const loaded = await loadContext(root, { contextId: shortId });
+    assert.equal(loaded.context.id, saved.result.context.id);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
