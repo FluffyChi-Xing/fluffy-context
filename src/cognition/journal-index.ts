@@ -55,7 +55,7 @@ function offsets(raw: Buffer): number[] {
   return result;
 }
 
-export async function rebuildJournalIndex(startPath?: string): Promise<{ segments: number; events: number; headHash: string | null }> {
+export async function rebuildJournalIndex(startPath?: string): Promise<{ segments: number; sealedEventCount: number; headHash: string | null }> {
   const root = await resolveProjectRoot(startPath);
   const file = indexPath(root);
   await assertCachePathSafe(root);
@@ -78,15 +78,15 @@ export async function rebuildJournalIndex(startPath?: string): Promise<{ segment
     const index: JournalIndex = { schemaVersion: 1, projectId, headHash: cached.at(-1)?.hash ?? null, segments };
     if (Buffer.byteLength(JSON.stringify(index)) > MAX_INDEX_BYTES) throw new Error('journal index exceeds 128 MiB; original journal remains authoritative');
     await atomicWriteJson(file, index);
-    return { segments: segments.length, events: cached.length, headHash: index.headHash };
+    return { segments: segments.length, sealedEventCount: cached.length, headHash: index.headHash };
   } catch (error) { throw error; }
 }
 
-export async function readJournalIndexed(startPath?: string): Promise<{ events: CognitionEvent[]; mode: 'indexed' | 'full'; reason: string | null }> {
+export async function readJournalIndexed(startPath?: string): Promise<{ events: CognitionEvent[]; mode: 'indexed' | 'full'; reason: string | null; sealedEventCount: number | null; liveEventCount: number | null }> {
   const root = await resolveProjectRoot(startPath);
   const allFiles = await journalFiles(root);
   const sealedFiles = sealed(allFiles);
-  if (sealedFiles.length === 0) return { events: await readJournal(root), mode: 'full', reason: 'no sealed segments' };
+  if (sealedFiles.length === 0) return { events: await readJournal(root), mode: 'full', reason: 'no sealed segments', sealedEventCount: null, liveEventCount: null };
   try {
     await assertCachePathSafe(root);
     await stat(indexPath(root));
@@ -94,7 +94,7 @@ export async function readJournalIndexed(startPath?: string): Promise<{ events: 
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       try { await rebuildJournalIndex(root); }
       catch { /* The authoritative journal remains readable without a cache. */ }
-    } else return { events: await readJournal(root), mode: 'full', reason: error instanceof Error ? error.message : 'index unavailable' };
+    } else return { events: await readJournal(root), mode: 'full', reason: error instanceof Error ? error.message : 'index unavailable', sealedEventCount: null, liveEventCount: null };
   }
   let index: JournalIndex | null = null;
   try {
@@ -120,8 +120,8 @@ export async function readJournalIndexed(startPath?: string): Promise<{ events: 
     if ((cachedEvents.at(-1)?.hash ?? null) !== index.headHash) throw new Error('corrupt index');
     const tail = allFiles.slice(sealedFiles.length);
     const newEvents = await readJournalSegments(root, index.projectId, tail, index.headHash);
-    return { events: [...cachedEvents, ...newEvents], mode: 'indexed', reason: null };
+    return { events: [...cachedEvents, ...newEvents], mode: 'indexed', reason: null, sealedEventCount: cachedEvents.length, liveEventCount: newEvents.length };
   } catch (error) {
-    return { events: await readJournal(root), mode: 'full', reason: error instanceof Error ? error.message : 'index unavailable' };
+    return { events: await readJournal(root), mode: 'full', reason: error instanceof Error ? error.message : 'index unavailable', sealedEventCount: null, liveEventCount: null };
   }
 }

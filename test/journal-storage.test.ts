@@ -70,7 +70,7 @@ test('sealed-segment index accelerates repeat reads and falls back safely when s
   assert.deepEqual(initiallyIndexed.events, expected);
   const built = await rebuildJournalIndex(root);
   assert.equal(built.segments, 1);
-  assert.equal(built.events, 1);
+  assert.equal(built.sealedEventCount, 1);
   const indexed = await readJournalIndexed(root);
   assert.equal(indexed.mode, 'indexed');
   assert.deepEqual(indexed.events, expected);
@@ -79,7 +79,7 @@ test('sealed-segment index accelerates repeat reads and falls back safely when s
   const recovered = await readJournalIndexed(root);
   assert.equal(recovered.mode, 'full');
   assert.deepEqual(recovered.events, expected);
-  assert.equal((await rebuildJournalIndex(root)).events, 1);
+  assert.equal((await rebuildJournalIndex(root)).sealedEventCount, 1);
   await compactJournal(root, { apply: true });
   assert.equal((await readJournalIndexed(root)).mode, 'full');
   assert.deepEqual(await readJournal(root), expected);

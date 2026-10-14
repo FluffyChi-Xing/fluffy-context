@@ -58,6 +58,7 @@ ctx runtime status --path D:\client\fluffy-context
 
 - [ ] 执行 `ctx journal verify --path D:\client\fluffy-context`，记录事件数量、head hash 和验证结果。
 - [ ] 执行 `ctx journal index --path D:\client\fluffy-context --apply`，再执行一次 `ctx report --path D:\client\fluffy-context --format json`。
+- [ ] 读取 `ctx journal index --path D:\client\fluffy-context` 的 `sealedEventCount`、`liveEventCount` 和 `eventCountScope`；`sealed-cache-plus-live-tail` 表示完整读取由封存缓存和活动段合并而成。
 - [ ] 检查报告中的 `unknownTriggerPairs`、`unobservedSupported`、delivery mode 和 reuse 解释。检索或注入本身不能被算作 `record.used`。
 - [ ] 重复执行 report，确认 report 本身不追加 journal 事件。
 
@@ -67,6 +68,7 @@ ctx runtime status --path D:\client\fluffy-context
 
 - [ ] 从一次 checkpoint 或 context 列表中取一个已有 context ID 的短前缀，调用 `ctx resume <短前缀> --path D:\client\fluffy-context` 或等价 MCP 工具。
 - [ ] 验证唯一短 ID 能解析；对不存在、歧义和非 active/stable ID 分别记录明确错误。
+- [ ] 如果 context.json 被发现有非法 status，执行 `ctx doctor`，确认错误列出具体 context ID 和允许值 `draft|active|stable|archived|deleted`。
 - [ ] 用与当前 context 完全无关的 query 调用 inject `--explain`，确认当前进度不会无条件挤占预算；再用相关 query 确认相关进度仍能返回。
 
 通过条件：短 ID 不会静默选错 context；无关任务不会获得不相关进度，恢复和明确 context ID 仍能读取需要的内容。

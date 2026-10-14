@@ -283,6 +283,24 @@ test('doctor reports malformed context metadata', async () => {
   }
 });
 
+test('doctor reports an invalid context status explicitly', async () => {
+  const root = await project();
+  try {
+    await initProject(root);
+    const saved = await checkpoint(root, { title: 'Invalid status fixture', progressSummary: 'fixture' });
+    assert.equal(saved.status, 'saved');
+    const contextPath = path.join(root, '.context', 'contexts', saved.context.id, 'context.json');
+    const context = JSON.parse(await readFile(contextPath, 'utf8')) as Record<string, unknown>;
+    context.status = 'deprecated';
+    await writeFile(contextPath, JSON.stringify(context), 'utf8');
+    const result = await doctor(root);
+    assert.equal(result.healthy, false);
+    assert.ok(result.checks.some((check) => check.includes('invalid context status deprecated')));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('checkpoint normalizes blank values and explicit empty lists', async () => {
   const root = await project();
   try {

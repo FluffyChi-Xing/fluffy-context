@@ -53,7 +53,12 @@ export async function doctor(startPath?: string): Promise<{ healthy: boolean; pr
   await check('contexts', async () => {
     const entries = await readdir(contextsRoot(projectRoot));
     for (const contextId of entries) {
-      const context = await readJson<ContextMetadata>(contextMetadataPath(projectRoot, contextId));
+      const raw = await readJson<Record<string, unknown>>(contextMetadataPath(projectRoot, contextId));
+      const allowedStatuses = ['draft', 'active', 'stable', 'archived', 'deleted'];
+      if (typeof raw.status !== 'string' || !allowedStatuses.includes(raw.status)) {
+        throw new Error(`invalid context status ${String(raw.status)} for ${contextId}; expected ${allowedStatuses.join('|')}`);
+      }
+      const context = raw as unknown as ContextMetadata;
       if (context.id !== contextId || context.schemaVersion !== 1 || typeof context.title !== 'string' || typeof context.projectRoot !== 'string' || typeof context.updatedAt !== 'string') {
         throw new Error(`invalid context ${contextId}`);
       }

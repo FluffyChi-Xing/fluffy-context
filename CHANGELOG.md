@@ -7,6 +7,7 @@
 - 修复任务注入和 orient 中无关当前进度挤占上下文预算的问题；恢复与明确指定 context ID 的场景仍可读取当前进度。
 - 缺失的封存日志索引可自动重建，损坏时仍可回退权威日志；增加不支持触发组合的报告明细，并明确复用率只统计显式 `record.used`。
 - `resume` 接受唯一短 context ID，并对不存在、歧义和非活跃 ID 给出明确错误。
+- `ctx journal index` 明确报告 `sealedEventCount`、`liveEventCount` 和 `eventCountScope`；`ctx doctor` 对非法 context status 给出允许值和具体 context ID。
 - 以上修复来自 beta.8 的真实 ZCode 项目反馈，已提交为 `7da2769`；本地回归和安装验收记录见路线图。真实 ZCode/Codex 自动触发、跨平台矩阵及效果收益仍需独立验证。
 
 ## 1.0.0-beta.8（npm beta 通道）

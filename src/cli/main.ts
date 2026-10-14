@@ -1092,7 +1092,7 @@ async function run(args: string[]): Promise<void> {
         if (args.includes('--apply')) print({ applied: true, ...await rebuildJournalIndex(target) });
         else {
           const indexed = await readJournalIndexed(target);
-          print({ applied: false, mode: indexed.mode, reason: indexed.reason, eventCount: indexed.events.length });
+          print({ applied: false, mode: indexed.mode, reason: indexed.reason, eventCount: indexed.events.length, sealedEventCount: indexed.sealedEventCount, liveEventCount: indexed.liveEventCount, eventCountScope: indexed.mode === 'indexed' ? 'sealed-cache-plus-live-tail' : 'full-journal' });
         }
         return;
       }
