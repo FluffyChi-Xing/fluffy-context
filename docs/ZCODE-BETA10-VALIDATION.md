@@ -1,6 +1,6 @@
 # Zcode beta.10 验证清单
 
-这份清单用于在 `D:\client\fluffy-context` 当前项目中做一次真实的 Zcode 验收。当前 npm beta 仍是 `1.0.0-beta.8`；开发树中的 beta.8 修复提交为 `7da2769`，目标版本 beta.10 尚未发布。请把每一项的原始工具调用、返回 JSON、终端输出和最终答复保存到验收记录中。
+这份清单用于在 `D:\client\fluffy-context` 当前项目中做一次真实的 Zcode 验收。当前全局本地构建为 `1.0.0-beta.10`，npm beta 仍是 `1.0.0-beta.8`；beta.10 尚未发布 npm。beta.8 修复提交为 `7da2769`。请把每一项的原始工具调用、返回 JSON、终端输出和最终答复保存到验收记录中。
 
 ## 给 Zcode 的完整任务提示
 

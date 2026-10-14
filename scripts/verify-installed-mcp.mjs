@@ -21,7 +21,7 @@ try {
   const capabilities = await client.callTool({ name: 'context_host_capabilities', arguments: { path: root } });
   if (capabilities.isError || capabilities.structuredContent?.schemaVersion !== 1) throw new Error('installed MCP capability tool failed');
   const sessionId = `installed-mcp-${Date.now()}`;
-  const injection = await client.callTool({ name: 'context_inject', arguments: { path: root, query: 'beta.8 installed MCP acceptance', sessionId, taskId: 'beta8-host-acceptance', maxChars: 300 } });
+  const injection = await client.callTool({ name: 'context_inject', arguments: { path: root, query: 'beta.10 installed MCP acceptance', sessionId, taskId: 'beta10-host-acceptance', maxChars: 300 } });
   if (injection.isError || injection.structuredContent?.delivery?.mode !== 'full') throw new Error('installed MCP injection failed');
   const report = await client.callTool({ name: 'context_host_capabilities', arguments: { path: root } });
   if (report.isError || !(report.structuredContent?.observations?.byInterface?.mcp >= 1)) throw new Error('MCP trigger receipt was not observed');
