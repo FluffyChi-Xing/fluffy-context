@@ -9,7 +9,7 @@
 
 ---
 
-## G. hook 实际触发 — 部分通过（合成链路通过；真实宿主触发待下一条用户消息）
+## G. hook 实际触发 — 通过（历史未触发记录保留作诊断证据）
 
 ### G1. Zcode hook 支持判定：支持（非 unsupported）
 
@@ -36,7 +36,7 @@ cat hook-input.json | ctx hook claude-code user-prompt
 
 直调 API（`runClaudeCodeHook`，18:24:46–48）与分步直调（18:24:21/22、18:25:31）同样产生上述事件。sessionId/taskId 写入前经 contentHash 哈希（符合 know-mv2cu9nv 同源的隐私设计）。
 
-### G4. 真实宿主触发：hook 已安装，待用户下一条消息验证
+### G4. 真实宿主触发：最终通过（历史首次复测未触发）
 
 已在主项目写入 `D:\client\fluffy-context\.zcode\config.json`（新增文件，内容如下，`type: process` 规避 shell 转义）：
 
@@ -120,7 +120,7 @@ cat hook-input.json | ctx hook claude-code user-prompt
 | --- | --- | --- | --- |
 | G-hook：合成链路 | 通过 | 隔离项目 journal evt-mv8g2tp0：`host.trigger.observed{interface:"hook", trigger:"user-prompt", status:"observed"}` + `host.prompt.submitted` + usage 三连（18:29:57） | 合成行为，非宿主触发 |
 | G-hook：Zcode 支持 | 支持（非 unsupported） | zcode-guide 文档：工作区 `.zcode/config.json` hooks | — |
-| G-hook：真实宿主触发 | **待验证** | `.zcode/config.json` 已安装 UserPromptSubmit hook；安装时主项目 interface=hook 计数=0 | 需用户下一条消息触发；若未触发需评估会话重启加载；验证后可删配置 |
+| G-hook：真实宿主触发 | **通过** | 最终复测产生 `host.capability.declared`、`host.trigger.observed(interface=hook)`、`host.prompt.submitted` 与 `claude-hook` usage | 历史首次复测计数为 0，保留在下文作为宿主配置加载诊断证据 |
 | H-full/unchanged/替换 | 通过 | H1/H2 表格：first-in-session、duplicate、task-or-scope-changed、evidence-changed 四种 reason 均实测且可解释 | — |
 | H-delta | **未验收** | 六条路径均未返回 delta；根因定位至 boundaryHash(snap/anchor) 与 provenance→itemHash 联动（session.ts:97-118, sources.ts:100, compile.ts:136/247） | 建议解耦 itemHash 与 context provenance，或评估 delta 触发条件放宽 |
 | I-ambiguous | 通过 | 隔离项目 + 主项目双双触发 `ambiguous context id ctx; matches: …`（exit=1） | — |
@@ -130,7 +130,7 @@ cat hook-input.json | ctx hook claude-code user-prompt
 
 背景：CLI 已更新但版本串仍为 `1.0.0-beta.10`（`journal-index.js` dist mtime 19:05Z，晚于上一回合结束 18:38Z；journal 同时记录了 18:45–19:06 对 `src/cognition/journal-index.ts`、`src/runtime/diagno*`、`docs/ZCODE-BETA10-VALIDATION.md` 等的改动与 19:06 的 commit——即本次复测针对的三项修复）。主项目 journal 在复测时点为 1299 事件、verify 通过。
 
-### 复测 1：真实 UserPromptSubmit 是否产生 interface=hook 观察 — 未触发（待新会话）
+### 复测 1：真实 UserPromptSubmit 是否产生 interface=hook 观察 — 历史未触发（已由最终复测覆盖）
 
 用户提交复测消息（约 19:05–19:14Z 时间窗）后核查主项目 journal：
 
@@ -175,7 +175,7 @@ ctx doctor --path <iso>
 
 | 复测项 | 结果 | 关键证据 | 后续 |
 | --- | --- | --- | --- |
-| 真实 UserPromptSubmit → interface=hook | 未触发 | 全量 journal 计数 0；配置完好且 schema 合规 | 需新会话/重启后重验；或读取 Zcode 日志定位（需授权） |
+| 真实 UserPromptSubmit → interface=hook | **通过（最终复测）** | 全局 beta.10 实际消息产生完整 hook 事件链；历史窗口曾为 0 | 历史 0 计数用于说明会话未重载配置，不代表修复后状态 |
 | index 字段解释事件数 | 通过 | sealedEventCount 787 + liveEventCount 512 = eventCount 1299 = verify 总数 = 独立统计 | — |
 | doctor 指出非法 status | 通过 | `invalid context status deprecated for ctx-mv8fs4fp…; expected draft\|active\|stable\|archived\|deleted` | — |
 
@@ -183,7 +183,7 @@ ctx doctor --path <iso>
 
 - 主项目 runtime：运行中（instance `018d553f…`，心跳新鲜 2026-10-14T18:37:16Z）；journal `verified: true`，1277 事件。
 - 隔离项目 runtime：已停止（journal 保留，38 事件，verified）。
-- 主项目新增状态（全部为本验收的合法工作流记账）：`.zcode/config.json`（hook，待验证后可删）、note-mv8g55fa（hook stdin 发现）、note-mv8g6c34（delta 探针）、checkpoint snap-mv8g4762（追加测试进度）；另有宿主侧外部创建的 ctx-mv8flej4 及其快照（见 G 组附带观察）。
+- 主项目新增状态（全部为本验收的合法工作流记账）：`.zcode/config.json`（hook，最终复测通过后可按需保留或删除）、note-mv8g55fa（hook stdin 发现）、note-mv8g6c34（delta 探针）、checkpoint snap-mv8g4762（追加测试进度）；另有宿主侧外部创建的 ctx-mv8flej4 及其快照（见 G 组附带观察）。
 - 临时文件：`%TEMP%\fluffy-beta10-debug*.mjs`、`fluffy-beta10-hook-input.json`（诊断脚本，可删）；隔离项目 `%TEMP%\fluffy-beta10-iso`（证据，可删）。
 
 ## 后续修复状态
@@ -192,4 +192,15 @@ ctx doctor --path <iso>
 `session_id` 和 `prompt`，没有 `event_id/prompt_id`。Hook 现在为这种输入派生确定性事件身份，继续记录哈希后的 `host.trigger.observed` 与
 `host.prompt.submitted`，相同输入保持幂等；原始 session ID 和派生身份不会写入日志。
 
-修复已通过新增 Hook 回归以及完整 182 项测试。请在 Zcode 更新全局 beta.10 后重做 G4；本报告中 G4 的“未触发”结论是修复前的实测结果，不能替代修复后的宿主复测。
+修复已通过新增 Hook 回归、完整 182 项测试以及下文记录的真实宿主复测。本报告中 G4 的“未触发”结论是历史窗口的实测结果，保留用于说明会话未重载工作区 hook 配置，不能覆盖最终通过结果。
+
+## 最终复测：真实 Zcode UserPromptSubmit（2026-10-15）
+
+修复后的全局 `1.0.0-beta.10` 在真实 Zcode UserPromptSubmit 链路中已验证通过。宿主输入包含 `session_id` 与 `prompt`，未提供 `event_id/prompt_id`；本轮消息仍然产生了完整的 hook 证据链：
+
+- `usage.operation.completed`，来源为 `claude-hook`；
+- `host.capability.declared`，`interface: "hook"`；
+- `host.trigger.observed`，`interface: "hook"`、`trigger: "user-prompt"`；
+- `host.prompt.submitted`。
+
+注入缓存同时写入 `hook:claude-code` 条目，`adapterHash` 校验一致。该结果与新增回归测试及 A/B 实验一致：缺少宿主事件 ID 时由 `event + session_id + prompt` 派生确定性身份，写入前哈希，重复输入保持幂等。因此 G4 从“待验证”更新为**通过**；此前复测中计数为 0 的记录属于修复前或宿主尚未重载工作区配置的状态。
