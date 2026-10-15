@@ -124,7 +124,9 @@ Progress and verified evidence share the budget; unused space is borrowed automa
 --session-id <id>  Opt into session delivery: full, delta, or unchanged (hash-only local receipt).
 --task-id <id>     Stable task identity within a session; otherwise the query identifies the task.
 --reset-session   Send a full replacement after context reset/compaction (requires session ID).
-Keep session IDs unique per conversation. No session ID always returns full context.`,
+Keep session IDs unique per conversation. No session ID always returns full context.
+--context <id> explicitly selects a task; --max-reference-chars <0..16000> bounds expandRefs (default 4096).
+Source reviews and explain source objects have separate 2048/4096 character budgets.`,
   report: `usage: ctx report [options]
 
 Alias of ctx usage report; supports its window, format and baseline options.`,
@@ -173,6 +175,10 @@ Options:
   --path <path>          Project path
   --context <id>         Existing context ID
   --title <text>         Context title
+  --objective <text>     Task objective (blank clears it)
+  --constraints <items>  Comma-separated task constraints
+  --validation-refs <items>  Recorded validation references, not current test claims
+  --open-questions <items>   Unresolved questions
   --progress <text>      Current progress summary
   --last-error <text>    Last error (blank clears it)
   --completed <items>    Comma-separated completed items
@@ -219,6 +225,8 @@ Options:
   --note-limit <number>      Maximum open notes (default: 20)
   --activity-limit <number>  Maximum recent activity groups (default: 20)`,
   expand: `usage: ctx expand [options]
+
+Use --ref <json> with one expandRefs object returned by inject. Do not mix it with individual expansion options.
 
 Expand one selected compiler candidate without writing project state.
 
@@ -693,16 +701,16 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'inject': {
-      const valueOptions = ['--path', '--max-chars', '--paths', '--scenario', '--session-id', '--task-id'];
+      const valueOptions = ['--path', '--max-chars', '--max-reference-chars', '--context', '--paths', '--scenario', '--session-id', '--task-id'];
       validateOptions(args.slice(1), [...valueOptions, '--explain', '--reset-session'], valueOptions);
       const values = positionals(args.slice(1), valueOptions);
       validatePositionals(values, 1, HELP.inject);
-      print(await injectContext(target, { query: values[0], paths: listOption(args, '--paths'), scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const), maxChars: numericOption(args, '--max-chars', 2400), explain: args.includes('--explain'), sessionId: option(args, '--session-id'), taskId: option(args, '--task-id'), resetSession: args.includes('--reset-session') }, 'cli'));
+      print(await injectContext(target, { query: values[0], contextId: option(args, '--context'), maxReferenceChars: numericOption(args, '--max-reference-chars', 4096), paths: listOption(args, '--paths'), scenario: enumOption(args, '--scenario', ['resume', 'implementation', 'debugging', 'verification', 'handoff', 'exploration', 'unknown'] as const), maxChars: numericOption(args, '--max-chars', 2400), explain: args.includes('--explain'), sessionId: option(args, '--session-id'), taskId: option(args, '--task-id'), resetSession: args.includes('--reset-session') }, 'cli'));
       return;
     }
     case 'checkpoint': {
-      validateOptions(args.slice(1), ['--path', '--context', '--title', '--progress', '--last-error', '--completed', '--pending', '--decisions', '--risks', '--files', '--absorb-notes'], ['--path', '--context', '--title', '--progress', '--last-error', '--completed', '--pending', '--decisions', '--risks', '--files']);
-      validatePositionals(positionals(args.slice(1), ['--path', '--context', '--title', '--progress', '--last-error', '--completed', '--pending', '--decisions', '--risks', '--files']), 0, HELP.checkpoint);
+      validateOptions(args.slice(1), ['--path', '--context', '--title', '--progress', '--last-error', '--completed', '--pending', '--decisions', '--risks', '--files', '--objective', '--constraints', '--validation-refs', '--open-questions', '--absorb-notes'], ['--path', '--context', '--title', '--progress', '--last-error', '--completed', '--pending', '--decisions', '--risks', '--files', '--objective', '--constraints', '--validation-refs', '--open-questions']);
+      validatePositionals(positionals(args.slice(1), ['--path', '--context', '--title', '--progress', '--last-error', '--completed', '--pending', '--decisions', '--risks', '--files', '--objective', '--constraints', '--validation-refs', '--open-questions']), 0, HELP.checkpoint);
       const input: CheckpointInput = {
         contextId: option(args, '--context'),
         absorbNotes: args.includes('--absorb-notes'),
@@ -714,6 +722,10 @@ async function run(args: string[]): Promise<void> {
         decisions: listOption(args, '--decisions'),
         risks: listOption(args, '--risks'),
         relatedFiles: listOption(args, '--files'),
+        objective: option(args, '--objective'),
+        constraints: listOption(args, '--constraints'),
+        validationRefs: listOption(args, '--validation-refs'),
+        openQuestions: listOption(args, '--open-questions'),
       };
       print(await checkpoint(target, input));
       return;
@@ -762,9 +774,17 @@ async function run(args: string[]): Promise<void> {
       return;
     }
     case 'expand': {
-      const valueOptions = ['--path', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--recipe-id', '--graph-hops', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
+      const valueOptions = ['--path', '--ref', '--manifest-hash', '--candidate-id', '--item-hash', '--level', '--max-chars', '--compile-max-chars', '--context', '--recipe-id', '--graph-hops', '--query', '--scenario', '--scope', '--paths', '--knowledge-limit', '--deadend-limit', '--note-limit', '--activity-limit'];
       validateOptions(args.slice(1), valueOptions, valueOptions);
       validatePositionals(positionals(args.slice(1), valueOptions), 0, HELP.expand);
+      const reference = option(args, '--ref');
+      if (reference !== undefined) {
+        if (valueOptions.some((key) => !['--path', '--ref'].includes(key) && args.includes(key))) throw new Error('--ref cannot be combined with individual expansion options');
+        const parsed = JSON.parse(reference);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('--ref requires an expandRefs object');
+        print(await contextExpand(option(args, '--path') ?? parsed.path ?? target, parsed, 'cli'));
+        return;
+      }
       const level = enumOption(args, '--level', ['structured', 'evidence'] as const);
       if (!level) throw new Error('--level is required');
       const manifestHash = option(args, '--manifest-hash');

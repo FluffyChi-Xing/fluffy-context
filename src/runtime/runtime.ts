@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { summarizeContext } from './summary.js';
 import { mkdir } from 'node:fs/promises';
 import { readGitState } from '../git/git-adapter.js';
 import { resolveProjectRoot } from '../project/project-resolver.js';
@@ -61,34 +62,19 @@ function isNotFound(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
-function limited(value: string, budget: number): string {
-  return value.length <= budget ? value : value.slice(0, Math.max(0, budget - 1)) + '…';
-}
-
-function limitedList(values: string[], budget: { remaining: number }): string[] {
-  const result: string[] = [];
-  for (const value of values) {
-    if (budget.remaining <= 0) break;
-    const item = limited(value, budget.remaining);
-    result.push(item);
-    budget.remaining -= item.length;
-  }
-  return result;
-}
-
 function applyPatch(base: StructuredContext, patch: ContextPatch): StructuredContext {
   return { ...base, ...patch };
 }
 
 function isContextPatch(value: unknown): value is ContextPatch {
   if (!isRecord(value)) return false;
-  const fields: (keyof StructuredContext)[] = ['progressSummary', 'lastError', 'completed', 'pendingTasks', 'decisions', 'risks', 'relatedFiles'];
+  const fields: (keyof StructuredContext)[] = ['progressSummary', 'lastError', 'completed', 'pendingTasks', 'decisions', 'risks', 'relatedFiles', 'objective', 'constraints', 'validationRefs', 'openQuestions'];
   if (Object.keys(value).some((key) => !fields.includes(key as keyof StructuredContext))) return false;
   return fields.every((field) => {
     if (!(field in value)) return true;
     const fieldValue = value[field];
     if (field === 'lastError') return typeof fieldValue === 'string' || fieldValue === null;
-    if (field === 'progressSummary') return typeof fieldValue === 'string';
+    if (field === 'progressSummary' || field === 'objective') return typeof fieldValue === 'string';
     return isStringArray(fieldValue);
   });
 }
@@ -110,6 +96,9 @@ function diffContext(previous: StructuredContext, current: StructuredContext): C
   if (stableJson(previous.decisions) !== stableJson(current.decisions)) patch.decisions = current.decisions;
   if (stableJson(previous.risks) !== stableJson(current.risks)) patch.risks = current.risks;
   if (stableJson(previous.relatedFiles) !== stableJson(current.relatedFiles)) patch.relatedFiles = current.relatedFiles;
+  for (const field of ['objective', 'constraints', 'validationRefs', 'openQuestions'] as const) {
+    if (stableJson(previous[field]) !== stableJson(current[field])) Object.assign(patch, { [field]: current[field] });
+  }
   return patch;
 }
 
@@ -124,11 +113,18 @@ async function contextFromInput(projectRoot: string, input: CheckpointInput, pre
   const risks = input.risks === undefined ? previous?.risks ?? [] : normalizeList(input.risks);
   const relatedFilesInput = input.relatedFiles === undefined ? previous?.relatedFiles ?? [] : normalizeList(input.relatedFiles);
   const relatedFiles = await filterPaths(projectRoot, relatedFilesInput);
-  return { progressSummary, lastError, completed, pendingTasks, decisions, risks, relatedFiles };
+  const continuity: Partial<StructuredContext> = {};
+  if (input.objective !== undefined || previous?.objective !== undefined) continuity.objective = normalizeText(input.objective ?? previous?.objective ?? '');
+  for (const field of ['constraints', 'validationRefs', 'openQuestions'] as const) {
+    if (input[field] !== undefined || previous?.[field] !== undefined) continuity[field] = normalizeList(input[field] ?? previous?.[field] ?? []);
+  }
+  return { progressSummary, lastError, completed, pendingTasks, decisions, risks, relatedFiles, ...continuity };
 }
 
 function isStructuredContext(value: unknown): value is StructuredContext {
   return isRecord(value)
+    && (value.objective === undefined || typeof value.objective === 'string')
+    && ['constraints', 'validationRefs', 'openQuestions'].every((key) => value[key] === undefined || isStringArray(value[key]))
     && typeof value.progressSummary === 'string'
     && (typeof value.lastError === 'string' || value.lastError === null)
     && ['completed', 'pendingTasks', 'decisions', 'risks', 'relatedFiles'].every((key) => isStringArray(value[key]));
@@ -286,7 +282,8 @@ export async function checkpoint(startPath: string | undefined, input: Checkpoin
       || content.pendingTasks.length > 0
       || content.decisions.length > 0
       || content.risks.length > 0
-      || content.relatedFiles.length > 0;
+      || content.relatedFiles.length > 0
+      || Boolean(content.objective) || Boolean(content.constraints?.length) || Boolean(content.validationRefs?.length) || Boolean(content.openQuestions?.length);
     if (!hasContent && !previousSnapshot) {
       return { status: 'no_change', context, snapshot: null };
     }
@@ -364,22 +361,9 @@ export async function resumeSnapshot(startPath: string | undefined, contextId: s
     loadSnapshot(projectRoot, contextId, snapshotId),
   ]);
   const details = await rebuildSnapshot(projectRoot, contextId, snapshotId);
-  const budget = { remaining: Math.max(0, maxChars) };
-  return {
-    context,
-    snapshot,
-    details,
-    resumeSummary: {
-      progressSummary: limited(details.progressSummary, budget.remaining),
-      lastError: details.lastError === null ? null : limited(details.lastError, budget.remaining),
-      completed: limitedList(details.completed, budget),
-      pendingTasks: limitedList(details.pendingTasks, budget),
-      decisions: limitedList(details.decisions, budget),
-      risks: limitedList(details.risks, budget),
-      relatedFiles: limitedList(details.relatedFiles, budget),
-      branchOrCommitDrift: context.branch !== git.branch || context.commit !== git.commit,
-    },
-  };
+  return { context, snapshot, details,
+    resumeSummary: summarizeContext(details, maxChars, snapshot.branch !== git.branch || snapshot.commit !== git.commit) };
+
 }
 
 export async function resume(startPath?: string, contextId?: string, maxChars = 4000, options: ResumeOptions = {}): Promise<ResumeResult> {
@@ -405,16 +389,6 @@ export async function resume(startPath?: string, contextId?: string, maxChars = 
     context.lastUsedAt = new Date().toISOString();
     await atomicWriteJson(contextMetadataPath(projectRoot, context.id), context);
   }
-  const budget = { remaining: Math.max(0, maxChars) };
-  const resumeSummary = {
-    progressSummary: limited(content.progressSummary, budget.remaining),
-    lastError: content.lastError === null ? null : limited(content.lastError, budget.remaining),
-    completed: limitedList(content.completed, budget),
-    pendingTasks: limitedList(content.pendingTasks, budget),
-    decisions: limitedList(content.decisions, budget),
-    risks: limitedList(content.risks, budget),
-    relatedFiles: limitedList(content.relatedFiles, budget),
-    branchOrCommitDrift: drift,
-  };
+  const resumeSummary = summarizeContext(content, maxChars, drift);
   return { context, snapshot, resumeSummary, details: content };
 }

@@ -1,169 +1,252 @@
-# fluffy-context
+# fluffy-context · beta.12
 
-**让项目记住 AI 已经做过的工作，让下一次对话接着往下走。**
+**把任务进度、项目约束和经过验证的经验留在项目中，让下一次 AI 会话接着做。**
 
-换一个会话或换一个 AI 编程工具，你往往需要重新解释：任务进行到哪里、为什么这样设计、哪些方法已经试过。fluffy-context 把这些信息保存在项目里，在新任务开始时取出相关内容，交给 agent 使用。
+fluffy-context 是面向 AI 编程工作的本地上下文工具，命令为 `ctx`。它通过 CLI、MCP 和 JavaScript / TypeScript API，为当前任务提供有预算、可追溯、可按需展开的上下文。代码由 Git 管理；ctx 保存工作状态和项目知识，不是代码备份工具。
 
-它是 LLM 与项目之间的一层本地记忆：保存工作进度，积累经过验证的项目知识，按当前任务提供有长度预算的上下文。CLI 命令是 `ctx`，也提供 MCP 和 JavaScript / TypeScript API。
+当前仓库版本为 **1.0.0-beta.12**，作为下一次对外 beta 的候选；beta.11 仅用于内部修复验证。本文不表示 beta.12 已发布到 npm，安装时请明确选择下方的候选包或已发布的精确版本。
 
-> 当前全局本地构建版本为 **1.0.0-beta.10**，npm **beta** 通道仍为 **1.0.0-beta.8**，稳定通道仍为 0.8.0；beta.10 尚未发布 npm。AI 工具自主调用、上下文智能注入的完善与完整宿主验收列为 **1.0.0 正式版核心特性待办**；当前提供相关基础工具与协议。[升级说明与已知限制](CHANGELOG.md) · [10 月迭代与材料计划](docs/OCTOBER-2026-PLAN.md) · [1.0 后续计划](ROADMAP-1.0.md)
+## beta.12 带来了什么
 
-### beta.10 开发目标（相对 beta.8）
-
-`1.0.0-beta.10` 是当前本地构建和下一发布目标，beta.9 跳过。它尚未发布到 npm；下面分开列出已经提交的修复和仍需完成的发布验收，方便 AI 工具准确判断当前能力。
-
-| 范围 | beta.8 之后的变化 | 状态 |
+| 能力 | 使用方式 | 需要知道的边界 |
 | --- | --- | --- |
-| Windows 锁 | 锁持有者定期刷新心跳，过期回收会核对 owner；Windows 下不会因已退出 PID 仍可探测而永久保留死锁 | 已提交，待 beta.10 最终候选复测 |
-| runtime 启停 | 启动标记协调并发拉起；停止会撤销未完成启动、等待租约和 pending 写入清理；启动超时保留可诊断状态，避免重复拉起 | 已提交，待并发压力复测 |
-| 上下文注入 | 当前任务不相关的 resume 摘要不会再挤占预算；`resume` 支持唯一短 context ID，并区分不存在、歧义和非活跃 ID | 已提交 |
-| 日志索引 | 缺失封存索引可自动重建；索引损坏时回退权威日志，完整性校验仍独立执行 | 已提交 |
-| 宿主报告 | 报告列出未知触发组合；复用率只依据显式 `record.used`，不会把检索或注入自动算作采用 | 已提交 |
-| 真实宿主接入 | ZCode、Codex 重连全局包，记录任务开始、恢复、切换、错误和结束时的实际调用与证据采用 | beta.10 验收任务，尚未完成 |
-| runtime 压力与跨平台 | 增加并发 start/stop、异常退出、残留锁、慢写入、再次拉起和 Windows Job Object 场景；随后执行 macOS/Linux 安装与恢复矩阵 | beta.10 计划，尚未完成 |
+| 结构化交接 | 保存目标、硬约束、进度、待办、验证引用和开放问题 | 历史验证记录不代表当前代码已通过测试 |
+| 按需展开证据 | `inject` 返回完整 `expandRefs`，直接交给 `expand` | 旧引用失效时重新 inject，不手工修改哈希 |
+| 来源变化感知 | 已跟踪导入来源发生变化或消失时，撤回相关旧结论并要求复核 | 历史 verified 状态保留；未知来源不等于最新来源 |
+| 会话增量交付 | 同一任务去重、增量发送，必要时替换旧证据 | 调用方必须处理 `replacePrevious`，丢失上下文后 reset |
+| 可解释预算与报告 | 正文、引用分别限额，记录展开、复核和替换 | 调用次数和字符数不等于模型采用或真实 token 节省 |
+| 后台启动诊断 | 独立 runtime worker、启动阶段记录、退出诊断与 Windows 写入重试 | 公司项目的原 beta.10 启动故障仍待现场复测 |
 
-beta.10 的代码修复来自真实 ZCode 反馈，提交为 `7da2769`。当前开发树已通过 180 项回归、包内消费测试、tarball 全局安装和安装后 MCP stdio 验收；这些结果证明本地包和协议行为，不代表 ZCode/Codex 一定会自动调用或采用上下文，也不构成 token、时间或 ROI 收益证明。最终版本号变更、完整复测和 npm 发布必须等 beta.10 的 P0 宿主与 runtime 验收完成。[查看 beta.10 任务和发布门槛](docs/OCTOBER-2026-PLAN.md)
+本地串行回归已通过 200 项测试；Zcode 已回传 CLI/MCP 展开、来源治理以及新会话 MCP resume 接手通过。原指定 Context 的完整 handoff → expand → 只读下一步仍可补充覆盖。详细记录见 [本地验证](docs/BETA12-LOCAL-VALIDATION.md)、[Zcode 验收结果](docs/ZCODE-BETA12-ACCEPTANCE-RESULTS.md)及[迭代方案](docs/BETA12-CONTEXT-ENGINEERING-PLAN.md)。这些链接在源码仓库中查看。
 
-**beta.2 新增 `ctx upgrade`**，用于已有项目的数据升级与日志归档；beta.1 不含这个命令。
+## 从旧 beta 升级到 beta.12
 
-## 它能帮你做什么
+**安装 CLI 包和升级项目数据是两件事：`npm install` 更新程序；`ctx upgrade` 备份并升级当前项目的数据，不会下载新版程序。** 不需要先安装内部 beta.11。
 
-| 你遇到的问题 | fluffy-context 的做法 |
-| --- | --- |
-| 新对话不知道上次做到哪里 | 保存进度、决策和待办，在下次任务开始时恢复 |
-| 不同 agent 重复探索同一个问题 | 将经过核验的结论和失败方案保存在项目中，供不同工具查询 |
-| 项目记忆散落在各种文档里 | 扫描已有 memory 和 agent 文档，去重后导入待核验知识 |
-| 把所有历史塞进 prompt 太长 | 按任务检索，在给定字符预算内返回相关上下文 |
-| 不知道保存的东西有没有用 | 查看知识、显式复用记录、日志体积和上下文成本估算 |
+需要 Node.js **20.19.0 或更高版本**。以下以 Windows PowerShell 为例；将示例项目路径与包路径替换为实际值。每一步成功后再执行下一步，失败时保留输出，不要继续覆盖安装或反复 start。
 
-它适合持续维护的项目、跨会话的开发任务，以及多个 AI 工具交替使用的工作流。项目代码仍由 Git 管理；ctx 保存的是工作状态与项目知识。
+### 1. 确认环境，停止旧版本
 
-## 五分钟开始使用
+先关闭使用该项目的 agent、Hook 和 MCP 会话，避免升级期间自动拉起 runtime 或继续写入。若多个项目共用这份全局安装，应在替换包前逐个停止其 runtime。
 
-需要 **Node.js 20.19 或更高版本**。在终端安装，然后进入你的项目目录：
+```powershell
+Set-Location 'D:\your-project'
+node --version
+npm --version
+Get-Command ctx -All
+npm root --global
+ctx --version
+ctx runtime status
+ctx runtime stop
+ctx runtime status
+```
 
-```sh
-npm install --global fluffy-context@beta
-cd your-project
+确认停止成功。旧版本只有 `running` 字段时，应为 `false`；存在旧租约或停止报错时先保留现场并排查，不通过删除 `.context` 或租约文件强行继续。特别重要的项目可在停止所有写入后另行复制整个 `.context` 目录作为独立备份。
+
+**nvm 用户先选定后续使用的 Node 版本。** 不同 Node 版本可能有独立全局安装；切换后 `ctx` 消失不表示项目数据丢失。应在切换前停止旧 runtime，并在目标 Node 环境重新安装。若已经切换且找不到 ctx，先切回原 Node 环境停止旧实例，再切回目标环境安装，不要初始化一份新数据来代替旧项目。
+
+### 2. 安装 beta.12：选择一种来源
+
+**候选包试用（尚未发布时使用）：** 获取维护者交付的 `.tgz` 和对应 SHA256，在本机核对后安装。以下路径为示例，不是下载地址。
+
+```powershell
+$candidateTarball = 'D:\downloads\fluffy-context-1.0.0-beta.12-<hash>.tgz'
+Get-FileHash -Algorithm SHA256 -LiteralPath $candidateTarball
+npm install --global "$candidateTarball" --ignore-scripts
+```
+
+同一 beta 版本的候选包可能因修订重新打包，**以本次交付的哈希为准**，不要只比较版本号。全局安装会替换当前 Node 环境中的旧包。
+
+**npm 精确版本（仅在正式发布后使用）：**
+
+```powershell
+npm view fluffy-context@1.0.0-beta.12 version
+npm install --global fluffy-context@1.0.0-beta.12
+```
+
+如果查询返回版本不存在，使用交付的候选包，不要退回 `@beta` 并将它当作 beta.12。`@beta` 是可移动标签，可能仍指向旧版本，也可能已指向后续版本。
+
+安装后确认实际命中的命令与版本：
+
+```powershell
+Get-Command ctx -All
+npm root --global
+ctx --version
+```
+
+期望版本为 `1.0.0-beta.12`。若版本不符，先检查 PATH、多个 Node 安装和命令缓存；暂不重连 MCP。
+
+### 3. 用新 CLI 升级每个已有项目的数据
+
+仍在原项目目录执行：
+
+```powershell
+ctx upgrade --dry-run
+ctx upgrade
+ctx doctor
+ctx journal verify
+ctx status
+```
+
+- `--dry-run` 只预览数据、校验与备份大小，不写入、不停止 runtime。
+- 正式升级创建 `.context/backups/upgrade-*/`，保存 `data/`、哈希清单 `backup.json` 和成功回执 `upgrade.json`，保留任务、知识状态及事件历史。
+- 每次正式升级都会生成独立备份；备份需要额外磁盘空间。重复升级不会重复导入相同数据。
+- 校验失败会报错并保留现场，不会自动覆盖还原。不要删除历史目录来消除错误。
+- `upgrade` 恢复的是调用它之前的 runtime 运行状态。**第 1 步已手动停止，所以升级完成后仍需按下一步显式启动。** 禁用策略保持不变。
+
+不在项目目录时，为每条命令添加 `--path 'D:\your-project'`。全局包只需安装一次，数据升级与核验需要对每个项目分别进行。
+
+### 4. 启动、确认心跳，再重连宿主
+
+对原本启用 runtime 的项目执行：
+
+```powershell
+ctx runtime start
+ctx runtime status
+Start-Sleep -Seconds 5
+ctx runtime status
+```
+
+确认运行状态为 ready、`running=true`，同一实例的 `heartbeatAt` 持续更新；只有 PID、端口或 lease 文件存在不算启动成功。若项目原本明确禁用了 runtime，保持禁用；只有决定恢复后台功能时才执行 `ctx runtime enable` 后启动。
+
+随后重启或重连 Zcode/Codex 等宿主的 MCP 服务，并检查 Hook/MCP 配置是否仍指向旧 Node 安装目录。**CLI 升级成功不会自动替换宿主已启动的旧 MCP 进程，也不会自动修改手写的绝对路径。**
+
+```powershell
+ctx doctor --integrations
+ctx host capabilities
+ctx inject '继续当前项目任务'
+```
+
+`doctor --integrations` 用于检查受支持的集成；手工配置的 Zcode MCP/Hook 路径仍需在宿主中核对。最后让真实 agent 调用一次 MCP `context_resume` 或 `context_inject`，确认返回的 `projectRoot`、Context 和内容属于目标项目。
+
+### 5. start 未确认或只有冻结 lease 时
+
+先执行 `ctx runtime status`，保存完整结果中的状态和启动诊断。不要连续 start，也不要仅凭 `serve` 成功就认定后台启动已修复。
+
+```powershell
+ctx runtime status
+ctx doctor
+ctx runtime stop
+ctx runtime serve
+```
+
+`serve` 是前台诊断入口，会占用当前终端；仅在 stop 成功后运行。另一终端可执行 `ctx runtime status`，完成诊断后用 Ctrl+C 结束前台进程。
+
+反馈时附上 Node/ctx 版本、`Get-Command ctx -All`、项目路径、start/status 输出以及前台错误。若前台正常而后台失败，明确记录两条路径的差异。某些宿主会限制后台子进程，但独立 PowerShell 也失败时不能直接归因于宿主。
+
+beta.8、beta.10、内部 beta.11 → beta.12 的本地隔离升级矩阵已通过；不等于所有旧 beta 或公司项目均已现场验证。更早版本也应先预览、备份、校验。beta.12 可读取旧快照，但写入新字段后不要让旧二进制继续写这些数据；降级不能只安装旧 npm 包。0.8.0 与新版压缩日志不可混用，另见 [CHANGELOG](CHANGELOG.md)。
+
+## 首次使用
+
+按上面的“安装 beta.12”选择包来源，然后进入目标项目：
+
+```powershell
+Set-Location 'D:\your-project'
 ctx init
+ctx inject '调查支付回调重复处理的问题'
 ```
 
-`init` 会创建本地存储、迁移并校验旧数据、向 `AGENTS.md` 添加使用指引，并启动本地运行时。已有 `.claude` 目录时，还会配置 Claude Code 集成。重复执行会保留已有数据和禁用设置，不需要再逐条运行 migrate、verify、enable、start。
+`init` 创建 `.context/`、迁移并校验旧数据、写入项目指引并启动 runtime；已有 `.claude` 目录时还会配置对应集成。重复执行保留已有数据和禁用设置。已有项目升级请使用前述升级流程。
 
-### 1. 开始任务时，取得项目上下文
+CI 或不需要后台进程、宿主配置时：
 
 ```sh
-ctx inject "修复支付回调重复处理的问题"
+ctx init --no-start --no-integrations
 ```
 
-让 agent 执行这条命令，并读取返回的 `text`。它会包含相关的任务进度、已验证知识、失败方案和工作笔记。默认正文最多 2400 字符，需要时可以调整：
+新项目尚无记忆时，inject 返回很少内容是正常情况。
+
+## 日常工作：取得上下文、执行任务、保存交接
+
+开始任务或遇到新的错误时：
 
 ```sh
-ctx inject "修复支付回调重复处理的问题" --max-chars 4000
+ctx inject "修复支付回调重复处理的问题" --max-chars 4000 --explain
 ```
 
-beta.3 的默认预算会在任务进度与相关的已验证知识、失败经验之间分配，内容较少的一侧会让出余量。恢复和交接偏重进度，其它场景偏重证据；相关性仍基于关键词匹配，不保证理解所有同义表达。显式指定的 Recipe 保留其排序偏好和预算控制。
+读取返回的 `text`；需要具体证据时使用 `expandRefs`。默认正文预算为 2400 字符，引用预算为 4096 字符，后者通过 `--max-reference-chars` 调整。预算以字符计，不是提供商 token 数，也不是整包 JSON 长度。
 
-场景可通过 `--scenario resume` 等参数指定。需要排查遗漏时，使用 `ctx inject "当前任务" --explain`：`selection.excludedCounts` 区分 `query_no_match`（关键词未命中）、`status_not_verified`（候选或已退役）、适用范围不符及 `budget`（预算不足），同时展示各类内容的用量和截断数量。统计不包含被过滤记录的正文。
+完成一个有意义的阶段后，记录实际工作：
 
-新项目还没有记忆，第一次返回内容很少是正常的。ctx 不会仅凭一次初始化就理解整个代码库。
+```sh
+ctx checkpoint --title "支付回调修复" --objective "实现重复回调幂等处理" --constraints "不得重复扣款,保留既有订单状态约束" --progress "已定位幂等键缺失，尚未修改代码" --completed "复核回调入口" --pending "实现幂等校验,运行回归" --open-questions "历史重复订单如何处理" --files "src/payment.ts"
+```
 
-### 同一会话避免重复注入（beta.4）
+列表参数使用一个逗号分隔值，不重复传入多个 `--files`。执行验证后才记录 `--validation-refs`；没有运行测试时应明确写尚未验证。后续更新同一任务使用返回的 Context ID：`ctx checkpoint --context <id> --progress "实际进展"`。
 
-CLI 默认每次返回完整证据包。持续会话可以显式提供身份：
+新会话可以直接恢复：
+
+```sh
+ctx resume --context <context-id>
+ctx inject --context <context-id> --scenario handoff
+```
+
+PowerShell 按需展开引用示例：
+
+```powershell
+$packet = ctx inject --scenario handoff | ConvertFrom-Json
+if ($packet.expandRefs.Count -gt 0) {
+  $reference = $packet.expandRefs[0] | ConvertTo-Json -Depth 20 -Compress
+  ctx expand --ref $reference
+}
+```
+
+MCP 可将 `context_inject` 返回的完整引用对象直接作为 `context_expand` 参数。不要猜测 candidateId、哈希或 compile 参数；过期引用会被拒绝，需重新 inject。预算不足的展开可能返回 partial，不能当作已读完全文。
+
+恢复时还需注意：
+
+- `branchOrCommitDrift=false` 仅说明分支和 HEAD 相符，不证明未提交文件未变化或测试已通过。
+- MCP `context_resume` 未传 query 时 `knowledge=null` 表示未执行知识检索，不表示项目没有知识；需要完整快照字段时传 `includeDetails=true`。
+- `usageCount` 在 checkpoint 保存新快照时递增，resume 只刷新 `lastUsedAt`，不是模型采用次数。
+
+### 长会话去重与上下文重置
 
 ```sh
 ctx inject "修复支付回调" --session-id chat-42 --task-id payment-fix
 ctx inject "修复支付回调" --session-id chat-42 --task-id payment-fix --reset-session
 ```
 
-首次 `delivery.mode` 为 `full`；相同任务只有新增证据时返回 `delta`；无变化时为 `unchanged`，正文为空。`replacePrevious: true` 表示应以本包替代之前的项目证据，不能继续沿用已撤回的结论。任务、分支、Context、范围或预算变化，以及证据修改或撤回，会重新发送完整包。未提供 task-id 时使用查询文本识别任务；不同宿主、子 agent 应使用独立会话身份。
+首次返回 full，新增证据可能返回 delta，无变化返回 unchanged 和空正文。`replacePrevious=true` 时必须替换旧项目证据；来源撤回后不能继续使用旧结论。不同宿主、子 agent 使用独立身份；压缩、清空或丢失先前上下文后使用 reset。CLI 不传 session-id 时按无状态方式返回完整包。
 
-验证 `delta` 时，在首次调用后新增并核验一条与原查询匹配的知识，再以相同 session-id、task-id、query、预算和分支调用；新增知识应单独返回，`reason` 为 `new-evidence`。修改已有快照或切换查询会返回替换包。
+## 知识导入、核验和来源复核
 
-上下文压缩、清空、重连但未保留旧上下文时，调用方必须使用 `--reset-session`；task-id 和 reset 都需要 session-id。MCP `context_inject` 和 API 接受对应的 `sessionId`、`taskId`、`resetSession` 参数。`budget.usedChars` 是实际发送正文长度，`compiledChars` 是完整包长度；`--explain` 的选择统计仍描述完整包。
-
-Claude Hook 从 `session_id` 自动取得身份，以完整 prompt 的哈希识别任务；`agent_id` 隔离子 agent。每次 SessionStart（包括 resume / clear / compact）重置。生成配置保留 Claude 2.1.12 支持的 shell command 格式。`ctx doctor --integrations` 检查项目配置、执行路径、禁用/异步/匹配条件及最近本地调用；用户级或托管配置、工作区信任和宿主是否接受输出仍需在 Claude 中检查。
-
-去重为尽力而为：本地回执不等于宿主确认接收，失败或并发调用可能重发；丢失输出后应主动 reset。派生缓存 `.context/injection-cache.json` 只存哈希及时间，最多 32 个会话、每会话 128 条证据，24 小时过期；缓存不可用时回退完整包，不阻塞 Hook。缓存不改变知识可信状态，不纳入升级备份。
-
-### 2. 完成一个阶段后，留下进度
-
-例如，你已经定位问题，但还没写完测试：
+先预览已有项目记忆，再决定是否导入：
 
 ```sh
-ctx checkpoint --title "支付回调修复" --progress "已定位重复回调导致重复扣款" --completed "复现问题,确认幂等键缺失" --pending "补充幂等处理,运行回归测试" --decisions "使用订单号和事件号作为幂等键"
+ctx import
+ctx import --apply
+ctx knowledge list --all
 ```
 
-下次换会话或换工具，再执行 `ctx inject "继续支付回调修复"`，agent 就能从保存的状态继续。
+扫描目标项目中的 memory、agent 文档及支持的工具目录，记录来源并去重。`--path` 指定项目，不是要导入的单个文件；用户级记忆不会自动扫描。没有来源文件时无需新建或搬运文件来满足导入，也无需反复重试。
 
-这些命令返回 JSON，方便 agent 和脚本读取。你也可以直接在终端使用。
-
-### 命令只需从日常流程开始
-
-`ctx --help` 展示五个日常入口：`init`、`inject`、`checkpoint`、`import`、`report`，以及按需使用的 `knowledge`、`upgrade`、`status`、`doctor`。维护、集成和实验命令在 `ctx --help --all`，每个命令仍可单独使用 `--help`。
-
-知识与失败经验统一在 `knowledge` 下：
-
-| 操作 | 推荐入口 |
-| --- | --- |
-| 记录知识候选 | `ctx knowledge add "结论" --evidence "文件或测试"` |
-| 查看已验证知识 / 审阅全部状态 | `ctx knowledge list` / `ctx knowledge list --all` |
-| 有界审阅 / 来源复核队列 | `ctx knowledge review` / `ctx knowledge review --review-required` |
-| 预览显式批量治理 | `ctx knowledge batch <verify\|reject\|deprecate\|keep> --ids <ids> --reason "原因"` |
-| 核验知识 | `ctx knowledge verify <id>` |
-| 记录失败经验候选 | `ctx knowledge deadend add "尝试" --reason "失败原因"` |
-| 查看或核验失败经验 | `ctx knowledge deadend list` / `ctx knowledge deadend verify <id>` |
-
-原来的 `learn`、`deadend`、`deadends` 继续兼容，已有脚本和 MCP 工具名不变。新分组和高级帮助需要 beta.3；已发布 beta.2 仍使用旧入口。`verify` 只记录核验决定，不会替代代码审查或执行测试。
-
-## 已有项目怎样升级
-
-使用包含 `upgrade` 的新版 ctx，先关闭这个项目的 agent/MCP 会话，然后在项目目录执行：
+导入结果保持 candidate；核对真实代码或测试后才 verify。也可以直接记录候选：
 
 ```sh
-ctx upgrade --dry-run     # 只检查数据和备份大小，不写入、不停运行时
-ctx upgrade              # 备份、迁移、归档、验证
+ctx knowledge add "支付回调必须在事务中写入幂等记录" --evidence "src/payment.ts,test/payment.test.ts"
+ctx knowledge verify <knowledge-id>
 ```
 
-其它项目可用 `ctx upgrade --path /path/to/project`。终端显示各阶段进度：备份按实际字节、迁移按记录、日志校验和压缩按段计数；百分比表示当前阶段，不是剩余时间预测。脚本可用 `--no-progress` 关闭进度，stdout 始终返回 JSON。
+`verify` 保存操作者的核验决定，不会自动运行测试。失败经验使用 `ctx knowledge deadend add "尝试" --reason "已复现的失败原因"`；原 `learn`、`deadend` 等入口保持兼容。
 
-升级保留任务、知识状态和完整事件历史，支持仅有旧 Context 数据的项目，也支持已有认知日志的 0.8.0 项目。运行时升级前会停止，成功后恢复原来的运行状态；禁用策略保持不变。
-
-备份保存在 `.context/backups/upgrade-*/`，包含 `data/` 原文件、`backup.json` 哈希清单和成功后的 `upgrade.json` 回执。备份不包含旧备份、开发打包产物、锁和运行时临时凭据。**备份会额外占用磁盘，日志压缩节省量不包含备份体积。**
-
-重复升级不会重复导入相同数据，但每次执行都会创建独立备份。校验失败时会报错并保留现场，不删除历史、不自动覆盖还原；关闭其它写入者后可以重试。压缩后的日志不能与 0.8.0 混用，完成后用新版 ctx 重新连接 agent。
-
-## 怎样接入你的 AI 编程工具
-
-接入后，理想的日常流程是：**任务开始取上下文 → 开发与验证 → 阶段结束存进度**。不需要人每轮对话都操作 ctx，但 agent 是否会触发取决于宿主的接入方式。
-
-### Claude Code
-
-当前实际接入验收载体是 Zcode 和正在使用的 Codex，二者分别验收；暂不以 Claude CLI 模型登录作为使用前提。先确认各载体的实际接入方式和配置入口：支持 MCP 时使用下方通用 MCP 入口，支持项目指引时让 agent 在开始任务时调用 `ctx inject`、阶段结束时调用 `ctx checkpoint`。Hook 仅在宿主确实支持时验收，不能预设沿用 Claude Hook 或由配置文件存在推断自动触发。
-
-本机配置观察、Windows stdio 示例和真实只读会话结果见 [Zcode / Codex 接入验收](HOST-ACCEPTANCE.md)。
-
-接入验收需记录任务开始、上下文恢复、任务切换、错误调查和阶段结束时的实际调用与结果。当前 Codex 会话已通过全局 CLI 执行 `ctx inject` / `ctx checkpoint`，也通过真实 MCP 验证上下文读取、重复交付去重、任务切换和 reset 替换及阶段 checkpoint。Zcode 的 GLM-5.3 已实际调用 MCP 注入与知识审阅，并引用返回 ID；它把候选知识当作发布待办的判断偏差单独记录。Codex 新治理工具的宿主发现、全局安装入口重连及跨会话自动触发覆盖仍需验证。
-
-项目已有 `.claude` 目录时，`ctx init` 会配置项目级 Hook 和 MCP。新项目也可以显式安装：
+beta.12 对已跟踪的导入来源进行有界指纹检查：来源变化或消失时，相关旧知识退出注入正文，并进入复核队列；历史 verified 状态保留。新内容不会自动成为 verified。重复 import 不会清除未解决的复核要求。
 
 ```sh
-ctx integrate claude install --apply
-ctx integrate claude inspect
+ctx knowledge review --review-required --limit 20 --max-chars 6000
+ctx knowledge batch keep --ids <knowledge-id> --reason "已核对当前来源，原规则仍有效" --evidence "src/payment.ts"
 ```
 
-随后重启或重新连接 Claude Code。Hook 在会话开始和提交新任务时提供上下文；MCP 工具供 agent 按需查询、记录进度。这是当前提供自动注入的宿主适配器，真实宿主中的触发效果仍需 beta 验证。
+`batch` 默认预览。检查返回的 transitions 后，使用完全相同的参数追加 `--apply --expected-token <token>` 执行。支持 verify、reject、deprecate、keep；verify/keep 必须提供证据。预览后来源变化会拒绝应用，需重新审阅。keep 仅确认当时的来源版本，再次变化仍会要求复核。
 
-### 支持项目指引的 agent
+来源检查有扫描预算；unknown 不等于 fresh。没有来源指纹的手工知识按现有可信状态检索。导入跳过嵌套 Git 仓库、工作树存储及敏感内容，但仍需检查预览。来源回执保存在 `.context/memory-import.json`，不要为消除复核提示而删除它。
 
-`ctx init` 写入的 `AGENTS.md` 指引会告诉 agent：新任务、上下文恢复或遇到新错误时调用 `ctx inject`，完成重要阶段后调用 `ctx checkpoint`。
+**当前已知诊断问题：**`sourceReview.states` 只统计入选证据，可能在 `items` 存在 changed/missing 时显示零。复核时查看 `required`、`items` 或 `ctx knowledge review --review-required`；这项汇总口径待修正，已有实测确认旧结论仍被撤回。
 
-宿主需要能读取项目指引并执行本地命令。这种方式依赖 agent 遵循指引，不保证每个工具都会自动触发。
+## 接入 Zcode、Codex 和其它 agent
 
-### 其它支持 MCP 的工具
+支持项目指引的宿主可读取 `ctx init` 写入的 AGENTS.md，让 agent 在开始任务时 inject、阶段完成后 checkpoint。是否自动调用取决于宿主与 agent，配置存在不等于已经触发。
 
-在工具的 MCP 设置中添加一个本地 stdio 服务，命令为 `ctx`，参数为 `agent`、`serve`。例如，支持以下配置格式的客户端可以使用：
+支持 MCP stdio 的客户端可使用：
 
 ```json
 {
@@ -176,130 +259,46 @@ ctx integrate claude inspect
 }
 ```
 
-将服务的工作目录设为项目目录，或在调用工具时传入项目的绝对 `path`。如果客户端找不到 `ctx`，使用其支持的绝对可执行路径配置方式。
+将服务工作目录设为项目目录，或每次调用传入绝对 `path`。Windows 客户端若不能直接启动 npm 命令包装器，可使用 **node.exe 的绝对路径**作为 command，以 `npm root --global` 下的 `fluffy-context/dist/src/cli/main.js` 绝对路径、`agent`、`serve` 作为 args。实际格式以宿主配置要求为准；切换 Node 后重新核对这两个路径。
 
-某些 Windows 宿主会把后台子进程放进随会话结束而终止的 Job Object。此时 runtime 无法长驻，MCP 调用可能反复启动它；从可长驻的终端运行 `ctx runtime start`，再用 `ctx runtime status` 确认运行状态。宿主若不允许子进程脱离 Job Object，包内的 detached 设置无法改变该限制。
+常用工具：`context_inject`、`context_resume`、`context_expand`、`context_checkpoint`、`context_learn`、`context_knowledge_review`、`context_knowledge_batch`。仅在有来源文件需要导入时使用 `context_import`。
 
-日常使用 `context_inject` 取得上下文，`context_checkpoint` 保存进度，`context_learn` 记录候选知识；仅在项目中已有记忆文件时按需使用 `context_import`。工具列表和输入参数由 MCP 服务提供。
-
-## 让工作经验变成可复用的知识
-
-beta.6 提供有界审阅和显式批量治理：
+Claude Code 适配器可显式安装：
 
 ```sh
-ctx knowledge review --review-required --limit 20 --max-chars 6000
-ctx knowledge review --status candidate --source memory/rules.md
-ctx knowledge batch verify --ids <id1,id2> --reason "已核对实现与测试" --evidence "src/payment.ts,test/payment.test.ts"
+ctx integrate claude install --apply
+ctx integrate claude inspect
 ```
 
-`review` 默认列出 candidate 和 verified，待复核项优先。`source` 为精确的项目相对路径，分页使用 `--offset <nextOffset>`；默认 20 条、最多 100 条，`maxChars` 限制所有返回条目的 JSON 字符总和（不含响应外壳），默认 6000、最多 50000。条目过长会标记 `truncated` 并省略证据；不足以容纳最小条目时返回提示，增加预算后继续。同一审阅过程修改了记录时应重新开始分页。
+Hook 仅适用于确实支持该协议的宿主，不将 Zcode 默认当作 Claude Code。更多接入说明见 [HOST-ACCEPTANCE.md](HOST-ACCEPTANCE.md)。
 
-`batch` 默认预览，最多 50 个明确 ID，不按筛选条件隐式选择整库。核对 `transitions` 后，使用完全相同的参数加 `--apply --expected-token <预览返回的token>` 执行。预览后知识或相关来源变化会拒绝执行，需重新预览。`verify` 仅接受候选，`reject` 拒绝候选，`deprecate` 退役已验证知识；`keep` 对仍有效的已验证知识结案，保留可信状态。`verify` 和 `keep` 必须显式提供证据；证据由操作者核验，CLI 不会运行测试或自动证明结论。
-
-`keep` 绑定当时的来源指纹，重复导入不再提醒同一来源修订；来源再次变化会重开复核。扫描不完整或来源不可用时不能结案。批量状态在一个原子文件替换中保存，日志同步结果单独返回：`complete` 表示完成，`not-enabled` 表示未启用 v2，`pending` 表示状态已保存但日志同步尚未完成，必须使用相同请求和 token 重试。重复执行不重复改变状态；后续另一次治理会使旧 token 失效。
-
-MCP 对应 `context_knowledge_review` / `context_knowledge_batch`，Agent API 导出 `reviewKnowledge` / `batchKnowledge`。退役知识不再进入普通注入，已有会话收到 `replacePrevious` 时应替换旧证据。
-
-进度回答“做到哪里了”，知识回答“下次遇到类似问题应该知道什么”。两者需要分别保存。
-
-例如，你通过代码和测试确认了项目约束，可以记录结论及证据：
+## 诊断与效果报告
 
 ```sh
-ctx knowledge add "支付回调必须在同一事务中写入幂等记录和更新订单状态" --evidence "src/payment/callback.ts,test/payment/callback.test.ts"
-```
-
-返回结果中会包含 `knowledgeId`。确认结论确实有依据后，将实际 ID 代入：
-
-```sh
-ctx knowledge verify <knowledge-id>
-```
-
-此后，与支付回调相关的 `ctx inject` 才能把它作为已验证知识检索出来。`verify` 记录的是你或 agent 的核验决定，命令本身不会替你运行测试、证明结论。
-
-“越用越聪明”来自这个循环：**真实工作 → 留下证据 → 核验结论 → 后续任务复用**。当前版本不会自动训练模型，也不会把所有对话自动升级为可信知识。
-
-### 已经有 memory 或 agent 文档？
-
-先预览将导入的内容：
-
-```sh
-ctx import
-```
-
-检查后再保存：
-
-```sh
-ctx import --apply
-ctx knowledge --all
-```
-
-支持项目内的 `memory/`、`.memory/`、`.claude/`、`.zcode/`、`.cursor/`、`.curcor/`、`.codex/`，以及 `AGENTS.md`、`CLAUDE.md`、`MEMORY.md`、`.cursorrules` 等文本来源。它会记录来源并去重；重复导入相同内容不会创建新知识。
-
-导入的内容保持候选状态，核验后才进入普通检索。beta.5 按段落、列表项（含缩进续行）和完整 Markdown 表格提取，保留 `headings`、`line`、`endLine`、正文指纹与来源文件指纹。开头的 YAML front matter 作为元数据跳过，不推断其中的 scope 或自动验证；代码围栏、生成指引和疑似敏感段落不进入候选。
-
-`import` 只扫描目标项目，`--path` 是项目路径，不是待导入文件。用户目录或系统目录中的 `.zcode` 不会被自动扫描。没有来源文件时会返回 `discovery.status: no-source-files`、扫描范围和下一步指引；这不要求 agent 创建、复制或移动文件，也不应对相同输入反复重试。可把已读取且与本项目相关的结论直接保存为候选：
-
-```sh
-ctx learn "与本项目相关的结论" --path "项目目录" --evidence "原始记忆路径或代码证据"
-```
-
-MCP 对应 `context_learn`，接收 `path`、`statement`、`evidence` 和可选 `scope`。记录后仍须核验；导入不是必经步骤。
-
-再次执行 `ctx import` 时，`changes` 展示相对上次 apply 的 `new / modified / removed / unchanged / partial / unavailable` 状态；`reviewRequired` 列出来源内容已变化或消失的旧知识 ID。核对代码后再决定是否退役或拒绝旧记录；来源变化不会自动改变已验证知识，旧结论在明确治理前仍可能被注入。新内容只作为候选保存，重复内容返回已有 ID 和状态，不会重新激活 rejected / deprecated 记录。
-
-`--apply` 在 `.context/memory-import.json` 保存来源基线与待复核 ID，不保存文档原文；重复 apply 不清除未处理的复核提醒。该文件是治理记录，会进入升级备份。首次使用 beta.5 建立基线，不追溯之前版本的来源改动；旧版按行导入与新版整段提取的边界不同，首次预览可能出现新候选，需审阅后再 apply。
-
-每次最多 500 个候选、2000 个目录条目、8 层目录、单文件 64 KiB、总正文 2 MiB；每块 20–1500 字符，超长块整体跳过。部分扫描、忽略规则和符号链接不会被当作来源删除，也不会覆盖已有基线。回执限 2000 个来源、10000 个块/待复核引用、4 MiB；损坏回执会报错并保留，不能静默覆盖。
-
-扫描跳过 `.claude/worktrees` 和含 `.git` 边界的嵌套仓库；旧工作树或其它项目的文档不作为当前项目记忆。已有来源若进入这类边界，标为 unavailable，保留旧基线供审阅。
-
-## 查看它是否真的有用
-
-使用易读的终端报告：
-
-```sh
+ctx status
+ctx doctor
+ctx host capabilities
 ctx report --format ascii
 ```
 
-报告展示已验证知识、显式复用记录、上下文输入/输出估算、日志体积和事件构成。需要程序处理时，使用默认返回 JSON 的 `ctx report`。
+report 统计本地交付、引用、展开、来源复核与替换。缺少提供商真实用量和对照任务结果时，不据此声称节省了 token、时间或费用。配对评估见[效果评估说明](docs/EFFECTIVENESS.md)。
 
-查看宿主能力声明和实际触发记录可运行 `ctx host capabilities`（或 `--format ascii`）；MCP 对应 `context_host_capabilities`。记录只含接口、触发、交付模式及哈希身份，不表示模型已经采用返回的证据。
-
-`ctx report` 现在另列宿主触发和交付覆盖，区分观察、失败、未观察和未知触发。大量封存日志可用 `ctx journal index --apply` 建立可丢弃读取索引；报告保持只读，索引失效时回退全量验证。固定任务对照可用 `ctx evaluation report --input measurements.json`，输入契约见[效果评估说明](docs/EFFECTIVENESS.md)。缺少真实 provider token 或任务结果时不会推断节省。
-
-**检索到不等于采用，字符减少不等于模型账单减少。** 当前 token 使用字符数粗估，尚未接入模型提供商的实际用量；没有对照数据时，报告不能证明任务节省了多少 token 或时间。
-
-## 数据保存在什么地方
-
-- 项目状态和知识保存在本地 `.context/`，核心检索不需要云服务或模型 API key。
-- `.contextignored` 用于配置要忽略的项目路径；默认过滤常见敏感文件。导入也会跳过疑似秘密行，但无法保证识别全部敏感内容，应用前应检查预览。
-- 初始化可能修改项目的 `AGENTS.md`；Claude 集成会修改 `.claude/settings.json` 和 `.mcp.json`。
-- 默认不开启文件监听。日志会分段压缩；可选观察有入库预算，但语义历史没有总容量硬上限。
-
-CI 或不希望启动后台进程、写入宿主配置时，使用：
-
-```sh
-ctx init --no-start --no-integrations
-```
-
-## 遇到问题
-
-| 情况 | 下一步 |
+| 情况 | 处理方式 |
 | --- | --- |
-| 新项目没有可注入的内容 | 先保存一个真实 checkpoint，或导入并核验已有记忆 |
-| 导入后查询不到知识 | 用 `ctx knowledge --all` 查看候选；核验后再执行 verify |
-| agent 没有主动使用 ctx | 检查宿主是否加载项目指引、Hook 或 MCP；重连后确认工具可用 |
-| 找不到项目或需要检查存储 | 执行 `ctx status`、`ctx doctor`；在其它目录操作时传入 `--path` |
-| checkpoint 返回 `rate_limited` | 两次变化写入默认间隔至少 10 秒；到下一阶段再保存，避免循环重试 |
-| 想停止本地运行时 | 临时停止用 `ctx runtime stop`；持续禁用自动启动用 `ctx runtime disable` |
+| 导入后查不到知识 | 检查 candidate 状态、查询匹配、范围及预算，核验后再 verify |
+| agent 没有使用 ctx | 检查项目指引、MCP/Hook 实际调用和路径，重连后实测 |
+| checkpoint 返回 rate_limited | 实际变化写入默认至少间隔 10 秒；在下一阶段或 retryAt 后保存 |
+| 想临时停止 runtime | `ctx runtime stop`；持续禁用自动启动用 `ctx runtime disable` |
+| nvm 切换后 ctx 消失 | 检查当前 Node 的全局安装，按升级步骤处理旧实例并重新安装 |
+| start 未确认、心跳不动 | 按升级章节保存 status/诊断并用前台 serve 对照，不删除数据 |
 
-从 0.8.0 升级前，请先阅读[升级步骤](CHANGELOG.md#从-080-升级)：停止旧进程并备份 `.context`。新版压缩日志不能与 0.8.0 混用，升级全局包后也需要重启旧 MCP 连接。
+CLI 业务命令输出 JSON；`--help` 为文本。常用入口见 `ctx --help`，完整入口见 `ctx --help --all`，具体参数见 `ctx <command> --help`。
 
-完整参数可通过 `ctx --help`、`ctx <command> --help` 查看。`compile` / `expand` 等高级命令用于需要更多来源详情或自行构建 agent 集成的场景，不是首次使用的必做步骤。
+## 数据与开发
 
-## 在代码中使用与参与开发
+数据存储在项目 `.context/`，核心检索不需要云服务或模型 API key；`.contextignored` 控制项目关联路径。初始化可能写入 AGENTS.md，Claude 集成会修改对应配置。默认不开启文件监听，语义历史没有总容量硬上限；升级备份也会占用空间。
 
-自建 agent 可以通过 npm 包调用相同能力：
+在代码中使用：
 
 ```js
 import { injectContext } from 'fluffy-context';
@@ -311,12 +310,15 @@ const context = await injectContext('/absolute/path/to/project', {
 console.log(context.text);
 ```
 
-开发本项目：
+开发与本地安装按顺序执行：
 
 ```sh
 npm ci
 npm test
 npm run pack:check
+npm run install:local
 ```
 
-本地全局验收使用 `npm run install:local`：构建 tarball、安装全局 ctx、核对文件哈希并保存安装回执。该命令会更新全局安装并初始化本仓库，不会发布到 npm。
+不要并行运行会重建 dist 的检查。`install:local` 构建、打包、从 tarball 全局安装、逐文件核对哈希，并在 `.context/builds/` 写入安装回执；它会更新全局 ctx 并初始化本仓库，不会发布 npm。开发者可从回执取得最新候选包路径和 SHA256，交付给试用者。
+
+[变更记录](CHANGELOG.md) · [产品方向](docs/PRODUCT-DIRECTION.md) · [路线图](ROADMAP-1.0.md)

@@ -19,12 +19,13 @@ import { GitObserver } from './git-observer.js';
 import { reconcileV1State } from './migration-v1.js';
 import { v1Synced } from './v1-bridge.js';
 import type { CognitionRuntimePolicy, RuntimeLease, RuntimeStatus } from './types.js';
+import { readRuntimeDiagnostic, runtimeFailureCode, runtimeProcessAlive, writeRuntimeDiagnostic, type StartupPhase } from './runtime-diagnostics.js';
 
 const host = '127.0.0.1' as const;
 const protocolVersion = 1 as const;
 const maxFrameBytes = 16 * 1024;
 const pollIntervalMs = 2_000;
-const cliPath = fileURLToPath(new URL('../cli/main.js', import.meta.url));
+const workerPath = fileURLToPath(new URL('./runtime-worker.js', import.meta.url));
 const startupPromises = new Map<string, Promise<RuntimeStatus>>();
 
 interface RuntimeRequest {
@@ -44,6 +45,7 @@ export interface RuntimeServer {
 }
 
 interface RuntimeServeOptions {
+  onStartupPhase?: (phase: StartupPhase) => Promise<void>;
   inactivityTimeoutMs?: number;
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
@@ -104,6 +106,14 @@ async function loadStartupMarker(projectRoot: string): Promise<StartupMarker | n
   return readJson<StartupMarker>(cognitionRuntimeStartupPath(projectRoot)).catch(() => null);
 }
 
+export async function clearRuntimeStartup(projectRoot: string, attemptId: string): Promise<void> {
+  await publishWithRetry(projectRoot, async () => {
+    if ((await loadStartupMarker(projectRoot))?.attemptId === attemptId) {
+      await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
+    }
+  });
+}
+
 async function removeOwnedRuntimeFiles(projectRoot: string, instanceId: string): Promise<void> {
   const current = await loadLease(projectRoot);
   if (current?.instanceId !== instanceId) return;
@@ -159,6 +169,17 @@ async function writeLease(projectRoot: string, lease: RuntimeLease): Promise<voi
   await atomicWriteJson(cognitionRuntimeLeasePath(projectRoot), lease);
 }
 
+async function publishWithRetry<T>(projectRoot: string, operation: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 15_000;
+  while (true) {
+    try { return await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, operation); }
+    catch (error) {
+      if (!(error instanceof Error) || error.message !== 'context is busy; try again later' || Date.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
 async function appendRuntimeEvent(projectRoot: string, event: AppendEventInput): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (true) {
@@ -212,6 +233,8 @@ async function closeServer(projectRoot: string, server: Server, observer: GitObs
 
 function attachProtocol(server: Server, secret: string, lease: RuntimeLease, touch: () => void, observe: () => Promise<{ changed: boolean }>, close: (reason: string) => Promise<void>): void {
   server.on('connection', (socket: Socket) => {
+    // A timed-out or reset IPC client must not crash the detached runtime.
+    socket.on('error', () => socket.destroy());
     socket.setEncoding('utf8');
     let buffer = '';
     socket.on('data', async (chunk: string) => {
@@ -223,7 +246,7 @@ function attachProtocol(server: Server, secret: string, lease: RuntimeLease, tou
       buffer = buffer.slice(boundary + 1);
       let request: RuntimeRequest;
       try { request = JSON.parse(frame) as RuntimeRequest; } catch { socket.end('{"ok":false,"error":"invalid_request"}\n'); return; }
-      if (!request.token || !sameToken(request.token, secret)) { socket.end('{"ok":false,"error":"unauthorized"}\n'); return; }
+      if (!request || typeof request.token !== 'string' || !sameToken(request.token, secret)) { socket.end('{"ok":false,"error":"unauthorized"}\n'); return; }
       touch();
       if (request.method === 'ping') { socket.end(`${JSON.stringify({ ok: true, result: { instanceId: lease.instanceId } } satisfies RuntimeResponse)}\n`); return; }
       if (request.method === 'observe') {
@@ -245,6 +268,7 @@ function attachProtocol(server: Server, secret: string, lease: RuntimeLease, tou
 
 export async function serveRuntime(startPath?: string, options: RuntimeServeOptions = {}): Promise<RuntimeServer> {
   const projectRoot = await resolveProjectRoot(startPath);
+  await options.onStartupPhase?.('publish-lease');
   const currentPolicy = await loadPolicy(projectRoot);
   if (!currentPolicy.enabled) throw new Error('runtime is disabled; run ctx runtime enable first');
   const inactivityTimeoutMs = options.inactivityTimeoutMs ?? currentPolicy.inactivityTimeoutMs;
@@ -252,6 +276,7 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   const runtimePollIntervalMs = options.pollIntervalMs ?? pollIntervalMs;
   const existing = await liveLease(projectRoot);
   if (existing) throw new Error('runtime is already running');
+  const manifest = await loadManifest(projectRoot);
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -262,7 +287,6 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
     server.close();
     throw new Error('runtime failed to bind loopback endpoint');
   }
-  const manifest = await loadManifest(projectRoot);
   const now = new Date().toISOString();
   const lease: RuntimeLease = { schemaVersion: 2, protocolVersion, projectId: manifest.projectId, instanceId: createInstanceId(), pid: process.pid, host, port: address.port, startedAt: now, heartbeatAt: now };
   const secret = createToken();
@@ -320,7 +344,7 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   });
   attachProtocol(server, secret, lease, touch, observe, close);
   try {
-    await withLock(`${locksDirectory(projectRoot)}/cognition-runtime-start.lock`, async () => {
+    await publishWithRetry(projectRoot, async () => {
       const attemptId = process.env.FLUFFY_CONTEXT_RUNTIME_ATTEMPT_ID;
       if (attemptId && (await loadStartupMarker(projectRoot))?.attemptId !== attemptId) throw new Error('runtime startup was cancelled');
       const live = await liveLease(projectRoot);
@@ -345,12 +369,16 @@ export async function serveRuntime(startPath?: string, options: RuntimeServeOpti
   // first observation must not keep an otherwise idle runtime alive forever.
   touch();
   try {
+    await options.onStartupPhase?.('journal');
     await appendRuntimeEvent(projectRoot, { type: 'runtime.started', source: { kind: 'cli', instanceId: lease.instanceId }, idempotencyKey: `runtime:started:${lease.instanceId}`, payload: {} });
+    await options.onStartupPhase?.('observation');
     if (currentPolicy.filesystemEventsEnabled) filesystem.start();
     await observe();
     leaseWrite = leaseWrite.then(() => writeLease(projectRoot, lease));
     await leaseWrite;
-    await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
+    await options.onStartupPhase?.('ready');
+    const attemptId = process.env.FLUFFY_CONTEXT_RUNTIME_ATTEMPT_ID;
+    if (attemptId) await clearRuntimeStartup(projectRoot, attemptId);
     touch();
   } catch (error) {
     finishInitialization();
@@ -369,7 +397,14 @@ export async function runtimeStatus(startPath?: string): Promise<RuntimeStatus> 
   const runtimePolicy = await loadPolicy(projectRoot);
   const lease = await loadLease(projectRoot);
   const live = await liveLease(projectRoot, lease);
-  return { projectRoot, v2Present: true, enabled: runtimePolicy.enabled, migrated: true, running: Boolean(live), lease: lease ? publicLease(lease) : null };
+  const startup = await readRuntimeDiagnostic(projectRoot);
+  const marker = await loadStartupMarker(projectRoot);
+  const processAlive = runtimeProcessAlive(lease?.pid ?? (marker || startup?.outcome === 'failed' ? startup?.pid : null));
+  const state = live ? (marker ? 'starting' : 'ready')
+    : lease ? (processAlive === false ? 'exited' : 'unreachable')
+    : startup?.outcome === 'failed' ? 'failed' : marker ? 'starting' : 'stopped';
+  return { projectRoot, v2Present: true, enabled: runtimePolicy.enabled, migrated: true, running: Boolean(live), lease: lease ? publicLease(lease) : null,
+    diagnostics: { state, processAlive, startup } };
 }
 
 export async function enableRuntime(startPath?: string): Promise<RuntimeStatus> {
@@ -403,17 +438,25 @@ export async function setFilesystemEvents(startPath: string | undefined, enabled
   return runtimeStatus(projectRoot);
 }
 
-async function waitForRuntime(projectRoot: string, timeoutMs: number): Promise<RuntimeStatus | null> {
+async function waitForRuntime(projectRoot: string, timeoutMs: number, checkChild: () => void = () => undefined): Promise<RuntimeStatus | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    checkChild();
     const status = await runtimeStatus(projectRoot);
     const marker = await loadStartupMarker(projectRoot);
-    if (status.running && !marker) return status;
+    // Use readiness from the same status snapshot. The marker may disappear
+    // between reads; returning that earlier snapshot would report "starting"
+    // even though this caller claims startup has completed.
+    if (status.running && status.diagnostics?.state === 'ready') return status;
+    if (status.diagnostics?.startup?.outcome === 'failed') {
+      throw new Error(`runtime startup failed at ${status.diagnostics.startup.phase} (${status.diagnostics.startup.failure?.code}); run ctx runtime status for diagnostics`);
+    }
     if (!status.lease && !marker) return null;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const status = await runtimeStatus(projectRoot);
-  return status.running ? status : null;
+  checkChild();
+  return status.running && status.diagnostics?.state === 'ready' ? status : null;
 }
 
 async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): Promise<RuntimeStatus> {
@@ -422,9 +465,10 @@ async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): 
   if (existing) {
     // A published lease can answer ping before serveRuntime has finished its
     // first semantic observation and startup event. Do not report completion
-    // until the marker is removed; only the timeout path may use status as a
-    // best-effort fallback.
-    return (await waitForRuntime(projectRoot, timeoutMs)) ?? runtimeStatus(projectRoot);
+    // until the marker is removed. A successful ping alone is not readiness.
+    const status = await waitForRuntime(projectRoot, timeoutMs);
+    if (status) return status;
+    throw new Error('runtime startup is not yet confirmed; run ctx runtime status for the current startup phase.');
   }
   while (Date.now() < deadline) {
     const attemptId = createInstanceId();
@@ -447,15 +491,49 @@ async function startRuntimeCoordinated(projectRoot: string, timeoutMs: number): 
     } catch {
       // A concurrent start or stop owns the coordination lock.
     }
-    if (observedLive) return (await waitForRuntime(projectRoot, Math.max(0, deadline - Date.now()))) ?? runtimeStatus(projectRoot);
-    if (owner) {
-      const child = spawn(process.execPath, [cliPath, 'runtime', 'serve', '--path', projectRoot], {
-        detached: true, stdio: 'ignore', windowsHide: true,
-        env: { ...process.env, FLUFFY_CONTEXT_RUNTIME_ATTEMPT_ID: attemptId },
-      });
-      child.unref();
+    if (observedLive) {
       const status = await waitForRuntime(projectRoot, Math.max(0, deadline - Date.now()));
       if (status) return status;
+      break;
+    }
+    if (owner) {
+      await writeRuntimeDiagnostic(projectRoot, { attemptId, pid: null, phase: 'spawn', outcome: 'starting' });
+      const child = spawn(process.execPath, [workerPath, projectRoot, attemptId], {
+        cwd: projectRoot, detached: true, stdio: 'ignore', windowsHide: true,
+        env: { ...process.env, FLUFFY_CONTEXT_RUNTIME_ATTEMPT_ID: attemptId },
+      });
+      let childFailure: { code: string; exitCode?: number | null; signal?: string | null } | null = null;
+      const onError = (error: Error): void => { childFailure = { code: runtimeFailureCode(error) }; };
+      const onExit = (exitCode: number | null, signal: NodeJS.Signals | null): void => { childFailure = { code: 'PROCESS_EXIT', exitCode, signal }; };
+      child.once('error', onError);
+      child.once('exit', onExit);
+      child.unref();
+      try {
+        const status = await waitForRuntime(projectRoot, Math.max(0, deadline - Date.now()), () => {
+          if (childFailure) throw new Error(`runtime background process failed (${childFailure.code}, exit ${childFailure.exitCode ?? 'unknown'}); run ctx runtime status for diagnostics`);
+        });
+        if (status) return status;
+      } catch (error) {
+        if (childFailure) {
+          await publishWithRetry(projectRoot, async () => {
+            const diagnostic = await readRuntimeDiagnostic(projectRoot);
+            if (diagnostic?.attemptId !== attemptId) return;
+            await writeRuntimeDiagnostic(projectRoot, { ...diagnostic, pid: child.pid ?? null, outcome: 'failed', failure: {
+              ...childFailure!, code: diagnostic.failure?.code ?? childFailure!.code,
+            } });
+            if ((await loadStartupMarker(projectRoot))?.attemptId === attemptId) {
+              const lease = await loadLease(projectRoot);
+              if (lease && lease.pid === child.pid) await removeOwnedRuntimeFiles(projectRoot, lease.instanceId);
+              await rm(cognitionRuntimeStartupPath(projectRoot), { force: true });
+            }
+          });
+        }
+        throw error;
+      } finally {
+        child.removeListener('exit', onExit);
+        // Keep an error listener even when a very short caller deadline expires
+        // before Node delivers a spawn error. Event listeners do not ref a child.
+      }
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -1,3 +1,4 @@
+import { inspectKnowledgeSources } from '../cognition/source-state.js';
 import { compileContext } from './compile.js';
 import { extractActivity } from './activity.js';
 import { validateManifestIdentity } from './identity.js';
@@ -27,6 +28,7 @@ function isExpandLevel(value: string): value is ContextExpandLevel {
 }
 
 function validateInput(input: ContextExpandInput): void {
+  if (!input || typeof input.manifestHash !== 'string' || !input.compile || typeof input.compile !== 'object' || Array.isArray(input.compile)) throw new Error('context expand requires a valid reference object');
   if (!input.manifestHash.trim()) throw new Error('context expand manifest hash must not be empty');
   if (!input.candidateId?.trim() && !input.itemHash?.trim()) throw new Error('context expand requires candidateId or itemHash');
   if (!isExpandLevel(input.level)) throw new Error('context expand level must be structured or evidence');
@@ -37,6 +39,7 @@ function selectedCandidate(manifest: ContextManifest, input: ContextExpandInput)
   const byId = input.candidateId ? manifest.selected.find((item) => item.candidateId === input.candidateId) : undefined;
   const byHash = input.itemHash ? manifest.selected.find((item) => item.itemHash === input.itemHash) : undefined;
   if (byId && byHash && byId.candidateId !== byHash.candidateId) throw new Error('context expand candidate selectors do not match');
+  if (input.candidateId && !byId || input.itemHash && !byHash) throw new Error('context expand candidate selectors do not match; run ctx inject again');
   const candidate = byId ?? byHash;
   if (!candidate) throw new Error('context expand candidate not selected');
   if (!candidate.expandable) throw new Error('context expand candidate is not expandable');
@@ -48,11 +51,11 @@ function contextField(content: StructuredContext, candidate: ContextCandidate): 
   const field = (candidate.content as { field?: unknown }).field;
   if (typeof field !== 'string') throw new Error('context expand current context field is invalid');
   if (field === 'title') return (candidate.content as { value?: unknown }).value ?? '';
-  if (field === 'progressSummary' || field === 'lastError') return content[field];
-  if (field === 'pendingTasks' || field === 'completed' || field === 'decisions' || field === 'risks' || field === 'relatedFiles') {
+  if (field === 'progressSummary' || field === 'lastError' || field === 'objective') return content[field];
+  if (field === 'constraints' || field === 'validationRefs' || field === 'openQuestions' || field === 'pendingTasks' || field === 'completed' || field === 'decisions' || field === 'risks' || field === 'relatedFiles') {
     const discriminator = candidate.candidateId.split(':').at(-1) ?? '';
     const index = Number(discriminator);
-    const values = content[field];
+    const values = content[field] ?? [];
     if (!Number.isInteger(index) || index < 0 || index >= values.length) throw new Error(`context expand current context item is unavailable: ${field}`);
     return values[index];
   }
@@ -124,9 +127,12 @@ async function resolveCandidate(projectRoot: string, manifest: ContextManifest, 
     return { content: level === 'evidence' ? { ...note, provenance: source.provenance } : note, text: level === 'evidence' ? evidenceText(source, note, text) : text };
   }
   if (source.kind === 'knowledge') {
-    const knowledge = (await listKnowledge(projectRoot, true)).find((item) => item.knowledgeId === source.entityId);
+    const records = await listKnowledge(projectRoot, true);
+    const knowledge = records.find((item) => item.knowledgeId === source.entityId);
     if (!knowledge || knowledge.status !== 'verified') throw new Error(`context expand knowledge is no longer verified: ${source.entityId}`);
     ensureApplicable(source, knowledge, manifest);
+    const current = (await inspectKnowledgeSources(projectRoot, records)).states.get(knowledge.knowledgeId);
+    if (current?.reviewRequired || current?.fingerprint !== source.sourceState?.fingerprint) throw new Error('context expand source changed; run ctx inject again');
     const text = recordText(source, knowledge);
     return { content: level === 'evidence' ? { ...knowledge, provenance: source.provenance } : knowledge, text: level === 'evidence' ? evidenceText(source, knowledge, text) : text };
   }
@@ -152,7 +158,7 @@ async function resolveCandidate(projectRoot: string, manifest: ContextManifest, 
 export async function expandContext(startPath: string | undefined, input: ContextExpandInput): Promise<ContextExpandResult> {
   validateInput(input);
   const manifest = await compileContext(startPath, input.compile);
-  if (!validateManifestIdentity(manifest) || manifest.identity.manifestHash !== input.manifestHash) throw new Error('context expand manifest hash mismatch');
+  if (!validateManifestIdentity(manifest) || manifest.identity.manifestHash !== input.manifestHash) throw new Error('context expand manifest hash mismatch; run ctx inject again to refresh evidence references');
   const candidate = selectedCandidate(manifest, input);
   const resolved = await resolveCandidate(manifest.projectRoot, manifest, candidate, input.level);
   const limited = truncateText(resolved.text, input.maxChars ?? Number.MAX_SAFE_INTEGER);

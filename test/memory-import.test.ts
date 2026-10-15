@@ -108,7 +108,7 @@ test('source changes remain reviewable after apply, never change trust, and term
   const shifted = await importMemory(root);
   assert.equal(shifted.results[0].status, 'duplicate');
   assert.equal(shifted.results[0].knowledgeId, oldId);
-  assert.deepEqual(shifted.reviewRequired, []);
+  assert.deepEqual(shifted.reviewRequired, [oldId], 'file fingerprint changes require review even if the statement remains unchanged');
   assert.equal(await readFile(receipt, 'utf8'), baseline);
   await writeFile(source, '# Payments\nPayment callbacks must check the event identifier before committing.\n');
   const changed = await importMemory(root, true);

@@ -1,5 +1,22 @@
 # 发布说明
 
+## 1.0.0-beta.12（本地开发候选，尚未对外发布）
+
+- checkpoint 新增可选 objective、constraints、validationRefs、openQuestions，兼容旧快照；恢复/交接提供快照与 commit 来源、缺失和预算截断状态，修正恢复摘要预算累计。
+- inject 返回可直接用于 MCP/Agent expand 的有界 expandRefs，CLI 支持 `expand --ref <json>`；引用绑定原编译参数、项目和证据身份，变化后要求重新注入。
+- 有界核验已导入知识来源，区分 unchanged/changed/missing/unknown；需复核的结论退出当前注入，会话撤回旧交付，历史可信状态保持不变。审阅 keep 绑定具体来源指纹。
+- 扩充 CLI/MCP/Hook、explain 和 report 的本地交付计数；字符预算与模型采用、真实 token 用量明确区分。
+- 承接内部 beta.11 runtime 修复。B12.0 公司内小范围试用延后，不阻塞功能开发；真实 Zcode/Codex 模型采用与生产现场验收仍待执行。
+
+## 1.0.0-beta.11（内部修复验证版，不发布 npm / release）
+
+- 后台 runtime 改用专用入口，记录有界启动阶段与错误码；start 监听子进程启动错误和退出，已退出时及时报错并清理自身启动标记，修正后可重试。
+- status 增加 diagnostics，区分启动中、就绪、失败、已退出、不可达和停止；保留最后一次后台启动的版本、PID 与阶段，不保存原始异常正文。
+- 修复 IPC 客户端连接重置、null 请求及非字符串 token 可能导致 runtime 退出的问题；发布租约时重试短暂的启动锁竞争。
+- start 不再用初始化期间的成功 ping 代替就绪确认；读取项目 manifest 失败时不会遗留已监听的服务。
+- 原子 JSON 写入改用随机唯一临时文件，避免同进程同毫秒写入互相覆盖/删除；Windows rename/unlink 遇到短暂 EPERM/EACCES/EBUSY 时有界重试，永久失败仍报错且不删除原目标。
+- 下一对外 beta release 为 beta.12。外部 Zcode 生产项目故障尚待新版复测，本机回归不替代现场验收。
+
 ## 1.0.0-beta.10（本地构建，未发布 npm）
 
 - 修复 Windows 锁文件的过期判断和回收：活跃持有者定期续期，清理时核对锁身份，避免残留锁长期阻塞日志写入与 runtime 启停。

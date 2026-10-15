@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { VERSION } from '../dist/src/version.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const npmCli = process.env.npm_execpath;
@@ -21,13 +22,19 @@ try {
   const capabilities = await client.callTool({ name: 'context_host_capabilities', arguments: { path: root } });
   if (capabilities.isError || capabilities.structuredContent?.schemaVersion !== 1) throw new Error('installed MCP capability tool failed');
   const sessionId = `installed-mcp-${Date.now()}`;
-  const injection = await client.callTool({ name: 'context_inject', arguments: { path: root, query: 'beta.10 installed MCP acceptance', sessionId, taskId: 'beta10-host-acceptance', maxChars: 300 } });
+  const injection = await client.callTool({ name: 'context_inject', arguments: { path: root, query: `${VERSION} installed MCP acceptance`, scenario: 'handoff', sessionId, taskId: `${VERSION}-host-acceptance`, maxChars: 1200 } });
   if (injection.isError || injection.structuredContent?.delivery?.mode !== 'full') throw new Error('installed MCP injection failed');
+  const reference = injection.structuredContent?.expandRefs?.[0];
+  if (!reference || !injection.structuredContent?.handoff?.snapshotId) throw new Error('installed MCP handoff/reference contract missing');
+  const expanded = await client.callTool({ name: 'context_expand', arguments: reference });
+  if (expanded.isError || expanded.structuredContent?.candidateId !== reference.candidateId) throw new Error('installed MCP reference expansion failed');
   const report = await client.callTool({ name: 'context_host_capabilities', arguments: { path: root } });
   if (report.isError || !(report.structuredContent?.observations?.byInterface?.mcp >= 1)) throw new Error('MCP trigger receipt was not observed');
   if (stderr.trim()) throw new Error(`MCP server wrote stderr: ${stderr.trim()}`);
   const receipt = { checkedAt: new Date().toISOString(), clientKind: 'standalone-mcp-stdio', hostReconnect: 'not-measured', entry, toolCount: tools.length, capabilitySchema: capabilities.structuredContent.schemaVersion,
-    deliveryMode: injection.structuredContent.delivery.mode, mcpObservations: report.structuredContent.observations.byInterface.mcp,
+    deliveryMode: injection.structuredContent.delivery.mode, handoffSnapshotId: injection.structuredContent.handoff.snapshotId,
+    expandedCandidateId: expanded.structuredContent.candidateId, expansionStatus: expanded.structuredContent.status,
+    mcpObservations: report.structuredContent.observations.byInterface.mcp,
     modelAdoption: 'not-measured' };
   const destination = path.join(root, '.context', 'builds');
   await mkdir(destination, { recursive: true });

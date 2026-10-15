@@ -45,6 +45,29 @@ async function connectInMemory() {
   return { client, server };
 }
 
+test('MCP continuity checkpoint to inject to expand works with returned arguments unchanged', async () => {
+  const root = await project();
+  const { client, server } = await connectInMemory();
+  try {
+    await initProject(root);
+    const saved = await client.callTool({ name: 'context_checkpoint', arguments: { path: root,
+      objective: 'Payment MCP handoff', constraints: ['Keep the public contract'],
+      validationRefs: ['test/payments.ts; recorded validation'], openQuestions: ['Production retest pending'] } });
+    assert.notEqual(saved.isError, true);
+    const injected = await client.callTool({ name: 'context_inject', arguments: { path: root, scenario: 'handoff', maxReferenceChars: 16000 } });
+    assert.notEqual(injected.isError, true);
+    const packet = injected.structuredContent as { text: string; expandRefs: Record<string, unknown>[] };
+    assert.match(packet.text, /Keep the public contract/);
+    assert.ok(packet.expandRefs.length);
+    const expanded = await client.callTool({ name: 'context_expand', arguments: packet.expandRefs[0] });
+    assert.notEqual(expanded.isError, true);
+    assert.match(textContent(expanded), /Payment MCP handoff/);
+  } finally {
+    await client.close(); await server.close(); await stopRuntime(root);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('MCP empty import leads to direct candidate recording without an import file', async () => {
   const root = await project();
   const { client, server } = await connectInMemory();
@@ -222,7 +245,9 @@ test('MCP Recipe tools enforce explicit lifecycle and read-only reads', async ()
     assert.notEqual(compiled.isError, true);
     assert.equal((compiled.structuredContent as { recipe?: { recipeId: string } }).recipe?.recipeId, recipeId);
   } finally {
-    await Promise.all([client.close(), server.close(), rm(root, { recursive: true, force: true })]);
+    await Promise.all([client.close(), server.close()]);
+    await stopRuntime(root);
+    await rm(root, { recursive: true, force: true });
   }
 });
 test('MCP Evolution tools preserve explicit governance and server availability', async () => {

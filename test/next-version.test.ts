@@ -95,7 +95,16 @@ test('injection obeys text budget and candidate trust, report does not invent pa
   assert.ok(result.text.length <= 160);
   assert.ok(!result.text.includes('Unverified inventory claims'));
   assert.equal(result.sources, undefined);
-  assert.ok(JSON.stringify(result).length < result.text.length + 500);
+  // beta.12 budgets actionable references separately from the evidence text.
+  const referenceChars = result.expandRefs.reduce((sum, ref) => sum + JSON.stringify(ref).length, 0);
+  assert.equal(result.referenceBudget.usedChars, referenceChars);
+  assert.ok(referenceChars <= result.referenceBudget.maxChars);
+  assert.ok(result.sourceReview.budget.usedChars <= result.sourceReview.budget.maxChars);
+  const { text, expandRefs, sourceReview, ...envelope } = result;
+  assert.ok(JSON.stringify(envelope).length < 1400);
+  const withoutReferences = await injectContext(root, { query: 'inventory error', maxChars: 160, maxReferenceChars: 0 });
+  assert.deepEqual(withoutReferences.expandRefs, []);
+  assert.equal(withoutReferences.referenceBudget.usedChars, 0);
   const explained = await injectContext(root, { query: 'inventory error', maxChars: 160, explain: true });
   assert.ok(Array.isArray(explained.sources));
   const report = await buildUsageReport(root, { baselineTokens: 1000 });

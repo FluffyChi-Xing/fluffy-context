@@ -13,6 +13,7 @@ import { cognitionRuntimeLeasePath, cognitionRuntimeSecretPath, cognitionRuntime
 import { withLock } from '../src/storage/lock.js';
 import { loadRuntimePolicy, writeRuntimePolicy } from '../src/cognition/policy.js';
 import { GitObserver } from '../src/cognition/git-observer.js';
+import { readRuntimeDiagnostic } from '../src/cognition/runtime-diagnostics.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -29,6 +30,161 @@ async function initializedRuntime(root: string): Promise<void> {
   await importV1(root);
   await enableRuntime(root);
 }
+
+test('startup retries a busy publication lock instead of abandoning the background launch', async () => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  try {
+    await initializedRuntime(root);
+    let acquired!: () => void;
+    const locked = new Promise<void>((resolve) => { acquired = resolve; });
+    const holder = withLock(path.join(locksDirectory(root), 'cognition-runtime-start.lock'), async () => {
+      acquired();
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    });
+    await locked;
+    runtime = await serveRuntime(root);
+    await holder;
+    assert.equal((await runtimeStatus(root)).running, true);
+  } finally {
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('background bootstrap exit is reported promptly and a clean retry succeeds', async () => {
+  const root = await project();
+  const original = process.env.NODE_OPTIONS;
+  try {
+    await initializedRuntime(root);
+    const preload = path.join(root, 'exit.cjs');
+    await writeFile(preload, 'process.exit(37);');
+    process.env.NODE_OPTIONS = `--require ${JSON.stringify(preload)}`;
+    const before = Date.now();
+    await assert.rejects(startRuntime(root), /background process failed.*exit 37/);
+    assert.ok(Date.now() - before < 5_000, 'must not wait for the ten second startup deadline');
+    const diagnostic = await readRuntimeDiagnostic(root);
+    assert.equal(diagnostic?.phase, 'spawn');
+    assert.equal(diagnostic?.failure?.exitCode, 37);
+    assert.equal(diagnostic?.outcome, 'failed');
+    assert.equal((await runtimeStatus(root)).lease, null);
+    await assert.rejects(access(cognitionRuntimeStartupPath(root)));
+    if (original === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = original;
+    assert.equal((await startRuntime(root)).running, true);
+    assert.equal((await readRuntimeDiagnostic(root))?.outcome, 'ready');
+  } finally {
+    if (original === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = original;
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('start does not report readiness while a live endpoint is still initializing', async (t) => {
+  const root = await project();
+  let runtime: Awaited<ReturnType<typeof serveRuntime>> | null = null;
+  let serving: ReturnType<typeof serveRuntime> | undefined;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    await initializedRuntime(root);
+    const original = GitObserver.prototype.observeNow;
+    t.mock.method(GitObserver.prototype, 'observeNow', async function (this: GitObserver) {
+      await gate;
+      return original.call(this);
+    });
+    await writeFile(cognitionRuntimeStartupPath(root), JSON.stringify({ attemptId: 'slow-fixture', pid: process.pid, createdAt: new Date().toISOString() }));
+    serving = serveRuntime(root, { pollIntervalMs: 60_000 });
+    for (let i = 0; i < 100; i++) {
+      if ((await runtimeStatus(root)).running) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal((await runtimeStatus(root)).diagnostics?.state, 'starting');
+    await assert.rejects(startRuntime(root, { timeoutMs: 100 }), /startup is not yet confirmed/);
+    release();
+    runtime = await serving;
+    await rm(cognitionRuntimeStartupPath(root));
+    assert.equal((await startRuntime(root)).diagnostics?.state, 'ready');
+  } finally {
+    release();
+    runtime ??= await serving?.catch(() => null) ?? null;
+    await runtime?.close('test');
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('background exit immediately after lease publication is diagnosed and recoverable', async () => {
+  const root = await project();
+  const original = process.env.NODE_OPTIONS;
+  try {
+    await initializedRuntime(root);
+    const preload = path.join(root, 'exit-after-lease.cjs');
+    await writeFile(preload, `
+      const fs = require('node:fs/promises');
+      const rename = fs.rename;
+      fs.rename = async (...args) => {
+        const result = await rename(...args);
+        if (String(args[1]).replaceAll('\\\\', '/').endsWith('/runtime/lease.json')) process.exit(41);
+        return result;
+      };
+      require('node:module').syncBuiltinESMExports();
+    `);
+    process.env.NODE_OPTIONS = `--require ${JSON.stringify(preload)}`;
+    await assert.rejects(startRuntime(root), /background process failed.*exit 41/);
+    const failed = await runtimeStatus(root);
+    assert.equal(failed.running, false);
+    assert.equal(failed.lease, null);
+    assert.equal(failed.diagnostics?.state, 'failed');
+    assert.equal(failed.diagnostics?.startup?.failure?.exitCode, 41);
+    assert.equal(failed.diagnostics?.startup?.phase, 'publish-lease');
+    if (original === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = original;
+    assert.equal((await startRuntime(root)).diagnostics?.state, 'ready');
+  } finally {
+    if (original === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = original;
+    await stopRuntime(root).catch(() => undefined);
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('malformed and reset IPC clients cannot terminate a runtime process', async () => {
+  const root = await project();
+  try {
+    await initializedRuntime(root);
+    const runtimeUrl = new URL('../src/cognition/runtime.js', import.meta.url).href;
+    const script = `
+      import { createConnection } from 'node:net';
+      const { serveRuntime, runtimeStatus } = await import(${JSON.stringify(runtimeUrl)});
+      const root = process.argv[1];
+      const runtime = await serveRuntime(root);
+      try {
+        for (const frame of ['null', '{"token":123}', '{"token":{}}']) {
+          await new Promise((resolve, reject) => {
+            const socket = createConnection({ host: '127.0.0.1', port: runtime.lease.port });
+            socket.on('error', reject);
+            socket.on('data', () => socket.end());
+            socket.on('close', resolve);
+            socket.on('connect', () => socket.write(frame + '\\n'));
+          });
+        }
+        for (let i = 0; i < 10; i++) {
+          await new Promise(resolve => {
+            const socket = createConnection({ host: '127.0.0.1', port: runtime.lease.port });
+            socket.on('error', () => {});
+            socket.on('close', resolve);
+            socket.on('connect', () => socket.resetAndDestroy());
+          });
+        }
+        if (!(await runtimeStatus(root)).running) throw new Error('runtime died');
+      } finally { await runtime.close('test'); }
+    `;
+    await execFileAsync(process.execPath, ['--input-type=module', '-e', script, root], { timeout: 15_000, windowsHide: true });
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
 
 test('explicit observation waits for slow Git work beyond the ping deadline', async (t) => {
   const root = await project();

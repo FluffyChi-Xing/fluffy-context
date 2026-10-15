@@ -87,6 +87,10 @@ const noteAddInput = z.object({
 });
 
 const checkpointInput = z.object({
+  objective: z.string().optional(),
+  constraints: z.array(z.string()).optional(),
+  validationRefs: z.array(z.string()).optional(),
+  openQuestions: z.array(z.string()).optional(),
   path: z.string().optional(),
   contextId: z.string().optional(),
   absorbNotes: z.boolean().optional(),
@@ -171,8 +175,8 @@ export function createMcpServer(): McpServer {
   }));
   server.registerTool('context_inject', {
     title: 'Prepare task context',
-    description: 'Use at task start, context reset, task change or a new failure. Optional sessionId enables full/delta/unchanged delivery; use unique IDs per conversation and resetSession after compaction. A full packet with replacePrevious replaces earlier evidence. Without a session ID always returns full context. Expand only when more detail is needed.',
-    inputSchema: compileInput.extend({ explain: z.boolean().optional(), sessionId: z.string().trim().min(1).max(256).optional(), taskId: z.string().trim().min(1).max(256).optional(), resetSession: z.boolean().optional() }),
+    description: 'Use at task start, context reset, task change or a new failure. Optional sessionId enables full/delta/unchanged delivery; use unique IDs per conversation and resetSession after compaction. A full packet with replacePrevious replaces earlier evidence. Without a session ID always returns full context. Pass an expandRefs object directly to context_expand when more detail is needed. Inspect sourceReview and handoff; validation references do not establish current test success.',
+    inputSchema: compileInput.extend({ maxReferenceChars: z.int().min(0).max(16000).optional(), explain: z.boolean().optional(), sessionId: z.string().trim().min(1).max(256).optional(), taskId: z.string().trim().min(1).max(256).optional(), resetSession: z.boolean().optional() }),
   }, async ({ path, ...options }) => withProjectResolution(async () => {
     try { return successResponse(await injectContext(path, options, 'mcp')); }
     catch (error) { return failureResponse('context_inject', error); }
@@ -207,7 +211,7 @@ export function createMcpServer(): McpServer {
   }));
   server.registerTool('context_expand', {
     title: 'Expand context candidate',
-    description: 'Read a selected compiler candidate at structured or evidence level without writing project state or reading file contents.',
+    description: 'Read a selected compiler candidate at structured or evidence level using an expandRefs object from context_inject. Rechecks tracked source fingerprints; stale references require a new injection.',
     inputSchema: expandInput,
   }, async ({ path, ...input }) => withProjectResolution(async () => {
     try {
@@ -219,7 +223,7 @@ export function createMcpServer(): McpServer {
   }));
   server.registerTool('context_compile', {
     title: 'Compile context manifest',
-    description: 'Compile a bounded, deterministic, read-only context manifest without writing project state or reading file contents.',
+    description: 'Compile a bounded, deterministic, read-only context manifest using an expandRefs object from context_inject. Rechecks tracked source fingerprints; stale references require a new injection.',
     inputSchema: compileInput,
   }, async ({ path, ...options }) => withProjectResolution(async () => {
     try {

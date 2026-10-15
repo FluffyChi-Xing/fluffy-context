@@ -1,3 +1,4 @@
+import { summarizeContext } from '../runtime/summary.js';
 import { readdir } from 'node:fs/promises';
 import { resolveProjectRoot } from '../project/project-resolver.js';
 import { contextsRoot, contextMetadataPath } from '../storage/layout.js';
@@ -58,7 +59,7 @@ function limitedList(values: string[], budget: { remaining: number }): string[] 
   });
 }
 
-function textLength(value: string | null | string[]): number {
+function textLength(value: string | null | undefined | string[]): number {
   return Array.isArray(value) ? value.reduce((total, item) => total + item.length, 0) : value?.length ?? 0;
 }
 
@@ -117,17 +118,7 @@ function limitNotes(notes: Note[], budget: { remaining: number }): { notes: Note
 }
 
 function summary(content: StructuredContext, maxChars: number, branchOrCommitDrift = false): ResumeSummary {
-  const budget = { remaining: Math.max(0, maxChars) };
-  return {
-    progressSummary: limited(content.progressSummary, budget),
-    lastError: content.lastError === null ? null : limited(content.lastError, budget),
-    completed: limitedList(content.completed, budget),
-    pendingTasks: limitedList(content.pendingTasks, budget),
-    decisions: limitedList(content.decisions, budget),
-    risks: limitedList(content.risks, budget),
-    relatedFiles: limitedList(content.relatedFiles, budget),
-    branchOrCommitDrift,
-  };
+  return summarizeContext(content, maxChars, branchOrCommitDrift);
 }
 
 function isContextMetadata(value: unknown): value is ContextMetadata {
@@ -266,7 +257,7 @@ export async function contextOrient(startPath: string | undefined, options: Cont
     });
 
   const contextText = [loaded.context.title, loaded.details.progressSummary, loaded.details.lastError ?? '', ...loaded.details.completed,
-    ...loaded.details.pendingTasks, ...loaded.details.decisions, ...loaded.details.risks, ...loaded.details.relatedFiles].join(' ').toLocaleLowerCase();
+    ...loaded.details.pendingTasks, ...loaded.details.decisions, ...loaded.details.risks, ...loaded.details.relatedFiles, loaded.details.objective ?? '', ...(loaded.details.constraints ?? []), ...(loaded.details.validationRefs ?? []), ...(loaded.details.openQuestions ?? [])].join(' ').toLocaleLowerCase();
   const contextRelevant = query === null || Boolean(options.contextId) || queryTerms(query).some((term) => contextText.includes(term));
   const visibleSummary: ResumeSummary = contextRelevant ? loaded.resumeSummary : {
     progressSummary: '', lastError: null, completed: [], pendingTasks: [], decisions: [], risks: [], relatedFiles: [],
@@ -274,6 +265,10 @@ export async function contextOrient(startPath: string | undefined, options: Cont
   };
   const budget = { remaining: Math.max(0, options.maxChars ?? 4000) };
   const resumeSummary: ResumeSummary = {
+    ...(visibleSummary.objective === undefined ? {} : { objective: limited(visibleSummary.objective, budget) }),
+    ...(visibleSummary.constraints === undefined ? {} : { constraints: limitedList(visibleSummary.constraints, budget) }),
+    ...(visibleSummary.validationRefs === undefined ? {} : { validationRefs: limitedList(visibleSummary.validationRefs, budget) }),
+    ...(visibleSummary.openQuestions === undefined ? {} : { openQuestions: limitedList(visibleSummary.openQuestions, budget) }),
     progressSummary: limited(visibleSummary.progressSummary, budget),
     lastError: visibleSummary.lastError === null ? null : limited(visibleSummary.lastError, budget),
     completed: limitedList(visibleSummary.completed, budget),
@@ -283,7 +278,8 @@ export async function contextOrient(startPath: string | undefined, options: Cont
     relatedFiles: limitedList(visibleSummary.relatedFiles, budget),
     branchOrCommitDrift: visibleSummary.branchOrCommitDrift,
   };
-  const resumeTruncated = textLength(resumeSummary.progressSummary) < textLength(visibleSummary.progressSummary)
+  const resumeTruncated = (['objective', 'constraints', 'validationRefs', 'openQuestions'] as const).some((field) => textLength(resumeSummary[field]) < textLength(visibleSummary[field]))
+    || textLength(resumeSummary.progressSummary) < textLength(visibleSummary.progressSummary)
     || textLength(resumeSummary.lastError) < textLength(visibleSummary.lastError)
     || textLength(resumeSummary.completed) < textLength(visibleSummary.completed)
     || textLength(resumeSummary.pendingTasks) < textLength(visibleSummary.pendingTasks)

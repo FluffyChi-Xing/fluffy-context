@@ -139,8 +139,8 @@ async function importMemoryInScope(startPath: string | undefined, apply: boolean
       const blocks = results.filter((item) => item.source === source).flatMap((item) => item.knowledgeId ? [{ fingerprint: item.fingerprint, knowledgeId: item.knowledgeId }] : []);
       const currentFingerprints = new Set(results.filter((item) => item.source === source).map((item) => item.fingerprint));
       const canCompare = Boolean(current?.complete || missing);
-      const reviewKnowledgeIds = [...new Set([...(before?.reviewKnowledgeIds ?? []), ...(canCompare ? before?.blocks.filter((item) => !currentFingerprints.has(item.fingerprint)).map((item) => item.knowledgeId) ?? [] : [])])]
-        .filter((id) => ['candidate', 'verified'].includes(byId.get(id)?.status ?? '') && !blocks.some((block) => block.knowledgeId === id));
+      const reviewKnowledgeIds = [...new Set([...(before?.reviewKnowledgeIds ?? []), ...(canCompare ? before?.blocks.filter((item) => before.sourceHash !== (current?.sourceHash ?? null) || !currentFingerprints.has(item.fingerprint)).map((item) => item.knowledgeId) ?? [] : [])])]
+        .filter((id) => ['candidate', 'verified'].includes(byId.get(id)?.status ?? ''));
       // Keep acknowledged IDs in the baseline so a later source edit reopens review.
       const unresolved = reviewKnowledgeIds.filter((id) => !canCompare || !byId.get(id)?.memoryReview?.sources.some((review) => review.source === source && review.sourceHash === (current?.sourceHash ?? null)));
       changes.push({ source, status, previousHash: before?.sourceHash ?? null, currentHash: current?.sourceHash ?? null, reviewKnowledgeIds: unresolved });

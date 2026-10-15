@@ -1,3 +1,4 @@
+import type { KnowledgeSourceState } from '../cognition/source-state.js';
 import type { CognitionGitAnchor, CompilerRecipeSection, CompilerRecipeSource, WorkspacePathChange } from '../cognition/types.js';
 import type { ContextOrientResult } from '../agent/types.js';
 import type { Deadend, Knowledge, KnowledgeConflictGroup, Note, ResumeSummary, StructuredContext } from '../runtime/types.js';
@@ -76,6 +77,7 @@ export interface ContextProvenance {
 }
 
 export interface ContextSourceDescriptor {
+  sourceState?: KnowledgeSourceState;
   sourceId: string;
   kind: ContextSourceKind;
   entityId: string;
@@ -123,6 +125,7 @@ export interface ContextCandidate<T = unknown> {
 }
 
 export type ContextExclusionReason =
+  | 'source_review_required'
   | 'no_active_context'
   | 'context_mismatch'
   | 'status_not_verified'
@@ -259,7 +262,7 @@ export interface ContextExpandResult {
 export interface ContextManifest {
   schemaVersion: 1;
   compilerVersion: '0.7.7';
-  rankingVersion: 'compiler-ranking-v3';
+  rankingVersion: 'compiler-ranking-v4';
   status: 'ready' | 'no_context';
   projectRoot: string;
   mode: 'v2' | 'v1-fallback';

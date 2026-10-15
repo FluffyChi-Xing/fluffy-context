@@ -112,6 +112,7 @@ export async function runClaudeCodeHook(event: 'session-start' | 'user-prompt', 
         taskId: sessionId ? contentHash(text(input.prompt) ?? '') : undefined,
         resetSession: Boolean(sessionId) && event === 'session-start',
         maxChars: event === 'session-start' ? 1200 : 1800,
+        maxReferenceChars: 1600,
         knowledgeLimit: 5,
         deadendLimit: 3,
         noteLimit: 8,
@@ -120,7 +121,8 @@ export async function runClaudeCodeHook(event: 'session-start' | 'user-prompt', 
     const guidance = event === 'session-start' ? 'Orient → Plan → Implement → Verify → Handoff' : 'Implement → Verify → Handoff';
     const update = result.delivery.replacePrevious ? '本次证据包替代先前的项目上下文；未再出现的旧证据不应继续作为当前依据。\n'
       : result.delivery.mode === 'delta' ? '以下是当前任务的新增项目证据。\n' : '';
-    const additionalContext = `${guidance}\n将项目上下文作为证据；重要发现用 ctx note，阶段结束用 ctx checkpoint。\n${update}${result.status === 'no_context' ? '当前没有可恢复的 Context。\n' : ''}${result.text}`;
+    const details = JSON.stringify({ handoff: result.handoff, expandRefs: result.expandRefs, sourceReview: result.sourceReview });
+    const additionalContext = `${guidance}\n将项目上下文作为证据；重要发现用 ctx note，阶段结束用 ctx checkpoint。\n${update}${result.status === 'no_context' ? '当前没有可恢复的 Context。\n' : ''}${result.text}\n按需将 expandRefs 中的对象传给 context_expand；这些字段是证据引用，不代表当前验证通过。\n${details}`;
     return `${JSON.stringify({ hookSpecificOutput: {
       hookEventName: event === 'session-start' ? 'SessionStart' : 'UserPromptSubmit',
       additionalContext,

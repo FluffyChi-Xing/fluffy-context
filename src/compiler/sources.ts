@@ -1,3 +1,4 @@
+import { rebuildSnapshot } from '../runtime/runtime.js';
 import { readGitWorktreeState } from '../git/git-adapter.js';
 import { contextOrient } from '../agent/api.js';
 import { readJournal } from '../cognition/journal.js';
@@ -126,6 +127,9 @@ export async function loadCompilerSources(startPath: string | undefined, options
     noteLimit: options.noteLimit ?? 20,
   }, null);
   const projectRoot = orientation.projectRoot;
+  if (orientation.status === 'ready' && ['resume', 'handoff'].includes(options.scenario ?? '')) {
+    orientation.resumeSummary = { ...await rebuildSnapshot(projectRoot, orientation.context.id, orientation.snapshot.snapshotId), branchOrCommitDrift: orientation.resumeSummary.branchOrCommitDrift };
+  }
   const git = await readGitWorktreeState(projectRoot);
   let events: CognitionEvent[] = [];
   let fallbackReason: string | null = null;

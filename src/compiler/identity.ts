@@ -20,7 +20,7 @@ export function rebuildManifestHash(manifest: Pick<ContextManifest, 'status' | '
   return contentHash({
     schemaVersion: 1,
     compilerVersion: '0.7.7',
-    rankingVersion: 'compiler-ranking-v3',
+    rankingVersion: 'compiler-ranking-v4',
     status: manifest.status,
     projectRoot: manifest.projectRoot,
     mode: manifest.mode,

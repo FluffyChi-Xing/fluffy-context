@@ -39,6 +39,12 @@ export async function recordUsageOperation(
     estimatedMethod: 'chars-div-four',
     ...(success ? {} : { errorClass: errorClass(error) }),
   };
+  if (success && output && typeof output === 'object' && 'expandRefs' in output) {
+    const result = output as { budget: { taskChars: number }; text: string; handoff: unknown; expandRefs: unknown[]; referenceBudget: { usedChars: number }; sourceReview: { required: number }; delivery: { replacePrevious: boolean } };
+    payload.contextDelivery = { taskChars: result.budget.taskChars, referenceChars: result.referenceBudget.usedChars,
+      references: result.expandRefs.length, sourceReviews: result.sourceReview.required,
+      replacements: Number(result.delivery.replacePrevious), handoffs: Number(Boolean(result.handoff)) };
+  }
   try {
     await appendEvent(startPath, {
       type: 'usage.operation.completed',

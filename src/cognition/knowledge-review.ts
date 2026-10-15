@@ -1,3 +1,4 @@
+import { inspectKnowledgeSources } from './source-state.js';
 import crypto from 'node:crypto';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
@@ -46,12 +47,13 @@ export async function reviewKnowledge(startPath?: string, options: KnowledgeRevi
   const memory = await importMemory(root);
   const receipts = await readMemoryReceipts(root);
   const records = (await loadKnowledge(root)).items;
+  const live = await inspectKnowledgeSources(root, records);
   const matches = records.map((item) => {
     const sources = [...new Set([
       ...receipts.sources.filter((source) => source.blocks.some((block) => block.knowledgeId === item.knowledgeId) || source.reviewKnowledgeIds.includes(item.knowledgeId)).map((source) => source.source),
       ...memory.results.filter((result) => result.knowledgeId === item.knowledgeId).map((result) => result.source),
     ])].sort();
-    const changes = memory.changes.filter((change) => change.reviewKnowledgeIds.includes(item.knowledgeId));
+    const changes = live.observations.filter((change) => change.reviewKnowledgeIds.includes(item.knowledgeId));
     return { item, sources, changes };
   }).filter(({ item, sources, changes }) => statuses.includes(item.status)
     && (options.source === undefined || sources.includes(options.source))
@@ -146,14 +148,16 @@ export async function batchKnowledge(startPath: string | undefined, options: Kno
     const relatedSources = new Set(receipts.sources.filter((source) => source.blocks.some((block) => ids.includes(block.knowledgeId))
       || source.reviewKnowledgeIds.some((id) => ids.includes(id))).map((source) => source.source));
     for (const result of memory.results) if (result.knowledgeId && ids.includes(result.knowledgeId)) relatedSources.add(result.source);
-    const changes = memory.changes.filter((change) => relatedSources.has(change.source));
+    const live = await inspectKnowledgeSources(root, file.items);
+    const changes = live.observations.filter((change) => relatedSources.has(change.source)).map((change) => ({ ...change,
+      status: memory.changes.some((item) => item.source === change.source && ['partial', 'unavailable'].includes(item.status)) ? 'unknown' : change.status }));
     for (const item of selected) {
       const expected = options.action === 'verify' || options.action === 'reject' ? 'candidate' : 'verified';
       if (item.status !== expected) throw new Error(`invalid ${options.action} transition for ${item.knowledgeId}: ${item.status}`);
       if (options.action === 'keep') {
         const affected = changes.filter((change) => change.reviewKnowledgeIds.includes(item.knowledgeId));
         if (!affected.length) throw new Error(`no pending source review: ${item.knowledgeId}`);
-        if (affected.some((change) => ['partial', 'unavailable'].includes(change.status))) throw new Error('cannot close an incomplete source review');
+        if (affected.some((change) => ['partial', 'unavailable', 'unknown'].includes(change.status))) throw new Error('cannot close an incomplete source review');
       }
     }
     const token = digest({ requestHash, selected, changes });

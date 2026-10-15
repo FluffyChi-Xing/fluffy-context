@@ -75,7 +75,7 @@ export function validateSessionOptions(options: SessionOptions): void {
 }
 
 /** Derived, bounded receipts hold hashes only. They never establish knowledge trust. */
-export async function selectSessionDelivery(manifest: ContextManifest, options: SessionOptions, adapter: string): Promise<{ selected: ContextCandidate[]; delivery: InjectionDelivery }> {
+export async function selectSessionDelivery(manifest: ContextManifest, options: SessionOptions, adapter: string, referenceBudget = 4096): Promise<{ selected: ContextCandidate[]; delivery: InjectionDelivery }> {
   const full = (reason: InjectionDelivery['reason'], replacePrevious = false) => ({ selected: manifest.selected,
     delivery: { mode: 'full' as const, reason, replacePrevious, omittedSources: 0 } });
   if (!options.sessionId) return full('stateless');
@@ -104,6 +104,7 @@ export async function selectSessionDelivery(manifest: ContextManifest, options: 
         scope: manifest.intent.scope,
         paths: manifest.intent.paths,
         budget: manifest.budget.requested.total,
+        referenceBudget,
         recipe: manifest.recipe ?? null,
         graph: manifest.graph ?? null,
       });

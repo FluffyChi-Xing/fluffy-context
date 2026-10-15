@@ -99,7 +99,7 @@ test('batch preview binds related source hashes even when the statement is uncha
   const options: KnowledgeBatchOptions = { ids: [id], action: 'verify', reason: 'Reviewed source', evidence: ['src/payment.ts'] };
   const preview = await batchKnowledge(root, options);
   await writeFile(source, '# Payments\n\nPayment callbacks require a stable event identifier.');
-  assert.deepEqual((await importMemory(root)).reviewRequired, []);
+  assert.deepEqual((await importMemory(root)).reviewRequired, [id]);
   await assert.rejects(batchKnowledge(root, { ...options, apply: true, expectedToken: preview.token }), /stale/);
   assert.equal((await listKnowledge(root)).length, 0);
 });

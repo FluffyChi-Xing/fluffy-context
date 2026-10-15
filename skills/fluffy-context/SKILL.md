@@ -10,6 +10,13 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 
 ## 使用原则
 
+- beta.12：checkpoint 可记录 `--objective`、`--constraints`、`--validation-refs`、`--open-questions`，下一步沿用 `--pending`。恢复用 `ctx inject --scenario handoff`；必要时 `--context <id>` 明确选择任务。handoff 的 commit/snapshot 是记录来源，validationRefs 是操作者提供的验证引用，不能推断当前工作树已测试。
+- inject 返回 `expandRefs`，把其中一个完整对象直接传给 MCP `context_expand`；CLI 可用 `ctx expand --ref '<JSON>'`，Agent API 用 `contextExpand(ref.path, ref)`。不要改变原 compile 参数或绕过失效校验；提示 stale/mismatch 时重新 inject。仅 selected 证据支持引用，遗漏证据通过相同查询及更大预算重新 compile。
+- `--max-chars` 仍只限制正文；`--max-reference-chars` 默认 4096、范围 0–16000，单独限制引用对象序列化字符总量。来源复核条目上限 2048，explain 来源条目上限 4096；这些预算不包含 JSON 外壳。引用和诊断不会无限扩张，检查 omitted/partial 标记。
+- 注入/展开会有界核验已导入来源指纹。changed/missing 且未复核的知识不再作为当前结论交付；unknown 不代表 fresh。无法完成核验不会清除收据中已有复核要求。`sourceReview` 提供后续审阅入口；`keep` 只确认实际核验过的来源版本，不自动改变 verified 历史。
+- report 的 `delivery.contextEngineering` 统计本地交接、引用、展开和替换调用；这些是交付观察，不是模型采用率或真实 token 节省。Hook 提供有界引用和替换说明，不能通用控制宿主删除历史。
+
+
 - 命令入口以 `ctx --help` 的日常流程为准；高级、维护和实验命令在 `ctx --help --all`。知识操作集中到 `ctx knowledge add/list/verify/discover` 和 `ctx knowledge deadend add/list/verify/obsolete/reject`；旧 learn/deadend/deadends 继续兼容，MCP 工具名不变。
 - 默认注入在进度和已验证知识/失败经验之间保留预算，空余可互借；恢复/交接偏重进度。可用 `--scenario` 明确场景；`--explain` 的 `selection.excludedCounts` 区分未命中、状态/范围过滤和预算遗漏，不要把未命中当成知识不存在。显式 Recipe 保持其预算控制；升级到 ranking-v3 后须重新 compile 再 expand。
 
@@ -45,7 +52,7 @@ compatibility: 需要 Node.js >=20.19.0；Git 可选。CLI 通过 npm 全局安�
 - `ctx expand` 必须重传原始 `recipeId`、`graphHops` 和 compile budget；身份过期、Recipe 状态/内容/适用性变化时重新 compile，不要绕过 hash 校验。
 - 0.8.0 的 Compiler Manifest 提供稳定 `identity.manifestHash`、候选 `itemHash`、`tokenEstimate` 和 `level` 契约；默认输出 `summary` 层。
 - 只对 selected candidate 使用 `ctx expand --manifest-hash ... --candidate-id ... --level structured|evidence`。必须带上原始 compile 参数和相同的 compile budget；Manifest 过期时应重新 compile，不要绕过 hash 校验。
-- `expand` 是无状态、只读的渐进式展开：`complete` 才提供完整 `content`，`partial` 提供有界 `text` 且 `content` 为 null。它不写入 Context/journal、不记录 feedback、不读取项目文件正文、diff、命令输出或敏感数据。Agent API 使用 `contextExpand`，MCP 使用 `context_expand`。
+- `expand` 是无状态、只读的渐进式展开：`complete` 才提供完整 `content`，`partial` 提供有界 `text` 且 `content` 为 null。底层展开不修改 Context 或知识状态，不记录 feedback；CLI/MCP/Agent 包装层可记录调用遥测。beta.12 会有界读取已跟踪记忆来源以核验指纹，不展开任意证据路径或执行命令。Agent API 使用 `contextExpand`，MCP 使用 `context_expand`。
 - 新任务先发现已验证共识，再开始实现；候选项只在显式审查时使用。
 - 普通查询只使用已验证 Knowledge 和 Deadend；需要审查候选项时显式使用 `--all`。
 - CLI 业务命令的标准输出是 JSON；错误写入标准错误并返回非零退出码。解析输出时不要把 `--help` 的纯文本当作 JSON。

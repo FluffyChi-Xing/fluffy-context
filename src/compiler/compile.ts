@@ -1,3 +1,4 @@
+import { inspectKnowledgeSources } from '../cognition/source-state.js';
 import { filterPaths } from '../capture/context-filter.js';
 import { contentHash, estimateTokens, rebuildManifestHash } from './identity.js';
 import { queryTerms } from '../cognition/retrieval.js';
@@ -153,6 +154,7 @@ function applicable(candidate: ContextCandidate, intent: ContextIntent): { ok: b
   if (intent.scope && source.scope && clean(intent.scope) !== clean(source.scope)) return { ok: false, reason: 'scope_mismatch' };
   if (intent.paths.length > 0 && source.paths.length > 0 && !source.paths.some((path) => intent.paths.includes(path))) return { ok: false, reason: 'path_mismatch' };
   if (intent.query && ['knowledge', 'deadend'].includes(candidate.section) && candidate.matchedTerms.length === 0) return { ok: false, reason: 'query_no_match' };
+  if (source.sourceState?.reviewRequired) return { ok: false, reason: 'source_review_required' };
   return { ok: true };
 }
 
@@ -239,13 +241,14 @@ function activityText(record: ContextActivityRecord): string {
   return `activity: ${changes}`;
 }
 
-function createCandidates(sources: CompilerSources, intent: ContextIntent, notes: Note[], knowledge: Knowledge[], deadends: Deadend[], activities: ContextActivityRecord[]): ContextCandidate[] {
+function createCandidates(sources: CompilerSources, intent: ContextIntent, notes: Note[], knowledge: Knowledge[], deadends: Deadend[], activities: ContextActivityRecord[], sourceStates: Awaited<ReturnType<typeof inspectKnowledgeSources>>['states']): ContextCandidate[] {
   const terms = intent.normalizedTerms;
   const candidates: ContextCandidate[] = [];
   if (sources.orientation.status === 'ready') {
     const { context, snapshot, resumeSummary } = sources.orientation;
     const contextSource = sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'current-context', context.id, context.id, snapshot.snapshotId, context.status, null, resumeSummary.relatedFiles);
     const summaryFields: Array<[string, string | null, ContextCandidateSection]> = [
+      ['objective', resumeSummary.objective ?? null, 'summary'],
       ['title', context.title, 'summary'],
       ['progressSummary', resumeSummary.progressSummary, 'summary'],
       ['lastError', resumeSummary.lastError, 'risk'],
@@ -254,11 +257,14 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
       const text = textForSummary(`context.${field}`, value);
       if (text) {
         const candidate = makeCandidate(section, contextSource, { field, value }, text, terms, [field], field);
-        candidate.priority = field === 'progressSummary' ? 104 : field === 'title' ? 102 : candidate.priority;
+        candidate.priority = field === 'objective' ? 110 : field === 'lastError' ? 108 : field === 'progressSummary' ? 104 : field === 'title' ? 102 : candidate.priority;
         candidates.push(candidate);
       }
     }
     const listFields: Array<[string, string[], ContextCandidateSection]> = [
+      ['constraints', resumeSummary.constraints ?? [], 'decision'],
+      ['openQuestions', resumeSummary.openQuestions ?? [], 'risk'],
+      ['validationRefs', resumeSummary.validationRefs ?? [], 'summary'],
       ['pendingTasks', resumeSummary.pendingTasks, 'pending'],
       ['completed', resumeSummary.completed, 'summary'],
       ['decisions', resumeSummary.decisions, 'decision'],
@@ -268,7 +274,10 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
     for (const [field, values, section] of listFields) {
       for (const [index, value] of values.entries()) {
         const candidate = makeCandidate(section, contextSource, { field, value }, `context.${field}: ${value}`, terms, [field], `${field}:${index}`);
-        if (field === 'pendingTasks') candidate.priority = 103;
+        if (field === 'pendingTasks') candidate.priority = 107;
+        if (field === 'validationRefs') candidate.priority = 106;
+        if (field === 'constraints') candidate.priority = 109;
+        if (field === 'openQuestions') candidate.priority = 105;
         candidates.push(candidate);
       }
     }
@@ -279,6 +288,7 @@ function createCandidates(sources: CompilerSources, intent: ContextIntent, notes
   }
   for (const item of knowledge) {
     const source = sourceApplicability(item as unknown as Record<string, unknown>, sourceDescriptor(sources.anchor.projectRoot, sources.anchor, sources.events, 'knowledge', item.knowledgeId, item.sourceContextIds[0] ?? null, item.sourceSnapshotIds[0] ?? null, item.status, item.scope, sourcePaths(item as unknown as Record<string, unknown>)));
+    source.sourceState = sourceStates.get(item.knowledgeId);
     candidates.push(makeCandidate('knowledge', source, item, item.statement, terms, ['statement', 'kind', 'scope'], item.knowledgeId));
   }
   for (const item of deadends) {
@@ -342,12 +352,17 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const knowledge = intent.query ? await listKnowledge(sources.anchor.projectRoot, true) : [];
   const deadends = intent.query ? await listDeadends(sources.anchor.projectRoot, true) : [];
   const activities = await extractActivity(sources.anchor.projectRoot, sources.events, sources.anchor, sources.workspace, options.activityLimit ?? 20);
-  const all = createCandidates(sources, intent, notes, knowledge, deadends, activities);
+  const sourceStates = await inspectKnowledgeSources(sources.anchor.projectRoot, knowledge);
+  const all = createCandidates(sources, intent, notes, knowledge, deadends, activities, sourceStates.states);
   const contextRelevant = !options.query || Boolean(options.contextId) || ['resume', 'handoff'].includes(intent.scenario)
     || all.some((candidate) => candidate.source.kind === 'current-context' && candidate.matchedTerms.length > 0);
   const excluded: ContextExclusion[] = [];
   const eligible = all.filter((candidate) => {
-    if (candidate.source.kind === 'current-context' && !contextRelevant) {
+    if ((candidate.source.kind === 'current-context' || candidate.source.kind === 'note') && !options.contextId && orientation.snapshot?.branch && orientation.snapshot.branch !== sources.anchor.branch) {
+      excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: 'applicability_mismatch' });
+      return false;
+    }
+    if (!contextRelevant && (candidate.source.kind === 'current-context' || candidate.source.kind === 'note' && candidate.matchedTerms.length === 0)) {
       excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: 'query_no_match' });
       return false;
     }
@@ -375,6 +390,8 @@ export async function compileContext(startPath?: string, options: ContextCompile
   const groupUsed = { task: 0, evidence: 0 };
   const taskDemand = eligible.filter((item) => budgetGroup(item) === 'task').reduce((sum, item) => sum + item.text.length + 1, 0);
   const reservePending = groups && taskDemand > groups.task && eligible.some((item) => item.section === 'pending');
+  const continuityFields = ['objective', 'constraints', 'lastError', 'pendingTasks', 'openQuestions', 'validationRefs', 'progressSummary'];
+  const continuityCount = eligible.filter((item) => item.source.kind === 'current-context' && item.matchedFields.some((field) => continuityFields.includes(field))).length;
   let usedChars = 0;
   for (const candidate of eligible) {
     const separator = selected.length > 0 ? 1 : 0;
@@ -382,8 +399,10 @@ export async function compileContext(startPath?: string, options: ContextCompile
     const consumedInSection = sectionStats[candidate.section]?.consumed ?? 0;
     const group = budgetGroup(candidate);
     const groupAvailable = groups ? groups[group] - groupUsed[group] - separator : maxChars;
+    const continuityLimit = groups && taskDemand > groups.task && ['resume', 'handoff'].includes(intent.scenario) && candidate.source.kind === 'current-context' && candidate.matchedFields.some((field) => continuityFields.includes(field))
+      ? Math.max(0, Math.floor(groups.task / Math.max(1, continuityCount)) - 1) : maxChars;
     const itemLimit = reservePending && candidate.matchedFields.includes('progressSummary') ? Math.ceil(groups!.task * 0.6) : maxChars;
-    const available = Math.min(maxChars - usedChars - separator, sectionBudget - consumedInSection - separator, groupAvailable, itemLimit);
+    const available = Math.min(maxChars - usedChars - separator, sectionBudget - consumedInSection - separator, groupAvailable, itemLimit, continuityLimit);
     if (available <= 0) {
       excluded.push({ candidateId: candidate.candidateId, source: candidate.source, reason: 'budget' });
       truncation.candidatesOmittedByBudget += 1;
@@ -458,7 +477,7 @@ export async function compileContext(startPath?: string, options: ContextCompile
   return {
     schemaVersion: 1,
     compilerVersion: '0.7.7',
-    rankingVersion: 'compiler-ranking-v3',
+    rankingVersion: 'compiler-ranking-v4',
     status,
     projectRoot: sources.anchor.projectRoot,
     mode: orientation.explanation.mode,

@@ -309,6 +309,7 @@ export interface UsageOperationCompletedPayload {
   estimatedInputTokens: number;
   estimatedOutputTokens: number;
   estimatedMethod: 'chars-div-four';
+  contextDelivery?: { taskChars: number; referenceChars: number; references: number; sourceReviews: number; replacements: number; handoffs: number };
   errorClass?: string;
 }
 
@@ -439,4 +440,9 @@ export interface RuntimeStatus {
   migrated: boolean;
   running: boolean;
   lease: Omit<RuntimeLease, 'projectId'> | null;
+  diagnostics?: {
+    state: 'starting' | 'ready' | 'exited' | 'unreachable' | 'failed' | 'stopped';
+    processAlive: boolean | null;
+    startup: import('./runtime-diagnostics.js').RuntimeStartupDiagnostic | null;
+  };
 }

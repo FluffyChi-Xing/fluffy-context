@@ -24,7 +24,14 @@ export interface ContextMetadata {
   dependencies: string[];
 }
 
-export interface StructuredContext {
+export interface TaskContinuity {
+  objective?: string;
+  constraints?: string[];
+  validationRefs?: string[];
+  openQuestions?: string[];
+}
+
+export interface StructuredContext extends TaskContinuity {
   progressSummary: string;
   lastError: string | null;
   completed: string[];
@@ -76,7 +83,7 @@ export interface IndexFile {
   contexts: IndexEntry[];
 }
 
-export interface CheckpointInput {
+export interface CheckpointInput extends TaskContinuity {
   contextId?: string;
   absorbNotes?: boolean;
   title?: string;

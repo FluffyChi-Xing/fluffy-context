@@ -328,7 +328,16 @@ export async function buildUsageReport(startPath: string | undefined, options: U
       paybackPeriodDays: null,
     },
     operations: { available: usageEvents.length > 0, ...operationStats(scoped), reason: usageEvents.length > 0 ? null : 'operation output telemetry is not yet recorded' },
-    delivery: deliveryStats(scoped, events),
+    delivery: { ...deliveryStats(scoped, events), contextEngineering: {
+      observations: usageEvents.filter(({ payload }) => payload.contextDelivery).length,
+      totals: Object.fromEntries(['taskChars', 'referenceChars', 'references', 'sourceReviews', 'replacements', 'handoffs'].map((key) => [key,
+        usageEvents.reduce((sum, { payload }) => {
+          const value = payload.contextDelivery?.[key as keyof NonNullable<UsageOperationCompletedPayload['contextDelivery']>];
+          return sum + (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0);
+        }, 0)])),
+      expansions: usageEvents.filter(({ payload }) => payload.operation === 'expand' && payload.success).length,
+      interpretation: 'Local deliveries and expansion calls, not model adoption or provider token savings; older events lack continuity counters.',
+    } },
     trends,
     warnings: [...(journalRead.mode === 'indexed' ? ['Indexed read reuses previously verified sealed segments; run ctx journal verify for current full-chain verification'] : !journalVerified ? ['v2 journal unavailable; lifecycle metrics may be incomplete'] : []), 'Provider token usage is unavailable', 'chars-div-four is a rough estimate, especially for CJK; context compression is not proven task savings', ...(baseline !== null ? ['Window baseline is unpaired; no causal savings or payback date can be established'] : []), ...(usageEvents.length === 0 ? ['Token investment is unavailable until operation output telemetry is recorded'] : [])],
   };
@@ -339,6 +348,10 @@ export function formatUsageReport(report: Record<string, any>): string {
   const lines = ['fluffy-context usage report', `Window: ${String(report.window.from).slice(0, 10)} to ${String(report.window.to).slice(0, 10)}`, '', 'ASSET VALUE', `  Verified knowledge       ${assets.knowledge.verified}`, `  Verified deadends        ${assets.deadends.verified}`, `  Used verified assets     ${report.reuse.usedVerifiedAssetCount}`, `  Asset points             ${assets.effectiveAssetPoints.value.toFixed(2)}  derived`, '', 'TOKEN INVESTMENT', `  Estimated tokens         ${report.investment.totalContextTokens.value}  estimated (input + output)`, '  Provider tokens          n/a  unavailable', '', 'RETURN', `  Baseline tokens          ${payback.baselineTokens ?? 'n/a'}`, `  Estimated savings        ${payback.estimatedSavings.value ?? 'n/a'}`, `  ROI                      ${payback.estimatedROI ?? 'n/a'}`, `  Payback                  ${payback.status}`, '', 'COMMAND OUTPUT TREND', `  Usage events             ${report.dataQuality.usageEventCount}`, '', 'DATA QUALITY', `  Journal verified         ${report.dataQuality.journalVerified ? 'yes' : 'no'}`, `  Window events            ${report.dataQuality.windowEventCount}`, `  Warnings                 ${report.warnings.length}`];
   lines.push(`  Journal bytes            ${report.dataQuality.journalBytes}`, `  Semantic event ratio     ${report.dataQuality.semanticEventRatio.value ?? 'n/a'}  derived`, '', 'EVENT TYPES');
   lines.push(`  Archives                 ${report.dataQuality.journalStorage.archives}`, `  Expanded journal bytes   ${report.dataQuality.journalStorage.expandedBytes ?? 'n/a (indexed read)'}`);
+  if (report.delivery?.contextEngineering) {
+    const ce = report.delivery.contextEngineering;
+    lines.push('', 'CONTEXT ENGINEERING (local observations)', `  Handoffs                 ${ce.totals.handoffs}`, `  Evidence references      ${ce.totals.references}`, `  Successful expansions    ${ce.expansions}`, `  Source review reminders  ${ce.totals.sourceReviews}`, `  Replacement packets      ${ce.totals.replacements}`);
+  }
   for (const [type, count] of Object.entries(report.dataQuality.eventTypes)) lines.push(`  ${type}: ${count}`);
   lines.push(`  Budget-rejected observations ${Object.values(report.dataQuality.admission.dropped).reduce((sum, count) => Number(sum) + Number(count), 0)}`);
   lines.push('', 'HOST DELIVERY', `  Trigger observations      ${report.delivery.observationCount}`, `  Unsupported trigger pairs ${report.delivery.unknownTriggerCount}`, `  Unobserved supported      ${report.delivery.unobservedSupported.length}`);
